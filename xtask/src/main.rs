@@ -7,8 +7,11 @@ mod ci;
 mod examples;
 mod forbidden;
 mod headers;
+mod json;
 mod lexer;
+mod licenses;
 mod lines;
+mod npm;
 mod workspace;
 
 use std::process::ExitCode;
@@ -31,12 +34,15 @@ fn main() -> ExitCode {
         }
     };
 
+    let sub_args = args.get(1..).unwrap_or(&[]);
     let result = match cmd {
         "ci" => ci::run_ci(&root),
         "check" => ci::run_all_checks(&root),
         "license-headers" => ci::run_license_headers(&root),
         "line-limit" => ci::run_line_limit(&root),
         "forbidden-code" => ci::run_forbidden_code(&root),
+        "collect-licenses" => licenses::run_collect_licenses(&root),
+        "npm-pack" => npm::run_npm_pack(&root, sub_args),
         other => Err(format!("Unknown xtask command: {other}")),
     };
 
@@ -52,6 +58,6 @@ fn main() -> ExitCode {
 /// Prints available `xtask` subcommands to standard output.
 fn print_help() {
     println!(
-        "flow-mcp xtask\n\nCommands:\n  ci               Run fmt, repository checks, clippy, doc, build, and cargo deny\n  check            Run license-headers, line-limit, doc examples, and forbidden-code checks\n  license-headers  Verify two-line copyright and SPDX headers plus LF endings\n  line-limit       Verify <= 800 code lines per .rs and .ts file\n  forbidden-code   Verify zero-tests, layout, manifest, and TypeScript rules"
+        "flow-mcp xtask\n\nCommands:\n  ci                              Run fmt, repository checks, clippy, doc, build, and cargo deny\n  check                           Run license-headers, line-limit, doc examples, and forbidden-code checks\n  license-headers                 Verify SPDX headers, shebang launcher headers, and LF endings\n  line-limit                      Verify <= 800 code lines per .rs and .ts file\n  forbidden-code                  Verify zero-tests, layout, manifest, version sync, and TypeScript rules\n  collect-licenses                Collect license notices for locked Rust crate dependencies\n  npm-pack --dist <D> --out <O>   Build @flow-mcp/cli and six platform packages from release binaries"
     );
 }
