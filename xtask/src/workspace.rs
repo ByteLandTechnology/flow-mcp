@@ -160,7 +160,7 @@ fn record_file(root: &Path, path: &Path, name: &str, out: &mut WorkspaceFiles) {
             out.markdown_files.push(path.to_path_buf());
             out.text_files.push(path.to_path_buf());
         }
-        Some("toml" | "json") => {
+        Some("toml" | "json" | "svg") => {
             out.text_files.push(path.to_path_buf());
         }
         _ => {}
