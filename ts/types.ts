@@ -571,6 +571,54 @@ export interface VideoOpRequest {
   end_seconds?: number | null;
 }
 
+/** Request payload for `characterOp`. */
+export interface CharacterOpRequest {
+  /** Operation (`open_editor`, `finish`, `create`, or `update`). */
+  action?: string;
+  /** Project identifier. */
+  project_id?: string | null;
+  /** Character identifier. */
+  character_id?: string | null;
+  /** Character display name. */
+  name?: string | null;
+  /** Character personality notes. */
+  bio?: string | null;
+  /** Optional voice name triggering editor navigation after create. */
+  voice?: string | null;
+  /** Optional project reference asset IDs triggering editor navigation after create. */
+  asset_ids?: string[] | null;
+  /** Optional look generation prompt triggering editor navigation after create. */
+  look_prompt?: string | null;
+}
+
+/** Request payload for `characterVoiceOp`. */
+export interface CharacterVoiceOpRequest {
+  /** Operation (`list_voices` or `set_voice`). */
+  action?: string;
+  /** Character identifier. */
+  character_id?: string | null;
+  /** Voice name or identifier. */
+  voice?: string | null;
+}
+
+/** Request payload for `characterMediaOp`. */
+export interface CharacterMediaOpRequest {
+  /** Operation (`open_upload`, `check_upload`, `check_look`, or `attach_and_look`). */
+  action?: string;
+  /** Character identifier. */
+  character_id?: string | null;
+  /** Target slot (`portrait` or `body`). */
+  slot?: string | null;
+  /** Previous preview source URL before upload or look generation. */
+  prev_src?: string | null;
+  /** Previous slot media identifier before upload or look generation. */
+  prev_media_id?: string | null;
+  /** Project asset IDs to attach as looks. */
+  asset_ids?: string[] | null;
+  /** Optional look generation prompt. */
+  look_prompt?: string | null;
+}
+
 /** Viewport click point computed in browser coordinates. */
 export interface ViewportPoint {
   /** Horizontal viewport pixel coordinate. */
@@ -613,6 +661,12 @@ export interface FlowMcpRuntime {
   sceneOp: (req: SceneOpRequest) => Promise<unknown>;
   /** Applies video trim timestamps or drives the scene builder extend workflow. */
   videoOp: (req: VideoOpRequest) => Promise<unknown>;
+  /** Opens/exits the character editor and creates or updates character fields. */
+  characterOp: (req: CharacterOpRequest) => Promise<unknown>;
+  /** Lists available character voices and sets a voice on the character form. */
+  characterVoiceOp: (req: CharacterVoiceOpRequest) => Promise<unknown>;
+  /** Opens character uploads, attaches project references, and generates looks. */
+  characterMediaOp: (req: CharacterMediaOpRequest) => Promise<unknown>;
 }
 
 declare global {

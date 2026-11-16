@@ -23,6 +23,7 @@ use tokio::time::Duration;
 
 use crate::assets::{AssetsParams, DownloadParams, RenameParams, TrashParams};
 use crate::auth::LoginParams;
+use crate::characters::{CharacterEditParams, CharacterParams, VoicesParams};
 use crate::collections::CollectionsParams;
 use crate::db::{DOWNLOAD_ASSET_RESOURCE_PREFIX, DOWNLOAD_RESOURCE_PREFIX, DownloadsParams};
 use crate::generation::{AgentImagesParams, EditParams, GenerateParams};
@@ -276,6 +277,35 @@ impl FlowMcpServer {
     #[tool(description = "Trim a Google Flow video immediately or queue a video extension job.")]
     async fn flow_video(&self, Parameters(req): Parameters<VideoParams>) -> CallToolResult {
         Self::format_result(self.service.video(req).await)
+    }
+
+    /// Queues a character reference sheet job in the active Google Flow project.
+    #[tool(
+        description = "Queue a character reference sheet job in the active Google Flow project."
+    )]
+    async fn flow_character(&self, Parameters(req): Parameters<CharacterParams>) -> CallToolResult {
+        Self::format_result(self.service.character(req).await)
+    }
+
+    /// Queues an edit job for a character asset in Google Flow.
+    #[tool(description = "Queue an edit job for a character asset in Google Flow.")]
+    async fn flow_character_edit(
+        &self,
+        Parameters(req): Parameters<CharacterEditParams>,
+    ) -> CallToolResult {
+        Self::format_result(self.service.character_edit(req).await)
+    }
+
+    /// Lists character entities in the active Google Flow project.
+    #[tool(description = "List character entities in the active Google Flow project.")]
+    async fn flow_characters(&self) -> CallToolResult {
+        Self::format_result(self.service.characters().await)
+    }
+
+    /// Lists available Google Flow character voices.
+    #[tool(description = "List available Google Flow character voices.")]
+    async fn flow_voices(&self, Parameters(req): Parameters<VoicesParams>) -> CallToolResult {
+        Self::format_result(self.service.voices(req).await)
     }
 }
 

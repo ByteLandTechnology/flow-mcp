@@ -123,6 +123,29 @@ pub(crate) struct DownloadRecord {
     pub(crate) resource_uri: String,
 }
 
+/// Stored metadata for a Google Flow character entity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CharacterRecord {
+    /// Google Flow character ID.
+    pub(crate) id: String,
+    /// Parent Flow project ID when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_id: Option<String>,
+    /// Character display name.
+    pub(crate) name: String,
+    /// Character biography or personality notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bio: Option<String>,
+    /// Selected Flow voice name or reference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) voice: Option<String>,
+    /// Linked reference image asset IDs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) ref_asset_ids: Vec<String>,
+    /// Last update timestamp in epoch milliseconds.
+    pub(crate) updated_at: i64,
+}
+
 /// Parameters for `flow_downloads`.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub(crate) struct DownloadsParams {
@@ -741,6 +764,150 @@ impl FlowDb {
         self.run_blocking(move |conn| {
             let n = conn.execute("DELETE FROM characters WHERE id = ?1", params![id])?;
             Ok(n)
+        })
+        .await
+    }
+
+    /// Inserts or updates character metadata in `characters`, preserving existing optional fields.
+    pub(crate) async fn upsert_character(
+        &self,
+        id: String,
+        project_id: Option<String>,
+        name: String,
+        bio: Option<String>,
+        voice: Option<String>,
+        ref_asset_ids: Option<Vec<String>>,
+    ) -> Result<CharacterRecord> {
+        /// Existing columns fetched before merging optional character fields.
+        struct ExistingCharacterRow {
+            /// Stored parent project ID.
+            project_id: Option<String>,
+            /// Stored character display name.
+            name: String,
+            /// Stored personality notes.
+            bio: Option<String>,
+            /// Stored voice identifier.
+            voice: Option<String>,
+            /// JSON-serialized reference asset ID list.
+            ref_asset_ids: Option<String>,
+        }
+
+        let now = now_epoch_ms();
+        self.run_blocking(move |conn| {
+            let existing = conn
+                .query_row(
+                    "SELECT project_id, name, bio, voice, ref_asset_ids FROM characters WHERE id = ?1",
+                    params![id],
+                    |row| {
+                        Ok(ExistingCharacterRow {
+                            project_id: row.get(0)?,
+                            name: row.get(1)?,
+                            bio: row.get(2)?,
+                            voice: row.get(3)?,
+                            ref_asset_ids: row.get(4)?,
+                        })
+                    },
+                )
+                .optional()?;
+
+            let merged_project =
+                project_id.or_else(|| existing.as_ref().and_then(|e| e.project_id.clone()));
+            let merged_name = if name.trim().is_empty() {
+                existing.as_ref().map(|e| e.name.clone()).unwrap_or(name)
+            } else {
+                name
+            };
+            let merged_bio = bio.or_else(|| existing.as_ref().and_then(|e| e.bio.clone()));
+            let merged_voice = voice.or_else(|| existing.as_ref().and_then(|e| e.voice.clone()));
+            let merged_refs: Vec<String> = if let Some(refs) = ref_asset_ids {
+                refs
+            } else if let Some(raw) = existing.as_ref().and_then(|e| e.ref_asset_ids.as_deref()) {
+                serde_json::from_str(raw).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let refs_json = if merged_refs.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&merged_refs)?)
+            };
+
+            conn.execute(
+                "INSERT INTO characters (id, project_id, name, bio, voice, ref_asset_ids, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    name = excluded.name,
+                    bio = excluded.bio,
+                    voice = excluded.voice,
+                    ref_asset_ids = excluded.ref_asset_ids,
+                    updated_at = excluded.updated_at",
+                params![
+                    id,
+                    merged_project,
+                    merged_name,
+                    merged_bio,
+                    merged_voice,
+                    refs_json,
+                    now
+                ],
+            )?;
+
+            Ok(CharacterRecord {
+                id,
+                project_id: merged_project,
+                name: merged_name,
+                bio: merged_bio,
+                voice: merged_voice,
+                ref_asset_ids: merged_refs,
+                updated_at: now,
+            })
+        })
+        .await
+    }
+
+    /// Reads all stored character records, filtered by `project_id` when given.
+    pub(crate) async fn list_characters(
+        &self,
+        project_id: Option<&str>,
+    ) -> Result<Vec<CharacterRecord>> {
+        let project_id = project_id.map(str::to_string);
+        self.run_blocking(move |conn| {
+            let sql = if project_id.is_some() {
+                "SELECT id, project_id, name, bio, voice, ref_asset_ids, updated_at
+                 FROM characters WHERE project_id = ?1 ORDER BY updated_at DESC, name ASC"
+            } else {
+                "SELECT id, project_id, name, bio, voice, ref_asset_ids, updated_at
+                 FROM characters ORDER BY updated_at DESC, name ASC"
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<CharacterRecord> {
+                let raw_refs: Option<String> = row.get(5)?;
+                let ref_asset_ids = raw_refs
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                    .unwrap_or_default();
+                Ok(CharacterRecord {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    name: row.get(2)?,
+                    bio: row.get(3)?,
+                    voice: row.get(4)?,
+                    ref_asset_ids,
+                    updated_at: row.get(6)?,
+                })
+            };
+            let mut out = Vec::new();
+            if let Some(pid) = project_id {
+                for row in stmt.query_map(params![pid], map_row)? {
+                    out.push(row?);
+                }
+            } else {
+                for row in stmt.query_map([], map_row)? {
+                    out.push(row?);
+                }
+            }
+            Ok(out)
         })
         .await
     }

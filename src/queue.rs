@@ -143,6 +143,27 @@ pub(crate) struct SceneParams {
     /// Target scene ID for `flow_video` extend jobs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) scene_id: Option<String>,
+    /// Character name for character creation or editing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) character: Option<String>,
+    /// Character visual description for character sheet creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
+    /// Local reference image paths for character creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) refs: Option<Vec<String>>,
+    /// True when the character job edits an existing character rather than creating one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) character_edit: Option<bool>,
+    /// Updated character display name for character edits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) new_name: Option<String>,
+    /// Character biography or personality notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bio: Option<String>,
+    /// Flow voice name selected for a character.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) voice: Option<String>,
 }
 
 /// Internal job record in [`JobQueue`].

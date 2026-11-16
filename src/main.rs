@@ -6,6 +6,7 @@
 mod assets;
 mod auth;
 mod cdp;
+mod characters;
 mod chrome;
 mod collections;
 mod config;

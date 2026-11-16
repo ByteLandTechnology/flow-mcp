@@ -5,6 +5,9 @@
 
 import { assetOps } from "./asset_ops";
 import { attachIngredients } from "./attach_ingredients";
+import { characterMediaOp } from "./character_media";
+import { characterOp } from "./character_ops";
+import { characterVoiceOp } from "./character_voices";
 import { checkAuth } from "./check_auth";
 import { collectionOps } from "./collection_ops";
 import { discoverStore } from "./discover_store";
@@ -38,5 +41,8 @@ if (!window.__flowMcp) {
     submitGeneration,
     sceneOp,
     videoOp,
+    characterOp,
+    characterVoiceOp,
+    characterMediaOp,
   };
 }

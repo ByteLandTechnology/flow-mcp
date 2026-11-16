@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::assets::{self, AssetsParams, DownloadParams, RenameEntry};
 use crate::auth::{self, LoginParams};
+use crate::characters::{self, CharacterEditParams, CharacterParams, VoicesParams};
 use crate::collections::{self, CollectionsParams};
 use crate::config;
 use crate::db::{
@@ -88,6 +89,16 @@ impl FlowService {
                 } else if let Some(ref edit_from) = scene.edit_from {
                     generation::run_edit(&engine, &db, edit_from, &scene.prompt, on_progress)
                         .await?
+                } else if scene.character.is_some() {
+                    let is_edit = scene.character_edit.unwrap_or(false);
+                    characters::create_or_update_character_job(
+                        &engine,
+                        &db,
+                        &scene,
+                        is_edit,
+                        on_progress,
+                    )
+                    .await?
                 } else {
                     generation::run_generation(&engine, &db, &scene, on_progress).await?
                 };
@@ -137,20 +148,6 @@ impl FlowService {
         self.queue.list().await
     }
 
-    /// Saves any supplied `character_look` under `character_role` and appends it to `prompt`.
-    async fn apply_character_look_prefill(&self, scene: &mut SceneParams) -> Result<()> {
-        let Some(role) = scene.character_role.clone() else {
-            return Ok(());
-        };
-        if let Some(look) = scene.character_look.as_deref() {
-            self.db.save_character_look(&role, look).await?;
-            scene.prompt = format!("{}, character {}: {}", scene.prompt, role, look);
-        } else if let Some(look) = self.db.get_character_look(&role).await? {
-            scene.prompt = format!("{}, character {}: {}", scene.prompt, role, look);
-        }
-        Ok(())
-    }
-
     /// Saves any supplied character look in SQLite, appends it to `prompt`, and queues the job.
     pub(crate) async fn generate(&self, req: GenerateParams) -> Result<JobView> {
         let mut scene = SceneParams {
@@ -171,7 +168,7 @@ impl FlowService {
             resolution: req.resolution,
             ..Default::default()
         };
-        self.apply_character_look_prefill(&mut scene).await?;
+        characters::apply_character_look(&self.db, &mut scene).await?;
         Ok(self.queue.enqueue(scene).await)
     }
 
@@ -202,6 +199,48 @@ impl FlowService {
     /// Lists, creates, adds clips to, renames, or trashes Google Flow scenes.
     pub(crate) async fn scenes(&self, req: ScenesParams) -> Result<Value> {
         scenes::handle_scenes(&self.engine, &self.db, req).await
+    }
+
+    /// Queues a character entity creation job.
+    pub(crate) async fn character(&self, req: CharacterParams) -> Result<JobView> {
+        let scene = SceneParams {
+            prompt: req.prompt.unwrap_or_default(),
+            character: Some(req.name),
+            description: req.description,
+            bio: req.bio,
+            voice: req.voice,
+            asset_ids: req.asset_ids,
+            refs: req.refs,
+            character_edit: Some(false),
+            ..Default::default()
+        };
+        Ok(self.queue.enqueue(scene).await)
+    }
+
+    /// Queues a character entity edit job.
+    pub(crate) async fn character_edit(&self, req: CharacterEditParams) -> Result<JobView> {
+        let scene = SceneParams {
+            prompt: req.prompt.unwrap_or_default(),
+            character: Some(req.name),
+            new_name: req.new_name,
+            bio: req.bio,
+            voice: req.voice,
+            asset_ids: req.asset_ids,
+            refs: req.refs,
+            character_edit: Some(true),
+            ..Default::default()
+        };
+        Ok(self.queue.enqueue(scene).await)
+    }
+
+    /// Lists saved character entities in the active Google Flow project.
+    pub(crate) async fn characters(&self) -> Result<Value> {
+        characters::list_characters(&self.engine, &self.db).await
+    }
+
+    /// Lists available Google Flow character voices.
+    pub(crate) async fn voices(&self, req: VoicesParams) -> Result<Value> {
+        characters::list_voices(&self.engine, &self.db, req.character.as_deref()).await
     }
 
     /// Trims a video immediately or queues a video extension job.
