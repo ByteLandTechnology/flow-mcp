@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 296" width="100%" role="img" aria-labelledby="svg-title svg-desc">
+  <title id="svg-title">双模式 Chrome 登录</title>
+  <desc id="svg-desc">双模式 Chrome 登录</desc>
+  <style>
+    path, line, polyline, polygon { stroke-linecap: round; stroke-linejoin: round; }
+    text { font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans', 'Noto Sans CJK SC', 'Noto Sans JP', sans-serif; }
+    .mono { font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; }
+    .h1 { font-size: 13px; font-weight: 700; fill: #f8fafc; }
+    .lbl { font-size: 11.5px; font-weight: 600; fill: #f8fafc; }
+    .badge { font-size: 11.5px; font-weight: 600; fill: #f8fafc; }
+    .pill { font-size: 11px; font-weight: 700; fill: #f8fafc; }
+  </style>
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#3b82f6" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#10b981" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#f59e0b" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#8b5cf6" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-rose" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#f43f5e" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#64748b" fill-opacity="0.88"/>
+    </marker>
+  </defs>
+  <rect x="8" y="8" width="944" height="280" rx="12" fill="#64748b" fill-opacity="0.06" stroke="#64748b" stroke-opacity="0.22" stroke-width="1.25"/>
+  <path d="M 126 92 C 126 42, 240 40, 402.0 40" fill="none" stroke="#10b981" stroke-opacity="0.78" stroke-width="1.75" stroke-dasharray="5 4"/>
+  <circle data-anchor="1" cx="126" cy="92" r="2.6" fill="#10b981" fill-opacity="0.88"/>
+  <rect data-capsule="1" x="410.0" y="28.0" width="140" height="24.0" rx="12.0" fill="#065f46" fill-opacity="0.90" stroke="none"/>
+  <text x="480.0" y="44.2" text-anchor="middle" class="pill" fill="#f8fafc">复用已有会话</text>
+  <path d="M 558.0 40 C 720 40, 834 42, 834 90" fill="none" stroke="#10b981" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-teal)" stroke-dasharray="5 4"/>
+  <rect x="24" y="96" width="204" height="174" rx="10" fill="#3b82f6" fill-opacity="0.1" stroke="#3b82f6" stroke-opacity="0.48" stroke-width="1.5"/>
+  <rect data-capsule="1" x="66.0" y="106.0" width="120" height="24.0" rx="6.0" fill="#1e40af" fill-opacity="0.90" stroke="none"/>
+  <text x="126.0" y="122.2" text-anchor="middle" class="h1" fill="#f8fafc">1. 检查配置</text>
+  <path d="M 44 152 L 44 186 L 96 186 L 96 155 L 67.9 155 L 62.7 148 L 48 148 Q 44 148 44 152 Z" fill="#3b82f6" fill-opacity="0.18" stroke="#3b82f6" stroke-opacity="0.82" stroke-width="1.4"/>
+  <circle cx="126" cy="170" r="14" fill="#f59e0b" fill-opacity="0.20" stroke="#f59e0b" stroke-opacity="0.84" stroke-width="1.5"/>
+  <circle cx="121.0" cy="166.5" r="1.7" fill="#f59e0b" fill-opacity="0.88"/>
+  <circle cx="129.9" cy="165.1" r="1.5" fill="#f59e0b" fill-opacity="0.88"/>
+  <circle cx="128.1" cy="174.2" r="1.9" fill="#f59e0b" fill-opacity="0.88"/>
+  <circle cx="122.1" cy="174.5" r="1.5" fill="#f59e0b" fill-opacity="0.88"/>
+  <circle cx="176" cy="166" r="13" fill="none" stroke="#3b82f6" stroke-width="2"/>
+  <line x1="185" y1="175" x2="195" y2="185" stroke="#3b82f6" stroke-width="2.5"/>
+  <rect data-capsule="1" x="62.0" y="226.0" width="128" height="24.0" rx="12.0" fill="#1e40af" fill-opacity="0.90" stroke="none"/>
+  <text x="126.0" y="242.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_status</text>
+  <path d="M 232 181 L 256 181" fill="none" stroke="#3b82f6" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-blue)"/>
+  <circle data-anchor="1" cx="232" cy="181" r="2.6" fill="#3b82f6" fill-opacity="0.88"/>
+  <rect x="260" y="96" width="204" height="174" rx="10" fill="#f43f5e" fill-opacity="0.1" stroke="#f43f5e" stroke-opacity="0.48" stroke-width="1.5"/>
+  <rect data-capsule="1" x="302.0" y="106.0" width="120" height="24.0" rx="6.0" fill="#9f1239" fill-opacity="0.90" stroke="none"/>
+  <text x="362.0" y="122.2" text-anchor="middle" class="h1" fill="#f8fafc">2. 可见登录</text>
+  <rect x="286" y="138" width="152" height="72" rx="7" fill="#f43f5e" fill-opacity="0.12" stroke="#f43f5e" stroke-opacity="0.65" stroke-width="1.4"/>
+  <line x1="286" y1="151" x2="438" y2="151" stroke="#f43f5e" stroke-opacity="0.45" stroke-width="1"/>
+  <circle cx="294" cy="144.5" r="2" fill="#f43f5e" fill-opacity="0.65"/>
+  <circle cx="301" cy="144.5" r="2" fill="#f43f5e" fill-opacity="0.65"/>
+  <circle cx="308" cy="144.5" r="2" fill="#f43f5e" fill-opacity="0.65"/>
+  <path d="M 317 180 Q 332 170 347 180 Q 332 190 317 180 Z" fill="#f43f5e" fill-opacity="0.16" stroke="#f43f5e" stroke-opacity="0.85" stroke-width="1.5"/>
+  <circle cx="332" cy="180" r="4.2" fill="#f43f5e" fill-opacity="0.80"/>
+  <circle cx="396" cy="169" r="8" fill="#f43f5e" fill-opacity="0.25" stroke="#f43f5e" stroke-width="1.4"/>
+  <path d="M 382 192 A 14 10 0 0 1 410 192" fill="#f43f5e" fill-opacity="0.22" stroke="#f43f5e" stroke-width="1.4"/>
+  <rect data-capsule="1" x="298.0" y="226.0" width="128" height="24.0" rx="12.0" fill="#9f1239" fill-opacity="0.90" stroke="none"/>
+  <text x="362.0" y="242.2" text-anchor="middle" class="pill" fill="#f8fafc">无 CDP 调试</text>
+  <path d="M 468 181 L 492 181" fill="none" stroke="#f59e0b" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-amber)"/>
+  <circle data-anchor="1" cx="468" cy="181" r="2.6" fill="#f59e0b" fill-opacity="0.88"/>
+  <rect x="496" y="96" width="204" height="174" rx="10" fill="#f59e0b" fill-opacity="0.1" stroke="#f59e0b" stroke-opacity="0.48" stroke-width="1.5"/>
+  <rect data-capsule="1" x="538.0" y="106.0" width="120" height="24.0" rx="6.0" fill="#9a3412" fill-opacity="0.90" stroke="none"/>
+  <text x="598.0" y="122.2" text-anchor="middle" class="h1" fill="#f8fafc">3. 刷盘交接</text>
+  <circle cx="549" cy="150" r="5.5" fill="#f59e0b" fill-opacity="0.18" stroke="#f59e0b" stroke-opacity="0.85" stroke-width="1.5"/>
+  <path d="M 554.5 150 L 570 150 M 565 150 L 565 155 M 569 150 L 569 154" fill="none" stroke="#f59e0b" stroke-opacity="0.88" stroke-width="1.6"/>
+  <path d="M 580 150 L 622 150" fill="none" stroke="#f59e0b" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-amber)"/>
+  <circle data-anchor="1" cx="580" cy="150" r="2.6" fill="#f59e0b" fill-opacity="0.88"/>
+  <path d="M 542 176 L 542 208 L 602 208 L 602 179 L 569.6 179 L 563.6 172 L 546 172 Q 542 172 542 176 Z" fill="#8b5cf6" fill-opacity="0.18" stroke="#8b5cf6" stroke-opacity="0.82" stroke-width="1.4"/>
+  <path d="M 628.5 188 L 628.5 183 A 5.5 5.5 0 0 1 639.5 183 L 639.5 188" fill="none" stroke="#8b5cf6" stroke-opacity="0.85" stroke-width="1.6"/>
+  <rect x="626" y="188" width="16" height="12" rx="3" fill="#8b5cf6" fill-opacity="0.22" stroke="#8b5cf6" stroke-opacity="0.85" stroke-width="1.4"/>
+  <circle cx="634" cy="194" r="1.8" fill="#8b5cf6" fill-opacity="0.92"/>
+  <rect data-capsule="1" x="534.0" y="226.0" width="128" height="24.0" rx="12.0" fill="#5b21b6" fill-opacity="0.90" stroke="none"/>
+  <text x="598.0" y="242.2" text-anchor="middle" class="pill mono" fill="#f8fafc">DBSC 0700</text>
+  <path d="M 704 181 L 728 181" fill="none" stroke="#10b981" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-teal)"/>
+  <circle data-anchor="1" cx="704" cy="181" r="2.6" fill="#10b981" fill-opacity="0.88"/>
+  <rect x="732" y="96" width="204" height="174" rx="10" fill="#10b981" fill-opacity="0.1" stroke="#10b981" stroke-opacity="0.48" stroke-width="1.5"/>
+  <rect data-capsule="1" x="774.0" y="106.0" width="120" height="24.0" rx="6.0" fill="#065f46" fill-opacity="0.90" stroke="none"/>
+  <text x="834.0" y="122.2" text-anchor="middle" class="h1" fill="#f8fafc">4. 无头运行</text>
+  <rect x="756" y="138" width="156" height="72" rx="7" fill="#10b981" fill-opacity="0.12" stroke="#10b981" stroke-opacity="0.65" stroke-width="1.4" stroke-dasharray="4 3"/>
+  <line x1="756" y1="151" x2="912" y2="151" stroke="#10b981" stroke-opacity="0.45" stroke-width="1"/>
+  <circle cx="764" cy="144.5" r="2" fill="#10b981" fill-opacity="0.65"/>
+  <circle cx="771" cy="144.5" r="2" fill="#10b981" fill-opacity="0.65"/>
+  <circle cx="778" cy="144.5" r="2" fill="#10b981" fill-opacity="0.65"/>
+  <path d="M 779 180 Q 794 170 809 180 Q 794 190 779 180 Z" fill="#10b981" fill-opacity="0.16" stroke="#10b981" stroke-opacity="0.85" stroke-width="1.5"/>
+  <circle cx="794" cy="180" r="4.2" fill="#10b981" fill-opacity="0.80"/>
+  <line x1="782" y1="189" x2="806" y2="171" stroke="#10b981" stroke-opacity="0.92" stroke-width="2"/>
+  <circle cx="846" cy="180" r="11" fill="#8b5cf6" fill-opacity="0.20" stroke="#8b5cf6" stroke-opacity="0.84" stroke-width="1.5"/>
+  <circle cx="842.0" cy="177.2" r="1.7" fill="#8b5cf6" fill-opacity="0.88"/>
+  <circle cx="849.1" cy="176.2" r="1.5" fill="#8b5cf6" fill-opacity="0.88"/>
+  <circle cx="847.6" cy="183.3" r="1.9" fill="#8b5cf6" fill-opacity="0.88"/>
+  <circle cx="842.9" cy="183.5" r="1.5" fill="#8b5cf6" fill-opacity="0.88"/>
+  <path d="M 880.5 178 L 880.5 173 A 5.5 5.5 0 0 1 891.5 173 L 891.5 178" fill="none" stroke="#8b5cf6" stroke-opacity="0.85" stroke-width="1.6"/>
+  <rect x="878" y="178" width="16" height="12" rx="3" fill="#8b5cf6" fill-opacity="0.22" stroke="#8b5cf6" stroke-opacity="0.85" stroke-width="1.4"/>
+  <circle cx="886" cy="184" r="1.8" fill="#8b5cf6" fill-opacity="0.92"/>
+  <rect data-capsule="1" x="770.0" y="226.0" width="128" height="24.0" rx="12.0" fill="#065f46" fill-opacity="0.90" stroke="none"/>
+  <text x="834.0" y="242.2" text-anchor="middle" class="pill mono" fill="#f8fafc">CDP + 0600</text>
+</svg>

@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 286" width="100%" role="img" aria-labelledby="svg-title svg-desc">
+  <title id="svg-title">端到端创作工作流</title>
+  <desc id="svg-desc">端到端创作工作流</desc>
+  <style>
+    path, line, polyline, polygon { stroke-linecap: round; stroke-linejoin: round; }
+    text { font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans', 'Noto Sans CJK SC', 'Noto Sans JP', sans-serif; }
+    .mono { font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; }
+    .h1 { font-size: 13px; font-weight: 700; fill: #f8fafc; }
+    .lbl { font-size: 11.5px; font-weight: 600; fill: #f8fafc; }
+    .badge { font-size: 11.5px; font-weight: 600; fill: #f8fafc; }
+    .pill { font-size: 11px; font-weight: 700; fill: #f8fafc; }
+  </style>
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#3b82f6" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#10b981" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#f59e0b" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#8b5cf6" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-rose" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#f43f5e" fill-opacity="0.88"/>
+    </marker>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 1 1.5 L 8.5 5 L 1 8.5 z" fill="#64748b" fill-opacity="0.88"/>
+    </marker>
+  </defs>
+  <rect x="8" y="8" width="944" height="270" rx="12" fill="#64748b" fill-opacity="0.06" stroke="#64748b" stroke-opacity="0.22" stroke-width="1.25"/>
+  <rect x="27" y="20" width="162" height="246" rx="14" fill="#3b82f6" fill-opacity="0.1" stroke="#3b82f6" stroke-opacity="0.48" stroke-width="1.5"/>
+  <path d="M 57 54 L 57 90 L 111 90 L 111 57 L 81.8 57 L 76.4 50 L 61 50 Q 57 50 57 54 Z" fill="#3b82f6" fill-opacity="0.18" stroke="#3b82f6" stroke-opacity="0.82" stroke-width="1.4"/>
+  <circle cx="134" cy="72" r="5.5" fill="#3b82f6" fill-opacity="0.18" stroke="#3b82f6" stroke-opacity="0.85" stroke-width="1.5"/>
+  <path d="M 139.5 72 L 155 72 M 150 72 L 150 77 M 154 72 L 154 76" fill="none" stroke="#3b82f6" stroke-opacity="0.88" stroke-width="1.6"/>
+  <rect data-capsule="1" x="50.0" y="114.0" width="116" height="24.0" rx="6.0" fill="#1e40af" fill-opacity="0.90" stroke="none"/>
+  <text x="108.0" y="130.2" text-anchor="middle" class="h1" fill="#f8fafc">1. 会话项目</text>
+  <rect data-capsule="1" x="39.0" y="148.0" width="138" height="24.0" rx="12.0" fill="#1e40af" fill-opacity="0.90" stroke="none"/>
+  <text x="108.0" y="164.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_status</text>
+  <rect data-capsule="1" x="39.0" y="184.0" width="138" height="24.0" rx="12.0" fill="#1e40af" fill-opacity="0.90" stroke="none"/>
+  <text x="108.0" y="200.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_login</text>
+  <rect data-capsule="1" x="39.0" y="220.0" width="138" height="24.0" rx="12.0" fill="#1e40af" fill-opacity="0.90" stroke="none"/>
+  <text x="108.0" y="236.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_projects</text>
+  <path d="M 193 142 L 212 142" fill="none" stroke="#3b82f6" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-blue)"/>
+  <circle data-anchor="1" cx="193" cy="142" r="2.6" fill="#3b82f6" fill-opacity="0.88"/>
+  <rect x="213" y="20" width="162" height="246" rx="14" fill="#8b5cf6" fill-opacity="0.1" stroke="#8b5cf6" stroke-opacity="0.48" stroke-width="1.5"/>
+  <circle cx="265" cy="56" r="12" fill="#8b5cf6" fill-opacity="0.22" stroke="#8b5cf6" stroke-width="1.5"/>
+  <path d="M 247 88 A 18 14 0 0 1 283 88" fill="#8b5cf6" fill-opacity="0.18" stroke="#8b5cf6" stroke-width="1.5"/>
+  <rect x="301" y="64.0" width="4.5" height="12" rx="2" fill="#8b5cf6" fill-opacity="0.72"/>
+  <rect x="309" y="57.0" width="4.5" height="26" rx="2" fill="#8b5cf6" fill-opacity="0.72"/>
+  <rect x="317" y="52.0" width="4.5" height="36" rx="2" fill="#8b5cf6" fill-opacity="0.72"/>
+  <rect x="325" y="60.0" width="4.5" height="20" rx="2" fill="#8b5cf6" fill-opacity="0.72"/>
+  <rect x="333" y="63.0" width="4.5" height="14" rx="2" fill="#8b5cf6" fill-opacity="0.72"/>
+  <rect data-capsule="1" x="236.0" y="114.0" width="116" height="24.0" rx="6.0" fill="#5b21b6" fill-opacity="0.90" stroke="none"/>
+  <text x="294.0" y="130.2" text-anchor="middle" class="h1" fill="#f8fafc">2. 角色音色</text>
+  <rect data-capsule="1" x="225.0" y="148.0" width="138" height="24.0" rx="12.0" fill="#5b21b6" fill-opacity="0.90" stroke="none"/>
+  <text x="294.0" y="164.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_voices</text>
+  <rect data-capsule="1" x="225.0" y="184.0" width="138" height="24.0" rx="12.0" fill="#5b21b6" fill-opacity="0.90" stroke="none"/>
+  <text x="294.0" y="200.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_character</text>
+  <rect data-capsule="1" x="225.0" y="220.0" width="138" height="24.0" rx="12.0" fill="#5b21b6" fill-opacity="0.90" stroke="none"/>
+  <text x="294.0" y="236.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_characters</text>
+  <path d="M 379 142 L 398 142" fill="none" stroke="#8b5cf6" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-purple)"/>
+  <circle data-anchor="1" cx="379" cy="142" r="2.6" fill="#8b5cf6" fill-opacity="0.88"/>
+  <rect x="399" y="20" width="162" height="246" rx="14" fill="#10b981" fill-opacity="0.1" stroke="#10b981" stroke-opacity="0.48" stroke-width="1.5"/>
+  <path d="M 480 34 L 483 41 L 490 44 L 483 47 L 480 54 L 477 47 L 470 44 L 477 41 Z" fill="#10b981" fill-opacity="0.85"/>
+  <rect x="432" y="72" width="30" height="22" rx="4" fill="#10b981" fill-opacity="0.16" stroke="#10b981" stroke-opacity="0.82" stroke-width="1.4"/>
+  <line x1="432" y1="79" x2="462" y2="79" stroke="#10b981" stroke-opacity="0.68" stroke-width="1.2"/>
+  <line x1="439" y1="72" x2="444" y2="79" stroke="#10b981" stroke-opacity="0.72" stroke-width="1.4"/>
+  <line x1="449" y1="72" x2="454" y2="79" stroke="#10b981" stroke-opacity="0.72" stroke-width="1.4"/>
+  <polygon points="443,83 453,87.5 443,92" fill="#10b981" fill-opacity="0.85"/>
+  <rect x="499" y="71" width="28" height="22" rx="4" fill="#f59e0b" fill-opacity="0.16" stroke="#f59e0b" stroke-opacity="0.82" stroke-width="1.4"/>
+  <circle cx="519" cy="78" r="2.6" fill="#f59e0b" fill-opacity="0.84"/>
+  <polygon points="502,90 510,81 516,87 520,84 524,90" fill="#f59e0b" fill-opacity="0.58"/>
+  <rect data-capsule="1" x="422.0" y="114.0" width="116" height="24.0" rx="6.0" fill="#065f46" fill-opacity="0.90" stroke="none"/>
+  <text x="480.0" y="130.2" text-anchor="middle" class="h1" fill="#f8fafc">3. 生成创作</text>
+  <rect data-capsule="1" x="411.0" y="148.0" width="138" height="24.0" rx="12.0" fill="#065f46" fill-opacity="0.90" stroke="none"/>
+  <text x="480.0" y="164.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_generate</text>
+  <rect data-capsule="1" x="411.0" y="184.0" width="138" height="24.0" rx="12.0" fill="#065f46" fill-opacity="0.90" stroke="none"/>
+  <text x="480.0" y="200.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_agent_images</text>
+  <rect data-capsule="1" x="411.0" y="220.0" width="138" height="24.0" rx="12.0" fill="#065f46" fill-opacity="0.90" stroke="none"/>
+  <text x="480.0" y="236.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_edit</text>
+  <path d="M 565 142 L 584 142" fill="none" stroke="#10b981" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-teal)"/>
+  <circle data-anchor="1" cx="565" cy="142" r="2.6" fill="#10b981" fill-opacity="0.88"/>
+  <rect x="585" y="20" width="162" height="246" rx="14" fill="#f59e0b" fill-opacity="0.1" stroke="#f59e0b" stroke-opacity="0.48" stroke-width="1.5"/>
+  <line x1="605" y1="72" x2="727" y2="72" stroke="#f59e0b" stroke-opacity="0.48" stroke-width="2"/>
+  <rect x="611" y="58" width="44" height="28" rx="5" fill="#f59e0b" fill-opacity="0.30" stroke="#f59e0b" stroke-width="1.5"/>
+  <rect x="661" y="58" width="34" height="28" rx="5" fill="#f59e0b" fill-opacity="0.20" stroke="#f59e0b" stroke-width="1.5"/>
+  <rect x="701" y="58" width="22" height="28" rx="5" fill="#f59e0b" fill-opacity="0.10" stroke="#f59e0b" stroke-dasharray="3 2" stroke-width="1.3"/>
+  <path d="M 619 48 L 619 96 M 647 48 L 647 96" stroke="#f43f5e" stroke-width="2"/>
+  <rect data-capsule="1" x="608.0" y="114.0" width="116" height="24.0" rx="6.0" fill="#9a3412" fill-opacity="0.90" stroke="none"/>
+  <text x="666.0" y="130.2" text-anchor="middle" class="h1" fill="#f8fafc">4. 剪辑场景</text>
+  <rect data-capsule="1" x="597.0" y="148.0" width="138" height="24.0" rx="12.0" fill="#9a3412" fill-opacity="0.90" stroke="none"/>
+  <text x="666.0" y="164.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_video</text>
+  <rect data-capsule="1" x="597.0" y="184.0" width="138" height="24.0" rx="12.0" fill="#9a3412" fill-opacity="0.90" stroke="none"/>
+  <text x="666.0" y="200.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_scenes</text>
+  <rect data-capsule="1" x="597.0" y="220.0" width="138" height="24.0" rx="12.0" fill="#9a3412" fill-opacity="0.90" stroke="none"/>
+  <text x="666.0" y="236.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_rename</text>
+  <path d="M 751 142 L 770 142" fill="none" stroke="#f59e0b" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-amber)"/>
+  <circle data-anchor="1" cx="751" cy="142" r="2.6" fill="#f59e0b" fill-opacity="0.88"/>
+  <rect x="771" y="20" width="162" height="246" rx="14" fill="#f43f5e" fill-opacity="0.1" stroke="#f43f5e" stroke-opacity="0.48" stroke-width="1.5"/>
+  <rect x="807" y="52" width="18" height="15" rx="4" fill="#f43f5e" fill-opacity="0.28" stroke="#f43f5e" stroke-width="1.3"/>
+  <rect x="831" y="52" width="18" height="15" rx="4" fill="#f43f5e" fill-opacity="0.28" stroke="#f43f5e" stroke-width="1.3"/>
+  <rect x="807" y="72" width="18" height="15" rx="4" fill="#f43f5e" fill-opacity="0.28" stroke="#f43f5e" stroke-width="1.3"/>
+  <rect x="831" y="72" width="18" height="15" rx="4" fill="#f43f5e" fill-opacity="0.28" stroke="#f43f5e" stroke-width="1.3"/>
+  <path d="M 885 54 L 885 86" fill="none" stroke="#f43f5e" stroke-opacity="0.78" stroke-width="1.75" marker-end="url(#arrow-rose)"/>
+  <circle data-anchor="1" cx="885" cy="54" r="2.6" fill="#f43f5e" fill-opacity="0.88"/>
+  <rect data-capsule="1" x="794.0" y="114.0" width="116" height="24.0" rx="6.0" fill="#9f1239" fill-opacity="0.90" stroke="none"/>
+  <text x="852.0" y="130.2" text-anchor="middle" class="h1" fill="#f8fafc">5. 队列媒体库</text>
+  <rect data-capsule="1" x="783.0" y="148.0" width="138" height="24.0" rx="12.0" fill="#9f1239" fill-opacity="0.90" stroke="none"/>
+  <text x="852.0" y="164.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_wait</text>
+  <rect data-capsule="1" x="783.0" y="184.0" width="138" height="24.0" rx="12.0" fill="#9f1239" fill-opacity="0.90" stroke="none"/>
+  <text x="852.0" y="200.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_download</text>
+  <rect data-capsule="1" x="783.0" y="220.0" width="138" height="24.0" rx="12.0" fill="#9f1239" fill-opacity="0.90" stroke="none"/>
+  <text x="852.0" y="236.2" text-anchor="middle" class="pill mono" fill="#f8fafc">flow_downloads</text>
+</svg>

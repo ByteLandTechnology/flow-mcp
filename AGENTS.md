@@ -6,9 +6,9 @@ The command `cargo xtask ci` checks most of these rules.
 ## Writing
 
 - Use ASD-STE100 Simplified Technical English for all English text.
-- This rule applies to this file, `README.md`, code comments, documentation comments, and commit messages.
+- This rule applies to this file, `README.md`, `docs/en/`, code comments, documentation comments, and commit messages.
 - Use active voice, present tense, and precise terms.
-- Keep each user-facing instruction in `README.md` only.
+- Keep user documentation in `README.md`, `docs/en/`, `docs/zh-CN/`, `docs/ja/`, and `docs/assets/`.
 - Use the user's language for direct communication with the user.
 
 ## Independence and protocol boundaries
@@ -32,6 +32,7 @@ The command `cargo xtask ci` checks most of these rules.
 - Keep the `@flow-mcp/cli` launcher package in `npm/cli/` (`package.json`, `.npmrc`, and `bin/flow-mcp.js`).
 - Bundle `ts/index.ts` with `esbuild` in `build.rs` to `$OUT_DIR/flow_runtime.js`, and embed that bundle once in `src/engine.rs` with `include_str!`.
 - Use `src/main.rs` as the single binary entry point. Do not add `src/lib.rs`.
+- Keep multilingual user guides in `docs/en/`, `docs/zh-CN/`, and `docs/ja/`, and keep localized SVG diagrams in `docs/assets/`.
 
 ## Disk use and cleanup
 
@@ -45,7 +46,7 @@ The command `cargo xtask ci` checks most of these rules.
 - Use private or `pub(crate)` visibility by default. The `unreachable_pub` lint is on.
 - Before you write a helper, look in existing modules. Do not copy a helper into a second module.
 - Each `.rs` and `.ts` source file must have no more than 800 lines of code. Comments and blank lines are not counted. There are no exceptions.
-- Use LF line endings in all `.rs`, `.ts`, `.js`, `.json`, `.toml`, and `.md` files.
+- Use LF line endings in all `.rs`, `.ts`, `.js`, `.json`, `.toml`, `.svg`, and `.md` files.
 
 ## Code rules
 
