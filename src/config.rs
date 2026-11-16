@@ -52,6 +52,16 @@ pub(crate) fn home_dir() -> PathBuf {
         .join(".flow-mcp")
 }
 
+/// Returns `<home_dir>/downloads` for all downloaded media files.
+pub(crate) fn downloads_dir() -> PathBuf {
+    home_dir().join("downloads")
+}
+
+/// Returns `<home_dir>/flow-mcp.db` for the local SQLite database.
+pub(crate) fn db_path() -> PathBuf {
+    home_dir().join("flow-mcp.db")
+}
+
 /// Returns `<home_dir>/cookies.json` for saved Google Flow session cookies.
 pub(crate) fn cookies_path() -> PathBuf {
     home_dir().join("cookies.json")
@@ -73,4 +83,22 @@ pub(crate) fn configured_cdp_port() -> Option<u16> {
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
         .filter(|&p| p > 0)
+}
+
+/// Reads inter-job pause bounds in milliseconds from `FLOW_MCP_PAUSE_MIN_S`
+/// and `FLOW_MCP_PAUSE_MAX_S`, defaulting to `25_000..=70_000`.
+pub(crate) fn pause_bounds_ms() -> (u64, u64) {
+    let min_ms = std::env::var("FLOW_MCP_PAUSE_MIN_S")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|s| s.is_finite())
+        .map(|s| (s.clamp(0.0, 86_400.0) * 1000.0) as u64)
+        .unwrap_or(25_000);
+    let max_ms = std::env::var("FLOW_MCP_PAUSE_MAX_S")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|s| s.is_finite())
+        .map(|s| ((s.clamp(0.0, 86_400.0) * 1000.0) as u64).max(min_ms))
+        .unwrap_or(70_000.max(min_ms));
+    (min_ms, max_ms)
 }

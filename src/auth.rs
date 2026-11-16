@@ -140,6 +140,16 @@ pub(crate) async fn wait_for_sso_redirect(engine: &ChromeEngine) {
     }
 }
 
+/// Follows the Google SSO entry URL and refreshes `url` when Chrome lands on an `/about` page.
+pub(crate) async fn redirect_sso_if_about(engine: &ChromeEngine, url: &mut String) -> Result<()> {
+    if is_about_landing_url(url) {
+        engine.navigate(FLOW_SSO_URL).await?;
+        wait_for_sso_redirect(engine).await;
+        *url = engine.current_url().await.unwrap_or_default();
+    }
+    Ok(())
+}
+
 /// Ensures Chrome is on a signed-in Flow workspace URL or follows the passive SSO redirect.
 async fn ensure_flow_session_url(engine: &ChromeEngine) {
     let mut cur = engine.current_url().await.unwrap_or_default();

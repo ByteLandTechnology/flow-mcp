@@ -105,6 +105,17 @@ pub(crate) fn create_private_dir_all(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Sets owner read/write permissions (`0o600`) on `path` on Unix systems.
+pub(crate) fn set_private_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Writes `bytes` to `path` atomically with `0o600` permissions on Unix before data hits disk.
 pub(crate) fn write_private_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path

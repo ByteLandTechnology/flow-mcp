@@ -11,8 +11,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::engine::NetworkResponseEvent;
 
 /// Error object returned inside a CDP JSON-RPC response frame.
 #[derive(Debug, Deserialize)]
@@ -32,6 +34,8 @@ struct CdpInbound {
     error: Option<CdpError>,
     /// Event method name when the frame is an asynchronous CDP event.
     method: Option<String>,
+    /// Event parameter payload for asynchronous CDP events.
+    params: Option<Value>,
 }
 
 /// Map of in-flight CDP command waiters and closed state.
@@ -152,8 +156,11 @@ impl Drop for CdpConnection {
 
 impl CdpConnection {
     /// Connects to `ws_url` and enables `Page`, `Runtime`, `DOM`, and `Network` domains.
-    pub(crate) async fn connect_page(ws_url: &str) -> Result<Self> {
-        let conn = Self::connect_raw(ws_url).await?;
+    pub(crate) async fn connect_page(
+        ws_url: &str,
+        network_tx: broadcast::Sender<NetworkResponseEvent>,
+    ) -> Result<Self> {
+        let conn = Self::connect_raw(ws_url, Some(network_tx)).await?;
         conn.call("Page.enable", json!({})).await?;
         conn.call("Runtime.enable", json!({})).await?;
         conn.call("DOM.enable", json!({})).await?;
@@ -163,11 +170,14 @@ impl CdpConnection {
 
     /// Connects to `ws_url` without enabling page domains.
     pub(crate) async fn connect_basic(ws_url: &str) -> Result<Self> {
-        Self::connect_raw(ws_url).await
+        Self::connect_raw(ws_url, None).await
     }
 
     /// Opens the WebSocket connection and spawns the inbound frame dispatcher task.
-    async fn connect_raw(ws_url: &str) -> Result<Self> {
+    async fn connect_raw(
+        ws_url: &str,
+        network_tx: Option<broadcast::Sender<NetworkResponseEvent>>,
+    ) -> Result<Self> {
         let (ws_stream, _) = tokio::time::timeout(
             Duration::from_secs(10),
             tokio_tungstenite::connect_async(ws_url),
@@ -225,17 +235,37 @@ impl CdpConnection {
                     continue;
                 }
 
-                if frame.method.as_deref() == Some("Page.javascriptDialogOpening")
-                    && let Some(t) = weak_transport.upgrade()
+                let Some(method) = frame.method.as_deref() else {
+                    continue;
+                };
+                if method == "Page.javascriptDialogOpening" {
+                    if let Some(t) = weak_transport.upgrade() {
+                        tokio::spawn(async move {
+                            let _ = t
+                                .call(
+                                    "Page.handleJavaScriptDialog",
+                                    json!({ "accept": true }),
+                                    Duration::from_secs(5),
+                                )
+                                .await;
+                        });
+                    }
+                    continue;
+                }
+
+                if method == "Network.responseReceived"
+                    && let Some(tx) = network_tx.as_ref()
+                    && let Some(p) = frame.params.as_ref()
+                    && let Some(url) = p.pointer("/response/url").and_then(|v| v.as_str())
                 {
-                    tokio::spawn(async move {
-                        let _ = t
-                            .call(
-                                "Page.handleJavaScriptDialog",
-                                json!({ "accept": true }),
-                                Duration::from_secs(5),
-                            )
-                            .await;
+                    let status = p
+                        .pointer("/response/status")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        .min(u16::MAX as u64) as u16;
+                    let _ = tx.send(NetworkResponseEvent {
+                        url: url.to_string(),
+                        status,
                     });
                 }
             }

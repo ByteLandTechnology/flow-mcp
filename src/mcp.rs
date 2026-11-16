@@ -11,10 +11,17 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use serde::Serialize;
+use serde_json::json;
 use std::sync::Arc;
+use tokio::time::Duration;
 
 use crate::auth::LoginParams;
+use crate::project::{NewProjectParams, ProjectsParams, StatusParams};
+use crate::queue::{JobIdParams, WaitParams};
 use crate::service::FlowService;
+
+/// Inline wait limit (`45_000` ms) before slow tools return a pending task handle.
+const PATIENCE_MS: u64 = 45_000;
 
 /// MCP stdio server that routes tool calls to [`FlowService`].
 #[derive(Clone)]
@@ -65,6 +72,59 @@ impl FlowMcpServer {
 
 #[tool_router]
 impl FlowMcpServer {
+    /// Checks Google Flow session state, active project, queue, SQLite index count, and browser readiness.
+    #[tool(
+        description = "Check Google Flow session state, active project, job queue, SQLite index count, and browser readiness."
+    )]
+    async fn flow_status(&self, Parameters(req): Parameters<StatusParams>) -> CallToolResult {
+        Self::format_result(self.service.status(req.probe.unwrap_or(false)).await)
+    }
+
+    /// Waits for queued or running Google Flow jobs to finish, returning early after 45 seconds if still pending.
+    #[tool(description = "Wait for queued or running Google Flow jobs to finish.")]
+    async fn flow_wait(&self, Parameters(req): Parameters<WaitParams>) -> CallToolResult {
+        match tokio::time::timeout(Duration::from_millis(PATIENCE_MS), self.service.wait(req)).await
+        {
+            Ok(res) => Self::format_result(res),
+            Err(_) => {
+                let jobs = self.service.list_jobs().await;
+                let pending = json!({
+                    "pending": true,
+                    "jobs": jobs,
+                    "message": "Jobs are still running in the background. Check flow_status or call flow_wait again later."
+                });
+                Self::ok_json(&pending)
+            }
+        }
+    }
+
+    /// Cancels a queued or running Google Flow job.
+    #[tool(description = "Cancel a queued or running Google Flow job.")]
+    async fn flow_cancel(&self, Parameters(req): Parameters<JobIdParams>) -> CallToolResult {
+        Self::format_result(self.service.cancel(&req.id).await)
+    }
+
+    /// Retries a failed or cancelled Google Flow job.
+    #[tool(description = "Retry a failed or cancelled Google Flow job.")]
+    async fn flow_retry(&self, Parameters(req): Parameters<JobIdParams>) -> CallToolResult {
+        Self::format_result(self.service.retry(&req.id).await)
+    }
+
+    /// Creates a new Google Flow project.
+    #[tool(description = "Create a new Google Flow project.")]
+    async fn flow_new_project(
+        &self,
+        Parameters(req): Parameters<NewProjectParams>,
+    ) -> CallToolResult {
+        Self::format_result(self.service.new_project(req.title.as_deref()).await)
+    }
+
+    /// Lists, creates, opens, renames, or deletes Google Flow projects.
+    #[tool(description = "List, create, open, rename, or delete Google Flow projects.")]
+    async fn flow_projects(&self, Parameters(req): Parameters<ProjectsParams>) -> CallToolResult {
+        Self::format_result(self.service.projects(req).await)
+    }
+
     /// Signs in to Google Flow through Chrome and manages session cookies.
     #[tool(description = "Sign in to Google Flow through Google Chrome and save session cookies.")]
     async fn flow_login(&self, Parameters(req): Parameters<LoginParams>) -> CallToolResult {

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 
 use crate::auth::is_signed_in_flow_url;
 use crate::cdp::{CdpConnection, find_or_create_page_target};
@@ -23,6 +23,15 @@ pub(crate) const ENGINE_NAME: &str = "chrome-cdp";
 
 /// Compiled browser TypeScript runtime bundle exposing `window.__flowMcp`.
 const FLOW_RUNTIME_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/flow_runtime.js"));
+
+/// HTTP network response captured from the active page via CDP `Network` events.
+#[derive(Debug, Clone)]
+pub(crate) struct NetworkResponseEvent {
+    /// Request URL reported by Chrome.
+    pub(crate) url: String,
+    /// HTTP response status code.
+    pub(crate) status: u16,
+}
 
 /// Active headless Chrome process paired with its CDP connection.
 struct ActiveChrome {
@@ -54,16 +63,20 @@ pub(crate) struct ChromeEngine {
     ensure_lock: Mutex<()>,
     /// True while a visible interactive sign-in window is open.
     visible: AtomicBool,
+    /// Broadcast channel for captured CDP `Network` responses.
+    network_tx: broadcast::Sender<NetworkResponseEvent>,
 }
 
 impl ChromeEngine {
     /// Creates a new [`ChromeEngine`] controller with no active browser process.
     pub(crate) fn new() -> Arc<Self> {
+        let (network_tx, _) = broadcast::channel(512);
         Arc::new(Self {
             inner: Mutex::new(None),
             login_chrome: Mutex::new(None),
             ensure_lock: Mutex::new(()),
             visible: AtomicBool::new(false),
+            network_tx,
         })
     }
 
@@ -173,7 +186,7 @@ impl ChromeEngine {
                 return Err(err);
             }
         };
-        let cdp = match CdpConnection::connect_page(&ws_url).await {
+        let cdp = match CdpConnection::connect_page(&ws_url, self.network_tx.clone()).await {
             Ok(conn) => Arc::new(conn),
             Err(err) => {
                 managed.shutdown().await;
@@ -290,6 +303,24 @@ impl ChromeEngine {
 
     /// Calls a synchronous method on `window.__flowMcp`, installing the runtime bundle on demand.
     pub(crate) async fn call_flow_js(&self, method: &str, args: Value) -> Result<Value> {
+        self.eval_flow_method(method, args, false, Duration::from_secs(30))
+            .await
+    }
+
+    /// Calls an asynchronous method on `window.__flowMcp`, installing the runtime bundle on demand.
+    pub(crate) async fn call_flow_async(&self, method: &str, args: Value) -> Result<Value> {
+        self.eval_flow_method(method, args, true, Duration::from_secs(120))
+            .await
+    }
+
+    /// Invokes `window.__flowMcp[method](...args)` in one round-trip when installed, or injects the bundle first.
+    async fn eval_flow_method(
+        &self,
+        method: &str,
+        args: Value,
+        await_promise: bool,
+        timeout: Duration,
+    ) -> Result<Value> {
         anyhow::ensure!(
             args.is_array(),
             "Flow runtime arguments for '{}' must be a JSON array",
@@ -297,19 +328,58 @@ impl ChromeEngine {
         );
         let method_json = serde_json::to_string(method)?;
         let args_json = serde_json::to_string(&args)?;
-        let probe_expr = format!(
-            "(() => {{ const rt = window.__flowMcp; if (!rt || typeof rt[{method_json}] !== \"function\") return {{ __flowMcpHit: false }}; return {{ __flowMcpHit: true, value: rt[{method_json}](...{args_json}) }}; }})()"
-        );
+        let call_expr = if await_promise {
+            format!("await rt[{method_json}](...{args_json})")
+        } else {
+            format!("rt[{method_json}](...{args_json})")
+        };
+        let probe_expr = if await_promise {
+            format!(
+                "(async () => {{ const rt = window.__flowMcp; if (!rt || typeof rt[{method_json}] !== \"function\") return {{ __flowMcpHit: false }}; return {{ __flowMcpHit: true, value: {call_expr} }}; }})()"
+            )
+        } else {
+            format!(
+                "(() => {{ const rt = window.__flowMcp; if (!rt || typeof rt[{method_json}] !== \"function\") return {{ __flowMcpHit: false }}; return {{ __flowMcpHit: true, value: {call_expr} }}; }})()"
+            )
+        };
 
         let cdp = self.active_cdp().await?;
-        let probe = eval_runtime(&cdp, &probe_expr, false, Duration::from_secs(30)).await?;
+        let probe = eval_runtime(&cdp, &probe_expr, await_promise, timeout).await?;
         if probe.get("__flowMcpHit").and_then(Value::as_bool) == Some(true) {
             return Ok(probe.get("value").cloned().unwrap_or(Value::Null));
         }
 
         eval_runtime(&cdp, FLOW_RUNTIME_JS, false, Duration::from_secs(30)).await?;
-        let direct_expr = format!("window.__flowMcp[{method_json}](...{args_json})");
-        eval_runtime(&cdp, &direct_expr, false, Duration::from_secs(30)).await
+        let direct_expr = if await_promise {
+            format!("(async () => await window.__flowMcp[{method_json}](...{args_json}))()")
+        } else {
+            format!("window.__flowMcp[{method_json}](...{args_json})")
+        };
+        eval_runtime(&cdp, &direct_expr, await_promise, timeout).await
+    }
+
+    /// Dispatches a trusted CDP mouse move event at viewport coordinates `(x, y)`.
+    pub(crate) async fn mouse_move(&self, x: f64, y: f64) -> Result<()> {
+        let cdp = self.active_cdp().await?;
+        cdp.call(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseMoved",
+                "x": x,
+                "y": y,
+                "pointerType": "mouse",
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Subscribes to CDP network response events captured from the active page.
+    pub(crate) async fn subscribe_network(
+        &self,
+    ) -> Result<broadcast::Receiver<NetworkResponseEvent>> {
+        self.ensure_page().await?;
+        Ok(self.network_tx.subscribe())
     }
 
     /// Imports raw CDP cookie JSON objects into Chrome and writes Google/Flow cookies to `cookies.json`.

@@ -8,8 +8,11 @@ mod cdp;
 mod chrome;
 mod config;
 mod cookies;
+mod db;
 mod engine;
 mod mcp;
+mod project;
+mod queue;
 mod service;
 
 use anyhow::Result;
