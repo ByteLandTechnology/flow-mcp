@@ -8,7 +8,7 @@
 
 | コンポーネント | モジュール | 役割 |
 | :--- | :--- | :--- |
-| MCP アダプター | `src/mcp.rs` | `rmcp` stdio を通じて 22 ツール（`tools/call`）および MCP リソース（`resources/list`、`resources/templates/list`、`resources/read`）を提供 |
+| MCP アダプター | `src/mcp.rs` | `rmcp` stdio を通じて MCP ツール（`tools/call`）および MCP リソース（`resources/list`、`resources/templates/list`、`resources/read`）を提供 |
 | サービス統括 | `src/service.rs` | SQLite、`JobQueue`、`ChromeEngine` 間でツールリクエストをルーティング |
 | 直列ワーカー | `src/queue.rs` | ランダム休止を挟みながら FIFO キュー上でブラウザ変更ジョブを 1 件ずつ実行 |
 | ブラウザエンジン | `src/engine.rs`、`src/chrome.rs`、`src/cdp.rs` | `ManagedChrome`（ヘッドレス CDP）、`LoginChrome`（可視・非 CDP）、WebSocket CDP RPC、および `Network` イベントを管理 |

@@ -1,8 +1,10 @@
-[English](../../README.md) | **简体中文** | [日本語](../ja/README.md)
-
 # flow-mcp
 
-`flow-mcp` 是一个面向 Google Flow（`Veo` 与 `Imagen`）的 Rust 单二进制 stdio 模型上下文协议（MCP）服务端。它通过 `rmcp` 在标准输入和输出上提供 22 个 MCP 工具与下载资源。
+[![English](https://img.shields.io/badge/English-64748b?style=flat-square&logoWidth=16&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAxOCI%2BPGNsaXBQYXRoIGlkPSJ1Ij48cmVjdCB3aWR0aD0iMjQiIGhlaWdodD0iMTgiIHJ4PSIyIi8%2BPC9jbGlwUGF0aD48ZyBjbGlwLXBhdGg9InVybCgjdSkiPjxyZWN0IHdpZHRoPSIyNCIgaGVpZ2h0PSIxOCIgZmlsbD0iI2ZmZiIvPjxwYXRoIHN0cm9rZT0iI2IyMjIzNCIgc3Ryb2tlLXdpZHRoPSIxLjQiIGQ9Ik0wIC43aDI0TTAgMy41aDI0TTAgNi4zaDI0TTAgOS4xaDI0TTAgMTEuOWgyNE0wIDE0LjdoMjRNMCAxNy4zaDI0Ii8%2BPHJlY3Qgd2lkdGg9IjEwLjQiIGhlaWdodD0iOS44IiBmaWxsPSIjM2MzYjZlIi8%2BPHBhdGggc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBkPSJNMi4xIDIuMWguMDFNNS4yIDIuMWguMDFNOC4zIDIuMWguMDFNMy42IDQuOWguMDFNNi44IDQuOWguMDFNMi4xIDcuN2guMDFNNS4yIDcuN2guMDFNOC4zIDcuN2guMDEiLz48L2c%2BPC9zdmc%2B)](../../README.md)
+![简体中文](https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-2563eb?style=flat-square&logoWidth=16&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAxOCI%2BPHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjE4IiByeD0iMiIgZmlsbD0iI2RlMjkxMCIvPjxwYXRoIGZpbGw9IiNmZmRlMDAiIGQ9Ik00LjggMi40IDYuMyA3LjEgMi4zIDQuMiA3LjMgNC4yIDMuMyA3LjF6TTguNCAyLjYgOS41IDEuMyA5LjQgMy4wIDguNSAxLjUgMTAuMSAyLjF6TTEwLjAgNC4wIDExLjUgMy4xIDEwLjggNC43IDEwLjUgMy4wIDExLjcgNC4yek0xMC4wIDYuMiAxMS43IDYuMCAxMC40IDcuMiAxMC44IDUuNSAxMS41IDcuMXpNOC41IDcuNiAxMC4xIDguMSA4LjUgOC42IDkuNSA3LjIgOS41IDkuMHoiLz48L3N2Zz4%3D)
+[![日本語](https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-64748b?style=flat-square&logoWidth=16&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAxOCI%2BPHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjE4IiByeD0iMiIgZmlsbD0iI2ZmZiIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iOSIgcj0iNSIgZmlsbD0iI2JjMDAyZCIvPjwvc3ZnPg%3D%3D)](../ja/README.md)
+
+`flow-mcp` 是一个面向 Google Flow（`Veo` 与 `Imagen`）的 Rust 单二进制 stdio 模型上下文协议（MCP）服务端。它通过 `rmcp` 在标准输入和输出上提供 MCP 工具与下载资源。
 
 `ChromeEngine` 管理位于 `<home>/chrome-profile`（Unix 权限 `0700`）的持久化 Chrome 或 Chromium 配置目录。后台执行时，它通过本地 Chrome DevTools Protocol（CDP）连接无头 Chrome（`--headless=new`）。在 `flow_login` 中进行 Google 登录时，它打开不带 CDP 标志的可见 Chrome 窗口。这让 Google 认证与设备绑定会话凭据（DBSC）正常完成。
 
@@ -73,7 +75,7 @@ cargo build --release
 | [快速开始](quickstart.md) | 教程 | 安装 `flow-mcp`、配置客户端、首次登录以及生成视频 |
 | [架构设计](architecture.md) | 原理解析 | 双模式 `ChromeEngine`、DBSC 交接、`JobQueue`、45 秒等待上限与 `<home>` 安全边界 |
 | [工作流指南](workflows.md) | 操作步骤 | 视频与图像任务、角色设置、编辑、场景、`read_chunk` 与 Cookie 同步 |
-| [工具参考](tools-reference.md) | 参考手册 | CLI 选项、环境变量、MCP 资源与全部 22 个工具 |
+| [工具参考](tools-reference.md) | 参考手册 | CLI 选项、环境变量、MCP 资源与全部 MCP 工具 |
 
 ## 工具概览与媒体工作流
 

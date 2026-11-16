@@ -1,8 +1,10 @@
-[English](../../README.md) | [简体中文](../zh-CN/README.md) | **日本語**
-
 # flow-mcp
 
-`flow-mcp` は、Google Flow（`Veo` および `Imagen`）向けの単一バイナリ Rust 製 stdio Model Context Protocol（MCP）サーバーです。`rmcp` を使用し、標準入出力を通じて 22 個の MCP ツールとダウンロードリソースを提供します。
+[![English](https://img.shields.io/badge/English-64748b?style=flat-square&logoWidth=16&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAxOCI%2BPGNsaXBQYXRoIGlkPSJ1Ij48cmVjdCB3aWR0aD0iMjQiIGhlaWdodD0iMTgiIHJ4PSIyIi8%2BPC9jbGlwUGF0aD48ZyBjbGlwLXBhdGg9InVybCgjdSkiPjxyZWN0IHdpZHRoPSIyNCIgaGVpZ2h0PSIxOCIgZmlsbD0iI2ZmZiIvPjxwYXRoIHN0cm9rZT0iI2IyMjIzNCIgc3Ryb2tlLXdpZHRoPSIxLjQiIGQ9Ik0wIC43aDI0TTAgMy41aDI0TTAgNi4zaDI0TTAgOS4xaDI0TTAgMTEuOWgyNE0wIDE0LjdoMjRNMCAxNy4zaDI0Ii8%2BPHJlY3Qgd2lkdGg9IjEwLjQiIGhlaWdodD0iOS44IiBmaWxsPSIjM2MzYjZlIi8%2BPHBhdGggc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBkPSJNMi4xIDIuMWguMDFNNS4yIDIuMWguMDFNOC4zIDIuMWguMDFNMy42IDQuOWguMDFNNi44IDQuOWguMDFNMi4xIDcuN2guMDFNNS4yIDcuN2guMDFNOC4zIDcuN2guMDEiLz48L2c%2BPC9zdmc%2B)](../../README.md)
+[![简体中文](https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-64748b?style=flat-square&logoWidth=16&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAxOCI%2BPHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjE4IiByeD0iMiIgZmlsbD0iI2RlMjkxMCIvPjxwYXRoIGZpbGw9IiNmZmRlMDAiIGQ9Ik00LjggMi40IDYuMyA3LjEgMi4zIDQuMiA3LjMgNC4yIDMuMyA3LjF6TTguNCAyLjYgOS41IDEuMyA5LjQgMy4wIDguNSAxLjUgMTAuMSAyLjF6TTEwLjAgNC4wIDExLjUgMy4xIDEwLjggNC43IDEwLjUgMy4wIDExLjcgNC4yek0xMC4wIDYuMiAxMS43IDYuMCAxMC40IDcuMiAxMC44IDUuNSAxMS41IDcuMXpNOC41IDcuNiAxMC4xIDguMSA4LjUgOC42IDkuNSA3LjIgOS41IDkuMHoiLz48L3N2Zz4%3D)](../zh-CN/README.md)
+![日本語](https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-2563eb?style=flat-square&logoWidth=16&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAxOCI%2BPHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjE4IiByeD0iMiIgZmlsbD0iI2ZmZiIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iOSIgcj0iNSIgZmlsbD0iI2JjMDAyZCIvPjwvc3ZnPg%3D%3D)
+
+`flow-mcp` は、Google Flow（`Veo` および `Imagen`）向けの単一バイナリ Rust 製 stdio Model Context Protocol（MCP）サーバーです。`rmcp` を使用し、標準入出力を通じて MCP ツールとダウンロードリソースを提供します。
 
 `ChromeEngine` は `<home>/chrome-profile`（Unix 権限 `0700`）で永続的な Chrome または Chromium プロファイルを管理します。バックグラウンド処理中はローカルの Chrome DevTools Protocol（CDP）でヘッドレス Chrome（`--headless=new`）に接続します。`flow_login` で Google ログインを行うときは、CDP フラグなしの標準的な可視 Chrome ウィンドウを開きます。これにより Google 認証と Device Bound Session Credentials（DBSC）が正常に完了します。
 
@@ -73,7 +75,7 @@ MCP stdio クライアント設定（`mcpServers`）へ `@flow-mcp/cli` を追�
 | [クイックスタート](quickstart.md) | チュートリアル | `flow-mcp` の導入、クライアント設定、サインイン、動画生成 |
 | [アーキテクチャ](architecture.md) | 解説 | デュアルモード `ChromeEngine`、DBSC 引き継ぎ、`JobQueue`、45 秒待機上限、`<home>` セキュリティ |
 | [ワークフロー](workflows.md) | 手順 | 動画・画像ジョブ、キャラクター、編集、シーン、`read_chunk`、Cookie 同期 |
-| [ツールリファレンス](tools-reference.md) | リファレンス | CLI オプション、環境変数、MCP リソース、全 22 ツール |
+| [ツールリファレンス](tools-reference.md) | リファレンス | CLI オプション、環境変数、MCP リソース、全 MCP ツール |
 
 ## ツール概要とメディアワークフロー
 

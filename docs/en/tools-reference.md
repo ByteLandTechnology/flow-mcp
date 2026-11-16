@@ -1,6 +1,6 @@
 # Tools Reference
 
-This page documents CLI flags, environment variables, MCP resources, response objects, and all 22 MCP tools in `flow-mcp` (`v0.2.0`).
+This page documents CLI flags, environment variables, MCP resources, response objects, and all MCP tools in `flow-mcp` (`v0.2.0`).
 
 ## CLI options
 

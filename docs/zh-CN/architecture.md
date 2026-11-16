@@ -8,7 +8,7 @@
 
 | 组件 | 模块 | 职责 |
 | :--- | :--- | :--- |
-| MCP 适配器 | `src/mcp.rs` | 通过 `rmcp` stdio 提供 22 个工具（`tools/call`）与 MCP 资源（`resources/list`、`resources/templates/list`、`resources/read`） |
+| MCP 适配器 | `src/mcp.rs` | 通过 `rmcp` stdio 提供 MCP 工具（`tools/call`）与 MCP 资源（`resources/list`、`resources/templates/list`、`resources/read`） |
 | 服务协调器 | `src/service.rs` | 在 SQLite、`JobQueue` 与 `ChromeEngine` 之间路由工具请求 |
 | 串行工作器 | `src/queue.rs` | 在 FIFO 队列上每次运行一个浏览器变更任务，并在任务之间随机暂停 |
 | 浏览器引擎 | `src/engine.rs`、`src/chrome.rs`、`src/cdp.rs` | 管理 `ManagedChrome`（无头 CDP）、`LoginChrome`（可见无 CDP）、WebSocket CDP RPC 与 `Network` 事件 |

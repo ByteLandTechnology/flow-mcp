@@ -8,7 +8,7 @@
 
 | Component | Module(s) | Role |
 | :--- | :--- | :--- |
-| MCP Adapter | `src/mcp.rs` | Serves 22 tools (`tools/call`) and MCP resources (`resources/list`, `resources/templates/list`, `resources/read`) through `rmcp` stdio |
+| MCP Adapter | `src/mcp.rs` | Serves MCP tools (`tools/call`) and MCP resources (`resources/list`, `resources/templates/list`, `resources/read`) through `rmcp` stdio |
 | Service Coordinator | `src/service.rs` | Routes tool requests between SQLite, `JobQueue`, and `ChromeEngine` |
 | Serial Worker | `src/queue.rs` | Runs browser mutation jobs one at a time on a FIFO queue with random pauses |
 | Browser Engine | `src/engine.rs`, `src/chrome.rs`, `src/cdp.rs` | Manages `ManagedChrome` (headless CDP), `LoginChrome` (visible non-CDP), WebSocket CDP RPC, and `Network` events |
