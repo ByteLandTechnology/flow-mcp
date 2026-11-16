@@ -36,6 +36,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 description = "Rust MCP server for Google Flow with Chrome CDP browser engine"
 
 [dependencies]
