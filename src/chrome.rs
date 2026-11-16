@@ -21,6 +21,8 @@ pub(crate) struct ManagedChrome {
     profile_dir: PathBuf,
     /// Local HTTP CDP discovery endpoint (`http://127.0.0.1:<port>`).
     pub(crate) http_endpoint: String,
+    /// Chrome `User-Agent` string reported by `/json/version`, if non-empty.
+    pub(crate) user_agent: String,
 }
 
 impl Drop for ManagedChrome {
@@ -293,7 +295,7 @@ impl ManagedChrome {
             .with_context(|| format!("Failed to launch Chrome at {}", chrome.display()))?;
 
         let active_port_file = profile_dir.join("DevToolsActivePort");
-        let mut discovered_endpoint: Option<String> = None;
+        let mut discovered: Option<(String, String)> = None;
 
         for _ in 0..120 {
             if let Ok(Some(status)) = child.try_wait() {
@@ -309,15 +311,21 @@ impl ManagedChrome {
 
             if let Some(port) = port {
                 let endpoint = format!("http://127.0.0.1:{}", port);
-                if fetch_json_version(&endpoint).await.is_some() {
-                    discovered_endpoint = Some(endpoint);
+                if let Some(version) = fetch_json_version(&endpoint).await {
+                    let ua = version
+                        .get("User-Agent")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("")
+                        .to_string();
+                    discovered = Some((endpoint, ua));
                     break;
                 }
             }
             tokio::time::sleep(Duration::from_millis(125)).await;
         }
 
-        let Some(http_endpoint) = discovered_endpoint else {
+        let Some((http_endpoint, user_agent)) = discovered else {
             let _ = child.kill().await;
             let _ = child.wait().await;
             let _ = tokio::fs::remove_file(&active_port_file).await;
@@ -334,6 +342,7 @@ impl ManagedChrome {
             child,
             profile_dir,
             http_endpoint,
+            user_agent,
         })
     }
 

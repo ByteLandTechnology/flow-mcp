@@ -14,8 +14,8 @@ use crate::auth::is_signed_in_flow_url;
 use crate::cdp::{CdpConnection, find_or_create_page_target};
 use crate::chrome::{LoginChrome, ManagedChrome, inspect_login_profile};
 use crate::cookies::{
-    NormalizedCookie, has_google_auth_cookies, normalize_cookies, read_cookies_file,
-    write_cookies_file,
+    NormalizedCookie, cookie_header_from_normalized, has_google_auth_cookies, normalize_cookies,
+    read_cookies_file, write_cookies_file,
 };
 
 /// Browser engine identifier reported by status tools.
@@ -23,6 +23,18 @@ pub(crate) const ENGINE_NAME: &str = "chrome-cdp";
 
 /// Compiled browser TypeScript runtime bundle exposing `window.__flowMcp`.
 const FLOW_RUNTIME_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/flow_runtime.js"));
+
+/// Default macOS Chrome `User-Agent` fallback before Chrome launches.
+#[cfg(target_os = "macos")]
+pub(crate) const DEFAULT_CHROME_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+
+/// Default Windows Chrome `User-Agent` fallback before Chrome launches.
+#[cfg(target_os = "windows")]
+pub(crate) const DEFAULT_CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+
+/// Default Linux Chrome `User-Agent` fallback before Chrome launches.
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+pub(crate) const DEFAULT_CHROME_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 
 /// HTTP network response captured from the active page via CDP `Network` events.
 #[derive(Debug, Clone)]
@@ -65,6 +77,8 @@ pub(crate) struct ChromeEngine {
     visible: AtomicBool,
     /// Broadcast channel for captured CDP `Network` responses.
     network_tx: broadcast::Sender<NetworkResponseEvent>,
+    /// Cached Chrome `User-Agent` string observed from `/json/version` or the active page.
+    user_agent: Mutex<Option<String>>,
 }
 
 impl ChromeEngine {
@@ -77,12 +91,14 @@ impl ChromeEngine {
             ensure_lock: Mutex::new(()),
             visible: AtomicBool::new(false),
             network_tx,
+            user_agent: Mutex::new(None),
         })
     }
 
     /// Gracefully stops active Chrome processes while keeping `<home>/chrome-profile` on disk.
     pub(crate) async fn shutdown(&self) {
         let _guard = self.ensure_lock.lock().await;
+        *self.user_agent.lock().await = None;
         let active = {
             let mut inner = self.inner.lock().await;
             inner.take()
@@ -194,6 +210,9 @@ impl ChromeEngine {
             }
         };
 
+        if !managed.user_agent.is_empty() {
+            *self.user_agent.lock().await = Some(managed.user_agent.clone());
+        }
         Ok(ActiveChrome { managed, cdp })
     }
 
@@ -301,6 +320,12 @@ impl ChromeEngine {
         Ok(val.as_str().unwrap_or("").to_string())
     }
 
+    /// Evaluates a synchronous JavaScript expression in the active page.
+    async fn eval_js(&self, expr: &str) -> Result<Value> {
+        let cdp = self.active_cdp().await?;
+        eval_runtime(&cdp, expr, false, Duration::from_secs(30)).await
+    }
+
     /// Calls a synchronous method on `window.__flowMcp`, installing the runtime bundle on demand.
     pub(crate) async fn call_flow_js(&self, method: &str, args: Value) -> Result<Value> {
         self.eval_flow_method(method, args, false, Duration::from_secs(30))
@@ -405,6 +430,36 @@ impl ChromeEngine {
         Ok(persisted.len())
     }
 
+    /// Returns the Chrome `User-Agent` string or the platform Chrome fallback.
+    pub(crate) async fn user_agent(&self) -> String {
+        if let Some(ua) = self.user_agent.lock().await.clone() {
+            return ua;
+        }
+        if let Ok(val) = self.eval_js("navigator.userAgent").await
+            && let Some(ua) = val.as_str().map(str::trim).filter(|s| !s.is_empty())
+        {
+            let s = ua.to_string();
+            *self.user_agent.lock().await = Some(s.clone());
+            return s;
+        }
+        DEFAULT_CHROME_UA.to_string()
+    }
+
+    /// Builds a `Cookie` header matching `target_url` from Chrome cookies or `cookies.json`.
+    pub(crate) async fn cookie_header_for_url(&self, target_url: &str) -> Option<String> {
+        let cookies = if self.has_page().await {
+            match self.all_normalized_cookies().await {
+                Ok(c) if !c.is_empty() => c,
+                _ => read_cookies_file().ok()?,
+            }
+        } else {
+            read_cookies_file().ok()?
+        };
+        cookie_header_from_normalized(&cookies, target_url)
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
     /// Returns normalized cookies for Google and Flow domains from Chrome or `cookies.json`.
     pub(crate) async fn flow_cookies(&self) -> Result<Vec<NormalizedCookie>> {
         if self.has_page().await {
@@ -417,6 +472,7 @@ impl ChromeEngine {
     /// Stops Chrome processes and deletes `<home>/chrome-profile`.
     pub(crate) async fn clear_session(&self) -> Result<()> {
         let _guard = self.ensure_lock.lock().await;
+        *self.user_agent.lock().await = None;
         let login = {
             let mut login_guard = self.login_chrome.lock().await;
             login_guard.take()

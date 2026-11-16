@@ -3,14 +3,18 @@
 
 //! Binary entry point for `flow-mcp`.
 
+mod assets;
 mod auth;
 mod cdp;
 mod chrome;
+mod collections;
 mod config;
 mod cookies;
 mod db;
+mod download;
 mod engine;
 mod mcp;
+mod media_files;
 mod project;
 mod queue;
 mod service;

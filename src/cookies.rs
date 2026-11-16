@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use url::Url;
 
 use crate::config::cookies_path;
 
@@ -244,4 +245,64 @@ pub(crate) fn has_google_auth_cookies(cookies: &[NormalizedCookie]) -> bool {
     cookies
         .iter()
         .any(|c| !c.value.trim().is_empty() && is_google_auth_cookie_pair(&c.domain, &c.name))
+}
+
+/// Builds an HTTP `Cookie` request header for `target_url` from normalized records.
+pub(crate) fn cookie_header_from_normalized(
+    cookies: &[NormalizedCookie],
+    target_url: &str,
+) -> Result<String> {
+    let parsed = Url::parse(target_url)?;
+    let Some(url_host) = parsed.host_str() else {
+        return Ok(String::new());
+    };
+    let is_https = parsed.scheme() == "https";
+    let url_path = parsed.path();
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let mut pairs = Vec::new();
+    for cookie in cookies {
+        if cookie.name.trim().is_empty() || (cookie.secure && !is_https) {
+            continue;
+        }
+        if let Some(exp) = cookie.expires
+            && exp > 0
+            && exp <= now_secs
+        {
+            continue;
+        }
+
+        let clean_domain = cookie.domain.trim().trim_start_matches('.');
+        if clean_domain.is_empty() {
+            continue;
+        }
+        let domain_ok = if cookie.host_only {
+            url_host.eq_ignore_ascii_case(clean_domain)
+        } else {
+            cookie_domain_matches(url_host, clean_domain)
+        };
+        if !domain_ok {
+            continue;
+        }
+
+        let cookie_path = if cookie.path.trim().is_empty() {
+            "/"
+        } else {
+            cookie.path.as_str()
+        };
+        let path_ok = url_path == cookie_path
+            || (url_path.starts_with(cookie_path)
+                && (cookie_path.ends_with('/')
+                    || url_path.as_bytes().get(cookie_path.len()) == Some(&b'/')));
+        if !path_ok {
+            continue;
+        }
+
+        pairs.push(format!("{}={}", cookie.name, cookie.value));
+    }
+
+    Ok(pairs.join("; "))
 }

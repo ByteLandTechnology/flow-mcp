@@ -3,11 +3,15 @@
 
 // Browser runtime bundle entrypoint registering window.__flowMcp once per document.
 
+import { assetOps } from "./asset_ops";
 import { checkAuth } from "./check_auth";
+import { collectionOps } from "./collection_ops";
 import { discoverStore } from "./discover_store";
+import { fetchMedia } from "./fetch_media";
 import { projectNav } from "./project_nav";
 import { projectsOp } from "./projects_ops";
 import { readStoreSnapshot } from "./read_store_snapshot";
+import { resolveVideoUrl } from "./resolve_video_url";
 
 if (!window.__flowMcp) {
   window.__flowMcp = {
@@ -16,5 +20,9 @@ if (!window.__flowMcp) {
     readStoreSnapshot,
     projectNav,
     projectsOp,
+    assetOps,
+    collectionOps,
+    fetchMedia,
+    resolveVideoUrl,
   };
 }

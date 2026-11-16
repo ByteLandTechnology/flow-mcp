@@ -4,15 +4,52 @@
 //! Application service routing Google Flow tools, job queuing, and SQLite persistence.
 
 use anyhow::Result;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use rmcp::model::{Resource, ResourceContents};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+use crate::assets::{self, AssetsParams, DownloadParams, RenameEntry};
 use crate::auth::{self, LoginParams};
+use crate::collections::{self, CollectionsParams};
 use crate::config;
-use crate::db::FlowDb;
+use crate::db::{
+    DOWNLOAD_ASSET_RESOURCE_PREFIX, DOWNLOAD_RESOURCE_PREFIX, DownloadRecord, DownloadsParams,
+    FlowDb, effective_mime_type,
+};
+use crate::download;
 use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::media_files;
 use crate::project::{self, ProjectsParams};
 use crate::queue::{JobQueue, JobResult, JobRunner, JobView, WaitParams};
+
+/// Maximum downloaded file size served directly through MCP `resources/read` (`64 MiB`).
+const MAX_RESOURCE_READ_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Failure reasons when reading a downloaded file as an MCP resource.
+pub(crate) enum ResourceReadError {
+    /// The URI does not match a valid `flow://downloads/...` format.
+    InvalidUri(String),
+    /// No matching database row or managed disk file exists.
+    NotFound(String),
+    /// The file exceeds the 64 MiB `resources/read` limit and must be fetched with `read_chunk`.
+    TooLarge(String),
+    /// Unexpected storage or I/O error.
+    Internal(String),
+}
+
+/// Converts a [`DownloadRecord`] into an MCP [`Resource`] descriptor.
+pub(crate) fn record_to_mcp_resource(rec: &DownloadRecord) -> Resource {
+    let mime = effective_mime_type(rec.mime_type.as_deref(), &rec.file_path);
+    let mut resource = Resource::new(rec.resource_uri.clone(), rec.file_name.clone())
+        .with_mime_type(mime)
+        .with_size(rec.size_bytes)
+        .with_description(format!("Google Flow {} ({})", rec.kind, rec.asset_id));
+    if !rec.name.is_empty() {
+        resource = resource.with_title(rec.name.clone());
+    }
+    resource
+}
 
 /// Application service that coordinates Flow tools, background jobs, and SQLite storage.
 pub(crate) struct FlowService {
@@ -121,5 +158,247 @@ impl FlowService {
     /// Runs `flow_login` actions for Google Sign-In, cookie synchronization, status, and logout.
     pub(crate) async fn login(&self, req: LoginParams) -> Result<Value> {
         auth::handle_login(&self.engine, req).await
+    }
+
+    /// Lists assets in the active Google Flow project.
+    pub(crate) async fn assets(&self, req: AssetsParams) -> Result<Value> {
+        let list = assets::list_assets(
+            &self.engine,
+            req.query.as_deref(),
+            req.kind.as_deref(),
+            req.collection.as_deref(),
+            req.limit,
+        )
+        .await?;
+        Ok(json!({ "count": list.len(), "assets": list }))
+    }
+
+    /// Renames one or more assets or collections in the active Google Flow project.
+    pub(crate) async fn rename(&self, items: Vec<RenameEntry>) -> Result<Value> {
+        anyhow::ensure!(!items.is_empty(), "flow_rename requires at least one item");
+        let res = assets::rename_assets(&self.engine, items).await?;
+        if let Some(renamed) = res.get("items").and_then(|v| v.as_array()) {
+            for item in renamed {
+                if let (Some(id), Some(name)) = (
+                    item.get("id").and_then(|v| v.as_str()),
+                    item.get("name").and_then(|v| v.as_str()),
+                ) {
+                    let _ = self.db.rename_character_if_exists(id, name).await;
+                }
+            }
+        }
+        Ok(res)
+    }
+
+    /// Lists, creates, renames, or populates collections in the active Flow project.
+    pub(crate) async fn collections(&self, req: CollectionsParams) -> Result<Value> {
+        collections::handle_collections(&self.engine, req).await
+    }
+
+    /// Moves the asset or collection matching `match_str` to trash in the active Google Flow project.
+    pub(crate) async fn trash(&self, match_str: &str) -> Result<Value> {
+        assets::trash_asset(&self.engine, &self.db, match_str).await
+    }
+
+    /// Downloads the asset matching `req.match` into `<home>/downloads` and records it in SQLite.
+    pub(crate) async fn download(&self, req: DownloadParams) -> Result<DownloadRecord> {
+        download::download_asset(&self.engine, &self.db, &req.r#match).await
+    }
+
+    /// Resolves one download record by row `id` or latest `asset_id` for inspection or chunk reads.
+    async fn resolve_download_for_get_or_chunk(
+        &self,
+        id: Option<i64>,
+        asset_id: Option<&str>,
+        existing_only: bool,
+    ) -> Result<DownloadRecord> {
+        if let Some(row_id) = id {
+            return self
+                .db
+                .get_download_by_id(row_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("No download record with id {}", row_id));
+        }
+        let aid = asset_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Specify 'id' or 'asset_id'"))?;
+        let rec = if existing_only {
+            self.db.find_existing_file_for_asset(aid).await?
+        } else {
+            self.db.get_latest_download_for_asset(aid).await?
+        };
+        rec.ok_or_else(|| anyhow::anyhow!("No download record for asset '{}'", aid))
+    }
+
+    /// Queries, inspects, reads chunks from, prunes, deletes, or clears indexed downloads.
+    pub(crate) async fn downloads(&self, req: DownloadsParams) -> Result<Value> {
+        let action = req.action.as_deref().unwrap_or("list");
+        match action {
+            "list" => {
+                let (total_indexed, total_indexed_bytes, downloads) =
+                    self.db.list_downloads(req).await?;
+                let matched_bytes: u64 = downloads.iter().map(|r| r.size_bytes).sum();
+                Ok(json!({
+                    "action": "list",
+                    "count": downloads.len(),
+                    "total_indexed": total_indexed,
+                    "matched_bytes": matched_bytes,
+                    "total_indexed_bytes": total_indexed_bytes,
+                    "db_path": config::db_path().to_string_lossy(),
+                    "downloads_dir": config::downloads_dir().to_string_lossy(),
+                    "downloads": downloads,
+                }))
+            }
+            "get" => {
+                let rec = self
+                    .resolve_download_for_get_or_chunk(req.id, req.asset_id.as_deref(), false)
+                    .await?;
+                Ok(json!({
+                    "action": "get",
+                    "record": rec,
+                }))
+            }
+            "read_chunk" => {
+                let rec = self
+                    .resolve_download_for_get_or_chunk(req.id, req.asset_id.as_deref(), true)
+                    .await?;
+                media_files::read_download_chunk(&rec, req.offset.unwrap_or(0), req.length).await
+            }
+            "delete" | "remove" => {
+                let records = self
+                    .db
+                    .select_downloads_by_selector(req.id, req.asset_id.as_deref())
+                    .await?;
+                if records.is_empty() {
+                    anyhow::bail!("No download record matches the given selector");
+                }
+                let (ids, deleted_files, freed_bytes, items) =
+                    media_files::remove_managed_download_files(&records).await?;
+                let (deleted_records, remaining_records) =
+                    self.db.delete_downloads_by_ids(&ids).await?;
+                Ok(json!({
+                    "action": "delete",
+                    "deleted_records": deleted_records,
+                    "deleted_files": deleted_files,
+                    "freed_bytes": freed_bytes,
+                    "remaining_records": remaining_records,
+                    "items": items,
+                }))
+            }
+            "prune" => {
+                let (pruned_records, remaining_records) = self.db.prune_missing_downloads().await?;
+                Ok(json!({
+                    "action": "prune",
+                    "pruned_records": pruned_records,
+                    "remaining_records": remaining_records,
+                }))
+            }
+            "clear" => {
+                let records = self
+                    .db
+                    .select_downloads_for_clear(req.older_than_days)
+                    .await?;
+                if records.is_empty() {
+                    let remaining_records = self.db.count_downloads().await?;
+                    return Ok(json!({
+                        "action": "clear",
+                        "deleted_records": 0,
+                        "deleted_files": 0,
+                        "freed_bytes": 0,
+                        "remaining_records": remaining_records,
+                    }));
+                }
+                let (ids, deleted_files, freed_bytes, _) =
+                    media_files::remove_managed_download_files(&records).await?;
+                let (deleted_records, remaining_records) =
+                    self.db.delete_downloads_by_ids(&ids).await?;
+                Ok(json!({
+                    "action": "clear",
+                    "deleted_records": deleted_records,
+                    "deleted_files": deleted_files,
+                    "freed_bytes": freed_bytes,
+                    "remaining_records": remaining_records,
+                }))
+            }
+            other => anyhow::bail!("Unknown downloads action: {}", other),
+        }
+    }
+
+    /// Lists all existing downloaded files as MCP [`Resource`] descriptors.
+    pub(crate) async fn list_download_resources(&self) -> Result<Vec<Resource>> {
+        let records = self.db.list_all_existing_downloads().await?;
+        Ok(records.iter().map(record_to_mcp_resource).collect())
+    }
+
+    /// Reads one downloaded file addressed by `flow://downloads/{id}` or `flow://downloads/asset/{asset_id}`.
+    pub(crate) async fn read_download_resource(
+        &self,
+        uri: &str,
+    ) -> std::result::Result<ResourceContents, ResourceReadError> {
+        let rec = if let Some(asset_id) = uri.strip_prefix(DOWNLOAD_ASSET_RESOURCE_PREFIX) {
+            if asset_id.is_empty() || asset_id.contains('/') {
+                return Err(ResourceReadError::InvalidUri(format!(
+                    "Invalid asset resource URI: {}",
+                    uri
+                )));
+            }
+            self.db
+                .find_existing_file_for_asset(asset_id)
+                .await
+                .map_err(|e| ResourceReadError::Internal(e.to_string()))?
+                .ok_or_else(|| {
+                    ResourceReadError::NotFound(format!(
+                        "No downloaded file found for asset '{}'",
+                        asset_id
+                    ))
+                })?
+        } else if let Some(id_str) = uri.strip_prefix(DOWNLOAD_RESOURCE_PREFIX) {
+            let id = id_str
+                .parse::<i64>()
+                .ok()
+                .filter(|&n| n > 0)
+                .ok_or_else(|| {
+                    ResourceReadError::InvalidUri(format!("Invalid download resource URI: {}", uri))
+                })?;
+            self.db
+                .get_download_by_id(id)
+                .await
+                .map_err(|e| ResourceReadError::Internal(e.to_string()))?
+                .ok_or_else(|| {
+                    ResourceReadError::NotFound(format!("No download record with id {}", id))
+                })?
+        } else {
+            return Err(ResourceReadError::InvalidUri(format!(
+                "Unsupported resource URI scheme: {}",
+                uri
+            )));
+        };
+
+        let path =
+            media_files::verified_managed_download_path(&rec.file_path).ok_or_else(|| {
+                ResourceReadError::NotFound(format!(
+                    "Downloaded file is missing from managed downloads directory: {}",
+                    rec.file_path
+                ))
+            })?;
+        let meta = tokio::fs::metadata(&path)
+            .await
+            .map_err(|e| ResourceReadError::Internal(e.to_string()))?;
+        if meta.len() > MAX_RESOURCE_READ_BYTES {
+            return Err(ResourceReadError::TooLarge(format!(
+                "Resource {} is {} bytes (exceeds {} byte limit for resources/read). Use flow_downloads with action=\"read_chunk\" and id={}.",
+                uri,
+                meta.len(),
+                MAX_RESOURCE_READ_BYTES,
+                rec.id
+            )));
+        }
+
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|e| ResourceReadError::Internal(e.to_string()))?;
+        let mime = effective_mime_type(rec.mime_type.as_deref(), &rec.file_path);
+        Ok(ResourceContents::blob(BASE64.encode(&bytes), uri.to_string()).with_mime_type(mime))
     }
 }

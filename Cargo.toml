@@ -43,6 +43,7 @@ anyhow = "1"
 base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
+mime_guess = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rmcp = { version = "=3.1.2", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

@@ -376,6 +376,29 @@ export interface ProjectsOpRequest {
   project_id?: string;
 }
 
+/** Extra options for `assetOps("rename", ...)`. */
+export interface AssetRenameExtra {
+  /** Updated display name. */
+  name?: string;
+  /** True when resetting tile display name before retrying rename. */
+  resetOld?: boolean;
+}
+
+/** Payload returned by `fetchMedia`. */
+export interface FetchedMediaPayload {
+  /** Base64 encoded binary media payload. */
+  b64: string;
+  /** Response `Content-Type` header if present. */
+  contentType: string | null;
+  /** Response `Content-Disposition` header if present. */
+  disposition: string | null;
+}
+
+/** Result returned by `resolveVideoUrl`. */
+export type ResolvedMediaResult =
+  | { ok: false; error: string }
+  | { ok: true; url: string; download_url: string; candidates: string[] };
+
 /** Public browser runtime API exposed at `window.__flowMcp`. */
 export interface FlowMcpRuntime {
   /** Probes Google Flow authentication shell status. */
@@ -388,6 +411,14 @@ export interface FlowMcpRuntime {
   projectNav: (action: string) => Promise<unknown>;
   /** Lists, renames, or deletes Google Flow projects on home or workspace pages. */
   projectsOp: (req: ProjectsOpRequest) => Promise<unknown>;
+  /** Renames or moves tiles and collections to trash. */
+  assetOps: (action: string, id: string, extra: AssetRenameExtra | null) => Promise<unknown>;
+  /** Creates collections and moves asset tiles across collections. */
+  collectionOps: (action: string, arg1: string | null, arg2: string[] | null) => Promise<unknown>;
+  /** Fetches a media URL with page credentials and returns Base64 payload metadata. */
+  fetchMedia: (u: string, expectedKind: string) => Promise<FetchedMediaPayload>;
+  /** Resolves stream and download URLs for a primary media identifier via `as29s`. */
+  resolveVideoUrl: (primaryMediaId: string) => Promise<ResolvedMediaResult>;
 }
 
 declare global {
