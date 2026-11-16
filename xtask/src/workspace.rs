@@ -14,6 +14,7 @@ const SKIP_DIRS: &[&str] = &[
     "vendor",
     "out",
     "dist",
+    "npm-dist",
 ];
 
 /// Directory names reserved for tests and forbidden in this repository.
@@ -26,6 +27,8 @@ pub(crate) struct WorkspaceFiles {
     pub(crate) rust_files: Vec<PathBuf>,
     /// All TypeScript source files directly under `ts/`.
     pub(crate) ts_files: Vec<PathBuf>,
+    /// Allowed JavaScript launcher scripts under `npm/`.
+    pub(crate) launcher_js_files: Vec<PathBuf>,
     /// Stray JavaScript, declaration, or misplaced TypeScript script files.
     pub(crate) stray_script_files: Vec<PathBuf>,
     /// All `Cargo.toml` manifests in the workspace.
@@ -61,6 +64,7 @@ pub(crate) fn collect_files(root: &Path) -> Result<WorkspaceFiles, String> {
     walk_dir(root, root, &mut out)?;
     out.rust_files.sort();
     out.ts_files.sort();
+    out.launcher_js_files.sort();
     out.stray_script_files.sort();
     out.cargo_manifests.sort();
     out.markdown_files.sort();
@@ -144,7 +148,12 @@ fn record_file(root: &Path, path: &Path, name: &str, out: &mut WorkspaceFiles) {
             out.text_files.push(path.to_path_buf());
         }
         Some("js" | "mjs" | "cjs" | "jsx" | "tsx") => {
-            out.stray_script_files.push(path.to_path_buf());
+            let rel = rel_display(root, path);
+            if rel == "npm/cli/bin/flow-mcp.js" {
+                out.launcher_js_files.push(path.to_path_buf());
+            } else {
+                out.stray_script_files.push(path.to_path_buf());
+            }
             out.text_files.push(path.to_path_buf());
         }
         Some("md") => {
@@ -156,4 +165,34 @@ fn record_file(root: &Path, path: &Path, name: &str, out: &mut WorkspaceFiles) {
         }
         _ => {}
     }
+}
+
+/// Reads the `version` value from the `[package]` table of a `Cargo.toml` manifest.
+pub(crate) fn cargo_package_version(manifest: &str) -> Result<String, String> {
+    let mut in_package = false;
+    for raw_line in manifest.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("version") {
+            let trimmed_rest = rest.trim_start();
+            if let Some(after_eq) = trimmed_rest.strip_prefix('=') {
+                let value = after_eq
+                    .split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"');
+                if !value.is_empty() {
+                    return Ok(value.to_owned());
+                }
+            }
+        }
+    }
+    Err("Cargo.toml has no [package] version".to_owned())
 }

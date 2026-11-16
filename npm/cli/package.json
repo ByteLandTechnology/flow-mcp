@@ -1,0 +1,39 @@
+{
+  "name": "@flow-mcp/cli",
+  "version": "0.2.0",
+  "description": "Google Flow MCP server for image, video, scene, and character workflows over Chrome CDP.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ByteLandTechnology/flow-mcp.git"
+  },
+  "homepage": "https://github.com/ByteLandTechnology/flow-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/ByteLandTechnology/flow-mcp/issues"
+  },
+  "keywords": [
+    "google-flow",
+    "veo",
+    "imagen",
+    "mcp",
+    "model-context-protocol",
+    "chrome-cdp"
+  ],
+  "bin": {
+    "flow-mcp": "bin/flow-mcp.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@flow-mcp/darwin-arm64": "0.2.0",
+    "@flow-mcp/darwin-x64": "0.2.0",
+    "@flow-mcp/linux-arm64": "0.2.0",
+    "@flow-mcp/linux-x64": "0.2.0",
+    "@flow-mcp/win32-arm64": "0.2.0",
+    "@flow-mcp/win32-x64": "0.2.0"
+  }
+}

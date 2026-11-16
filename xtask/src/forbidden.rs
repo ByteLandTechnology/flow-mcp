@@ -8,7 +8,17 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::lexer::{RustToken, TokenKind, lex_rust};
-use crate::workspace::{WorkspaceFiles, rel_display};
+use crate::workspace::{WorkspaceFiles, cargo_package_version, rel_display};
+
+/// Required npm platform package dependencies in `npm/cli/package.json`.
+const REQUIRED_NPM_PLATFORMS: &[&str] = &[
+    "@flow-mcp/darwin-arm64",
+    "@flow-mcp/darwin-x64",
+    "@flow-mcp/linux-arm64",
+    "@flow-mcp/linux-x64",
+    "@flow-mcp/win32-arm64",
+    "@flow-mcp/win32-x64",
+];
 
 /// Forbidden Rust attribute names or path segments.
 const FORBIDDEN_ATTRS: &[&str] = &[
@@ -87,6 +97,7 @@ pub(crate) fn check_forbidden_code(root: &Path, files: &WorkspaceFiles) -> Vec<S
     }
 
     check_ts_project(root, files, &mut errors);
+    check_release_version_sync(root, &mut errors);
     errors
 }
 
@@ -361,23 +372,11 @@ fn extract_json_strings(raw: &str) -> Vec<String> {
             i += 1;
             continue;
         }
-        i += 1;
-        let mut out = String::new();
-        while i < chars.len() {
-            let c = chars[i];
-            if c == '\\' && i + 1 < chars.len() {
-                out.push(chars[i + 1]);
-                i += 2;
-                continue;
-            }
-            if c == '"' {
-                i += 1;
-                break;
-            }
-            out.push(c);
-            i += 1;
-        }
-        strings.push(out);
+        let Some((val, next_idx)) = read_json_string(&chars, i) else {
+            break;
+        };
+        strings.push(val);
+        i = next_idx;
     }
     strings
 }
@@ -398,20 +397,10 @@ fn check_ts_project(root: &Path, files: &WorkspaceFiles, errors: &mut Vec<String
     }
 
     let pkg_path = root.join("package.json");
-    match fs::read_to_string(&pkg_path) {
-        Ok(raw) => {
-            for val in extract_json_strings(&raw) {
-                let lower = val.to_ascii_lowercase();
-                if FORBIDDEN_NPM_TOKENS.contains(&lower.as_str()) {
-                    errors.push(format!(
-                        "package.json: forbidden test script or package string `{val}`"
-                    ));
-                }
-            }
-        }
-        Err(err) => {
-            errors.push(format!("package.json: failed to read manifest: {err}"));
-        }
+    scan_npm_manifest(root, &pkg_path, errors);
+    let cli_pkg_path = root.join("npm/cli/package.json");
+    if cli_pkg_path.is_file() {
+        scan_npm_manifest(root, &cli_pkg_path, errors);
     }
 
     let tsc_bin = if cfg!(windows) { "tsc.cmd" } else { "tsc" };
@@ -446,5 +435,159 @@ fn check_ts_project(root: &Path, files: &WorkspaceFiles, errors: &mut Vec<String
                 rel_display(root, &tsc_path)
             ));
         }
+    }
+}
+
+/// Scans an npm `package.json` manifest for forbidden test scripts or test packages.
+fn scan_npm_manifest(root: &Path, pkg_path: &Path, errors: &mut Vec<String>) {
+    let label = rel_display(root, pkg_path);
+    match fs::read_to_string(pkg_path) {
+        Ok(raw) => {
+            for val in extract_json_strings(&raw) {
+                let lower = val.to_ascii_lowercase();
+                if FORBIDDEN_NPM_TOKENS.contains(&lower.as_str()) {
+                    errors.push(format!(
+                        "{label}: forbidden test script or package string `{val}`"
+                    ));
+                }
+            }
+        }
+        Err(err) => {
+            errors.push(format!("{label}: failed to read manifest: {err}"));
+        }
+    }
+}
+
+/// Extracts string entries mapped by `"key": "value"` in `raw`.
+fn extract_json_kv_pairs(raw: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut pairs = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '"' {
+            i += 1;
+            continue;
+        }
+        let Some((key, after_key)) = read_json_string(&chars, i) else {
+            break;
+        };
+        let mut j = after_key;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j < chars.len() && chars[j] == ':' {
+            j += 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len()
+                && chars[j] == '"'
+                && let Some((val, after_val)) = read_json_string(&chars, j)
+            {
+                pairs.push((key, val));
+                i = after_val;
+                continue;
+            }
+        }
+        i = after_key;
+    }
+    pairs
+}
+
+/// Reads one double-quoted JSON string starting at `start_idx` and returns `(decoded, next_idx)`.
+fn read_json_string(chars: &[char], start_idx: usize) -> Option<(String, usize)> {
+    if chars.get(start_idx).copied() != Some('"') {
+        return None;
+    }
+    let mut out = String::new();
+    let mut i = start_idx + 1;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() {
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if c == '"' {
+            return Some((out, i + 1));
+        }
+        out.push(c);
+        i += 1;
+    }
+    None
+}
+
+/// Verifies matching release versions across Cargo manifests, release-please, and `npm/cli`.
+fn check_release_version_sync(root: &Path, errors: &mut Vec<String>) {
+    let cli_pkg_path = root.join("npm/cli/package.json");
+    if !cli_pkg_path.is_file() {
+        return;
+    }
+
+    let root_cargo = match fs::read_to_string(root.join("Cargo.toml"))
+        .map_err(|e| e.to_string())
+        .and_then(|s| cargo_package_version(&s))
+    {
+        Ok(v) => v,
+        Err(err) => {
+            errors.push(format!("Cargo.toml: {err}"));
+            return;
+        }
+    };
+
+    match fs::read_to_string(root.join("xtask/Cargo.toml"))
+        .map_err(|e| e.to_string())
+        .and_then(|s| cargo_package_version(&s))
+    {
+        Ok(v) if v != root_cargo => errors.push(format!(
+            "xtask/Cargo.toml: version `{v}` does not match Cargo.toml `{root_cargo}`"
+        )),
+        Err(err) => errors.push(format!("xtask/Cargo.toml: {err}")),
+        Ok(_) => {}
+    }
+
+    match fs::read_to_string(root.join(".release-please-manifest.json")) {
+        Ok(raw) => {
+            let pairs = extract_json_kv_pairs(&raw);
+            let val = pairs
+                .iter()
+                .find(|(k, _)| k == ".")
+                .map(|(_, v)| v.as_str());
+            if val != Some(root_cargo.as_str()) {
+                errors.push(format!(
+                    ".release-please-manifest.json: expected `.` = `{root_cargo}`"
+                ));
+            }
+        }
+        Err(err) => errors.push(format!(".release-please-manifest.json: {err}")),
+    }
+
+    match fs::read_to_string(&cli_pkg_path) {
+        Ok(raw) => {
+            let pairs = extract_json_kv_pairs(&raw);
+            let pkg_ver = pairs
+                .iter()
+                .find(|(k, _)| k == "version")
+                .map(|(_, v)| v.as_str());
+            if pkg_ver != Some(root_cargo.as_str()) {
+                errors.push(format!(
+                    "npm/cli/package.json: version `{}` does not match `{root_cargo}`",
+                    pkg_ver.unwrap_or("missing")
+                ));
+            }
+            for dep in REQUIRED_NPM_PLATFORMS {
+                let dep_ver = pairs
+                    .iter()
+                    .find(|(k, _)| k == dep)
+                    .map(|(_, v)| v.as_str());
+                if dep_ver != Some(root_cargo.as_str()) {
+                    errors.push(format!(
+                        "npm/cli/package.json: optionalDependencies[`{dep}`] = `{}` does not match `{root_cargo}`",
+                        dep_ver.unwrap_or("missing")
+                    ));
+                }
+            }
+        }
+        Err(err) => errors.push(format!("npm/cli/package.json: {err}")),
     }
 }

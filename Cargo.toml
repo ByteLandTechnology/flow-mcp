@@ -7,8 +7,8 @@ edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 authors = ["ByteLand Technology Limited"]
-repository = "https://github.com/byteland-app/flow-mcp"
-homepage = "https://github.com/byteland-app/flow-mcp"
+repository = "https://github.com/ByteLandTechnology/flow-mcp"
+homepage = "https://github.com/ByteLandTechnology/flow-mcp"
 
 [workspace.lints.rust]
 missing_docs = "deny"
@@ -37,6 +37,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
+publish = false
 description = "Rust MCP server for Google Flow with Chrome CDP browser engine"
 
 [dependencies]

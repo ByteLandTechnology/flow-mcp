@@ -29,6 +29,7 @@ The command `cargo xtask ci` checks most of these rules.
 - `.cargo/config.toml` defines the `xtask` Cargo alias.
 - Keep all Rust modules flat in `src/` and `xtask/src/` with no subdirectories.
 - Keep all browser TypeScript modules flat in `ts/` with no subdirectories.
+- Keep the `@flow-mcp/cli` launcher package in `npm/cli/` (`package.json`, `.npmrc`, and `bin/flow-mcp.js`).
 - Bundle `ts/index.ts` with `esbuild` in `build.rs` to `$OUT_DIR/flow_runtime.js`, and embed that bundle once in `src/engine.rs` with `include_str!`.
 - Use `src/main.rs` as the single binary entry point. Do not add `src/lib.rs`.
 
@@ -44,7 +45,7 @@ The command `cargo xtask ci` checks most of these rules.
 - Use private or `pub(crate)` visibility by default. The `unreachable_pub` lint is on.
 - Before you write a helper, look in existing modules. Do not copy a helper into a second module.
 - Each `.rs` and `.ts` source file must have no more than 800 lines of code. Comments and blank lines are not counted. There are no exceptions.
-- Use LF line endings in all `.rs`, `.ts`, `.json`, `.toml`, and `.md` files.
+- Use LF line endings in all `.rs`, `.ts`, `.js`, `.json`, `.toml`, and `.md` files.
 
 ## Code rules
 
@@ -74,6 +75,8 @@ Start each `.rs` and `.ts` source file with these two lines:
 // SPDX-License-Identifier: MIT
 ```
 
+In `npm/cli/bin/flow-mcp.js`, place these two lines immediately below `#!/usr/bin/env node`.
+
 ## Commit messages
 
 - Obey Conventional Commits.
@@ -83,7 +86,8 @@ Start each `.rs` and `.ts` source file with these two lines:
   - `flow`: `src/` and `ts/`
   - `xtask`: repository checks in `xtask/`
   - `docs`: documents
-  - `build`: build, manifest, and ignore files
+  - `build`: build, manifest, npm launcher, and ignore files
+  - `ci`: workflows in `.github/`
   - If a commit changes more than one scope, do not write a scope.
 - Start the summary with an imperative verb in lowercase letters.
 - Do not put a period at the end of the summary.
@@ -100,7 +104,7 @@ Start each `.rs` and `.ts` source file with these two lines:
 ## Branches
 
 - Commit directly to `main`.
-- This project has no released version scheme outside `Cargo.toml`.
+- Keep the same release version in `Cargo.toml`, `xtask/Cargo.toml`, `npm/cli/package.json`, and `.release-please-manifest.json`.
 
 ## Before you commit
 
