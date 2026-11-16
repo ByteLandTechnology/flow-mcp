@@ -8,6 +8,7 @@ import type {
   FlowStoreHandle,
   FlowStoreService,
   NgLView,
+  PromptStateController,
 } from "./types";
 
 /** Shared mutable runtime state scoped to one page document inside the bundle. */
@@ -24,6 +25,10 @@ export interface RuntimeState {
   store: FlowStoreHandle | null;
   /** Cached resolved media URLs keyed by primary media identifier. */
   mediaInfoCache: Map<string, CachedMediaInfo>;
+  /** Tracks whether the last generation setup enabled Agent Mode. */
+  wantAgent: boolean;
+  /** Most recently captured prompt validation and submission state controller. */
+  promptState: PromptStateController | null;
 }
 
 /** Single mutable runtime state container for the current page session. */
@@ -34,6 +39,8 @@ export const runtimeState: RuntimeState = {
   routePath: null,
   store: null,
   mediaInfoCache: new Map<string, CachedMediaInfo>(),
+  wantAgent: false,
+  promptState: null,
 };
 
 /** Clears bound store handles and cached route context. */

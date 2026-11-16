@@ -127,14 +127,51 @@ pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
     None
 }
 
-/// Builds the Google Flow `/project/<id>` workspace URL preserving `/fx/tools/flow` when active.
-pub(crate) fn project_workspace_url(reference_url: &str, project_id: &str) -> String {
+/// Builds a Google Flow `/project/<id>` or sub-route URL preserving `/fx/tools/flow` when active.
+pub(crate) fn project_subroute_url(
+    reference_url: &str,
+    project_id: &str,
+    subroute: &str,
+) -> String {
     let prefix = if reference_url.contains("/fx/tools/flow") {
         "https://flow.google.com/fx/tools/flow"
     } else {
         "https://flow.google.com"
     };
-    format!("{}/project/{}?hl=en", prefix, project_id)
+    let clean_sub = subroute.trim_start_matches('/');
+    if clean_sub.is_empty() {
+        format!("{}/project/{}?hl=en", prefix, project_id)
+    } else {
+        format!("{}/project/{}/{}?hl=en", prefix, project_id, clean_sub)
+    }
+}
+
+/// Builds the Google Flow `/project/<id>` workspace URL preserving `/fx/tools/flow` when active.
+pub(crate) fn project_workspace_url(reference_url: &str, project_id: &str) -> String {
+    project_subroute_url(reference_url, project_id, "")
+}
+
+/// Navigates back to `/project/<id>` when Chrome is currently on a character, scene, edit, chat, or tools sub-route.
+pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
+    let is_subroute = |url: &str| {
+        ["/character/", "/scene/", "/edit/", "/chat/", "/tools"]
+            .iter()
+            .any(|seg| url.contains(seg))
+    };
+    let cur = engine.current_url().await.unwrap_or_default();
+    if is_subroute(&cur) {
+        let _ = eval_project_nav(engine, "exit_subroute").await;
+        let after = engine.current_url().await.unwrap_or_default();
+        if is_subroute(&after)
+            && let Some(pid) = project_id_from_url(&after).or_else(|| project_id_from_url(&cur))
+        {
+            engine
+                .navigate(&project_workspace_url(&after, &pid))
+                .await?;
+            tokio::time::sleep(Duration::from_millis(900)).await;
+        }
+    }
+    Ok(())
 }
 
 /// Ensures Chrome is on a signed-in Google Flow page and persists fresh cookies.

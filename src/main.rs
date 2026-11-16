@@ -13,10 +13,12 @@ mod cookies;
 mod db;
 mod download;
 mod engine;
+mod generation;
 mod mcp;
 mod media_files;
 mod project;
 mod queue;
+mod scenes;
 mod service;
 
 use anyhow::Result;

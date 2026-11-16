@@ -3,7 +3,7 @@
 
 // Shared DOM, event, input, and FIFE URL helpers for Flow browser modules.
 
-import type { FifeEnv } from "./types";
+import type { FifeEnv, FlowTile } from "./types";
 
 /** Waits for `ms` milliseconds before resolving. */
 export function delay(ms: number): Promise<void> {
@@ -90,6 +90,59 @@ export async function hoverProbe(elements: Element[], enterPauseMs = 25): Promis
   await delay(25);
 }
 
+/** Finds and clicks the first visible enabled interactive element matching `regex`. */
+export function clickButtonByRegex(regex: RegExp, root: ParentNode = document): boolean {
+  const els = Array.from(
+    root.querySelectorAll('button, flow-button, a, [role="button"], [role="menuitem"]'),
+  );
+  const hit = els.find((el): el is HTMLElement => {
+    if (!isVisibleEnabled(el)) return false;
+    const aria = (
+      el.getAttribute("aria-label") ||
+      el.getAttribute("title") ||
+      ""
+    ).trim();
+    const raw = elText(el);
+    if (/create tool|create with google flow|new project/i.test(`${aria} ${raw}`)) {
+      return false;
+    }
+    const tail =
+      raw
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .pop() || "";
+    return regex.test(aria) || regex.test(raw) || regex.test(tail);
+  });
+  if (hit) {
+    const inner = hit.tagName === "FLOW-BUTTON" ? hit.querySelector("button") : null;
+    const target = inner instanceof HTMLElement ? inner : hit;
+    target.click();
+    return true;
+  }
+  return false;
+}
+
+/** Sends Escape and clicks `.cdk-overlay-backdrop` to close open modal dialogs or menus. */
+export async function dismissOverlay(): Promise<void> {
+  document.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27,
+      which: 27,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  await delay(100);
+  const backdrop = document.querySelector(".cdk-overlay-backdrop");
+  if (backdrop instanceof HTMLElement) {
+    backdrop.click();
+    await delay(120);
+  }
+}
+
 /** Extracts active FIFE host, `authuser`, and signed-CDN detection from `window.WIZ_global_data`. */
 export function fifeEnv(): FifeEnv {
   const wiz = window.WIZ_global_data || {};
@@ -122,4 +175,28 @@ export function fifeEnv(): FifeEnv {
     );
   };
   return { fifeHost, authuser, isSignedCdnHost };
+}
+
+/** Strips query parameters and FIFE size suffixes for base URL comparison. */
+export function fifeBase(u: unknown): string {
+  const s = String(u || "").trim();
+  return s ? s.split("?")[0].split("=")[0] : "";
+}
+
+/** Selects the best available media URL from a project tile object. */
+export function pickTileUrl(t: FlowTile | null | undefined): string | null {
+  return (
+    t?.Fb?.Wb ||
+    t?.Fb?.fifeUrl ||
+    t?.Fb?.imageUrl ||
+    t?.Fb?.videoUrl ||
+    t?.Fb?.url ||
+    t?.Wb ||
+    t?.fifeUrl ||
+    t?.imageUrl ||
+    t?.videoUrl ||
+    t?.url ||
+    t?.ue ||
+    null
+  );
 }

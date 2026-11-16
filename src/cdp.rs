@@ -4,6 +4,7 @@
 //! Chrome DevTools Protocol (CDP) WebSocket client and local HTTP target discovery.
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -199,6 +200,9 @@ impl CdpConnection {
 
         let weak_transport: Weak<CdpTransport> = Arc::downgrade(&transport);
         let reader_handle = tokio::spawn(async move {
+            let mut req_methods: HashMap<String, String> = HashMap::new();
+            let mut pending_bodies: HashMap<String, (String, String, u16)> = HashMap::new();
+
             while let Some(msg_res) = stream.next().await {
                 let Ok(msg) = msg_res else {
                     break;
@@ -253,21 +257,17 @@ impl CdpConnection {
                     continue;
                 }
 
-                if method == "Network.responseReceived"
-                    && let Some(tx) = network_tx.as_ref()
-                    && let Some(p) = frame.params.as_ref()
-                    && let Some(url) = p.pointer("/response/url").and_then(|v| v.as_str())
-                {
-                    let status = p
-                        .pointer("/response/status")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0)
-                        .min(u16::MAX as u64) as u16;
-                    let _ = tx.send(NetworkResponseEvent {
-                        url: url.to_string(),
-                        status,
-                    });
-                }
+                let Some(tx) = network_tx.as_ref() else {
+                    continue;
+                };
+                handle_network_event(
+                    method,
+                    frame.params.as_ref(),
+                    &mut req_methods,
+                    &mut pending_bodies,
+                    &weak_transport,
+                    tx,
+                );
             }
 
             if let Some(t) = weak_transport.upgrade() {
@@ -301,6 +301,140 @@ impl CdpConnection {
     ) -> Result<Value> {
         self.transport.call(method, params, timeout).await
     }
+}
+
+/// Processes CDP `Network.*` events and publishes request methods, status codes, and error excerpts.
+fn handle_network_event(
+    method: &str,
+    params: Option<&Value>,
+    req_methods: &mut HashMap<String, String>,
+    pending_bodies: &mut HashMap<String, (String, String, u16)>,
+    weak_transport: &Weak<CdpTransport>,
+    network_tx: &broadcast::Sender<NetworkResponseEvent>,
+) {
+    let Some(p) = params else {
+        return;
+    };
+    let Some(req_id) = p.get("requestId").and_then(|v| v.as_str()) else {
+        return;
+    };
+
+    match method {
+        "Network.requestWillBeSent" => {
+            let req_method = p
+                .pointer("/request/method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("GET")
+                .to_string();
+            if req_methods.len() > 1024 {
+                req_methods.clear();
+            }
+            req_methods.insert(req_id.to_string(), req_method);
+        }
+        "Network.responseReceived" => {
+            let Some(url) = p
+                .pointer("/response/url")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string)
+            else {
+                return;
+            };
+            let status = p
+                .pointer("/response/status")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .min(u16::MAX as u64) as u16;
+            let req_method = req_methods
+                .remove(req_id)
+                .unwrap_or_else(|| "GET".to_string());
+
+            if status >= 400 && is_error_body_candidate(&url) {
+                if pending_bodies.len() > 256 {
+                    pending_bodies.clear();
+                }
+                pending_bodies.insert(req_id.to_string(), (url, req_method, status));
+            } else {
+                let _ = network_tx.send(NetworkResponseEvent {
+                    url,
+                    method: req_method,
+                    status,
+                    error_excerpt: None,
+                });
+            }
+        }
+        "Network.loadingFinished" => {
+            let Some((url, req_method, status)) = pending_bodies.remove(req_id) else {
+                return;
+            };
+            let req_id_owned = req_id.to_string();
+            let tx = network_tx.clone();
+            let Some(t) = weak_transport.upgrade() else {
+                let _ = tx.send(NetworkResponseEvent {
+                    url,
+                    method: req_method,
+                    status,
+                    error_excerpt: None,
+                });
+                return;
+            };
+            tokio::spawn(async move {
+                let excerpt = fetch_error_excerpt(&t, &req_id_owned).await;
+                let _ = tx.send(NetworkResponseEvent {
+                    url,
+                    method: req_method,
+                    status,
+                    error_excerpt: excerpt,
+                });
+            });
+        }
+        "Network.loadingFailed" => {
+            req_methods.remove(req_id);
+            if let Some((url, req_method, status)) = pending_bodies.remove(req_id) {
+                let _ = network_tx.send(NetworkResponseEvent {
+                    url,
+                    method: req_method,
+                    status,
+                    error_excerpt: None,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Returns `true` when `url` belongs to a Flow or Google auth host worth fetching on HTTP errors.
+fn is_error_body_candidate(url: &str) -> bool {
+    url.contains("aisandbox-pa.googleapis.com")
+        || url.contains("labs.google")
+        || url.contains("recaptcha")
+}
+
+/// Fetches and truncates the response body of a failed CDP HTTP request to 500 characters.
+async fn fetch_error_excerpt(transport: &CdpTransport, request_id: &str) -> Option<String> {
+    let val = transport
+        .call(
+            "Network.getResponseBody",
+            json!({ "requestId": request_id }),
+            Duration::from_secs(3),
+        )
+        .await
+        .ok()?;
+    let raw_body = val.get("body").and_then(|v| v.as_str())?;
+    let text = if val
+        .get("base64Encoded")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw_body)
+            .ok()?;
+        String::from_utf8_lossy(&bytes).into_owned()
+    } else {
+        raw_body.to_string()
+    };
+    let excerpt = text.chars().take(500).collect::<String>();
+    let trimmed = excerpt.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Returns the shared HTTP client for local Chrome CDP endpoint discovery.

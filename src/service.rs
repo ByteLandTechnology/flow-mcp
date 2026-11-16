@@ -19,9 +19,11 @@ use crate::db::{
 };
 use crate::download;
 use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::generation::{self, AgentImagesParams, EditParams, GenerateParams};
 use crate::media_files;
 use crate::project::{self, ProjectsParams};
-use crate::queue::{JobQueue, JobResult, JobRunner, JobView, WaitParams};
+use crate::queue::{JobQueue, JobResult, JobRunner, JobView, SceneParams, WaitParams};
+use crate::scenes::{self, ScenesParams, VideoParams};
 
 /// Maximum downloaded file size served directly through MCP `resources/read` (`64 MiB`).
 const MAX_RESOURCE_READ_BYTES: u64 = 64 * 1024 * 1024;
@@ -65,8 +67,38 @@ impl FlowService {
     /// Creates a [`FlowService`] connected to [`ChromeEngine`], [`FlowDb`], and a serial [`JobQueue`].
     pub(crate) fn new(engine: Arc<ChromeEngine>) -> Arc<Self> {
         let db = FlowDb::new();
-        let runner: JobRunner =
-            Arc::new(move |_scene, _on_progress| Box::pin(async move { Ok(JobResult::default()) }));
+        let engine_for_runner = Arc::clone(&engine);
+        let db_for_runner = db.clone();
+        let runner: JobRunner = Arc::new(move |scene, on_progress| {
+            let engine = Arc::clone(&engine_for_runner);
+            let db = db_for_runner.clone();
+            Box::pin(async move {
+                let (files, created, resources) = if scene.agent.unwrap_or(false) {
+                    generation::run_agent_batch(&engine, &db, &scene, on_progress).await?
+                } else if let Some(ref extend_from) = scene.video_extend_from {
+                    scenes::run_video_extend(
+                        &engine,
+                        &db,
+                        extend_from,
+                        &scene.prompt,
+                        scene.scene_id.as_deref(),
+                        on_progress,
+                    )
+                    .await?
+                } else if let Some(ref edit_from) = scene.edit_from {
+                    generation::run_edit(&engine, &db, edit_from, &scene.prompt, on_progress)
+                        .await?
+                } else {
+                    generation::run_generation(&engine, &db, &scene, on_progress).await?
+                };
+                Ok(JobResult {
+                    files,
+                    created,
+                    resources,
+                })
+            })
+        });
+
         let queue = JobQueue::new(runner);
         Arc::new(Self { engine, queue, db })
     }
@@ -103,6 +135,103 @@ impl FlowService {
     /// Returns all currently tracked queue jobs.
     pub(crate) async fn list_jobs(&self) -> Vec<JobView> {
         self.queue.list().await
+    }
+
+    /// Saves any supplied `character_look` under `character_role` and appends it to `prompt`.
+    async fn apply_character_look_prefill(&self, scene: &mut SceneParams) -> Result<()> {
+        let Some(role) = scene.character_role.clone() else {
+            return Ok(());
+        };
+        if let Some(look) = scene.character_look.as_deref() {
+            self.db.save_character_look(&role, look).await?;
+            scene.prompt = format!("{}, character {}: {}", scene.prompt, role, look);
+        } else if let Some(look) = self.db.get_character_look(&role).await? {
+            scene.prompt = format!("{}, character {}: {}", scene.prompt, role, look);
+        }
+        Ok(())
+    }
+
+    /// Saves any supplied character look in SQLite, appends it to `prompt`, and queues the job.
+    pub(crate) async fn generate(&self, req: GenerateParams) -> Result<JobView> {
+        let mut scene = SceneParams {
+            prompt: req.prompt,
+            mode: req.mode,
+            model: req.model,
+            aspect: req.aspect,
+            count: req.count,
+            frames: req.frames,
+            name: req.name,
+            download: req.download,
+            character_role: req.character_role,
+            character_look: req.character_look,
+            asset_ids: req.asset_ids,
+            characters: req.characters,
+            video_type: req.video_type,
+            duration: req.duration,
+            resolution: req.resolution,
+            ..Default::default()
+        };
+        self.apply_character_look_prefill(&mut scene).await?;
+        Ok(self.queue.enqueue(scene).await)
+    }
+
+    /// Queues a Flow Agent Mode batch image job.
+    pub(crate) async fn agent_images(&self, req: AgentImagesParams) -> Result<JobView> {
+        let scene = SceneParams {
+            prompt: req.prompt,
+            mode: Some("image".to_string()),
+            model: req.model,
+            aspect: req.aspect,
+            count: req.count,
+            agent: Some(true),
+            ..Default::default()
+        };
+        Ok(self.queue.enqueue(scene).await)
+    }
+
+    /// Queues an asset edit job that matches `req.match`.
+    pub(crate) async fn edit(&self, req: EditParams) -> Result<JobView> {
+        let scene = SceneParams {
+            prompt: req.prompt,
+            edit_from: Some(req.r#match),
+            ..Default::default()
+        };
+        Ok(self.queue.enqueue(scene).await)
+    }
+
+    /// Lists, creates, adds clips to, renames, or trashes Google Flow scenes.
+    pub(crate) async fn scenes(&self, req: ScenesParams) -> Result<Value> {
+        scenes::handle_scenes(&self.engine, &self.db, req).await
+    }
+
+    /// Trims a video immediately or queues a video extension job.
+    pub(crate) async fn video(&self, req: VideoParams) -> Result<Value> {
+        match req.action.trim() {
+            "trim" => {
+                scenes::trim_video(
+                    &self.engine,
+                    &req.r#match,
+                    req.start_seconds,
+                    req.end_seconds,
+                )
+                .await
+            }
+            "extend" => {
+                let prompt = req
+                    .prompt
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("flow_video extend requires 'prompt'"))?;
+                let scene = SceneParams {
+                    prompt,
+                    video_extend_from: Some(req.r#match),
+                    scene_id: req.scene_id,
+                    ..Default::default()
+                };
+                let job = self.queue.enqueue(scene).await;
+                Ok(serde_json::to_value(job)?)
+            }
+            other => anyhow::bail!("Unknown video action: {}", other),
+        }
     }
 
     /// Waits for `req.ids` or all jobs up to `req.timeout` seconds (default `600`).

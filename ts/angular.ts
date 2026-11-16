@@ -1,10 +1,11 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-// Shared Angular Ivy LView traversal and router lookup helpers.
+// Shared Angular Ivy LView traversal, router lookup, and scene creation helpers.
 
+import { delay, elText, fifeBase } from "./dom";
 import { runtimeState } from "./state";
-import type { AngularRouter, NgLView } from "./types";
+import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
 /** Object with optional Angular Ivy `__ngContext__` or internal `lView` links. */
 export interface NgContextCarrier {
@@ -24,6 +25,11 @@ export function readOwn(obj: unknown, key: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** Returns `lv` if `lv` is a live Angular LView whose host node remains connected. */
+export function isLiveLView(lv: unknown): lv is NgLView {
+  return Array.isArray(lv) && (!(lv[0] instanceof Node) || lv[0].isConnected);
 }
 
 /** Returns true when `m` matches Angular's integer-keyed LView registry map. */
@@ -182,4 +188,189 @@ export function findRouter(): AngularRouter | null {
     }
   }
   return null;
+}
+
+/** Dispatches a `create_scene` mutation through `helper` and waits for the resolved scene ID. */
+export async function createScene(
+  helper: FlowStoreHandle,
+  getMap: () => Map<string, FlowTile> | null | undefined,
+  workflowIds: string[],
+): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const tileMap = getMap();
+  const before = new Set<string>();
+  if (tileMap instanceof Map) {
+    for (const [k, v] of tileMap.entries()) {
+      if (String(v?.type || "").toUpperCase() === "SCENE") {
+        before.add(String(v?.id ?? k));
+      }
+    }
+  }
+  let resolveDe: (v: unknown) => void = () => {};
+  let rejectDe: (e: unknown) => void = () => {};
+  let resolvedScene: unknown = null;
+  let mutateErr: string | null = null;
+  const dePromise = new Promise<unknown>((res, rej) => {
+    resolveDe = res;
+    rejectDe = rej;
+  });
+  dePromise.then(
+    (v) => {
+      resolvedScene = v;
+    },
+    (e) => {
+      const errObj = e as { message?: unknown } | null;
+      mutateErr = String(errObj?.message || e || "create_scene_failed");
+    },
+  );
+  const mutatePromise = Promise.resolve(
+    helper.mutate({
+      type: "create_scene",
+      rg: workflowIds,
+      Fc: undefined,
+      aspectRatio: 1,
+      De: { resolve: resolveDe, reject: rejectDe },
+    }),
+  ).then(
+    (v) => {
+      const vObj = v as { VWa?: unknown } | null;
+      if (vObj?.VWa && !resolvedScene) resolvedScene = vObj.VWa;
+    },
+    (e) => {
+      if (!mutateErr) {
+        const errObj = e as { message?: unknown } | null;
+        mutateErr = String(errObj?.message || e || "create_scene_failed");
+      }
+    },
+  );
+
+  const readSceneId = (val: unknown): string | null => {
+    if (typeof val === "string" && val) return val;
+    if (val && typeof val === "object") {
+      const objId = (val as { id?: unknown }).id;
+      if (objId) return String(objId);
+    }
+    return null;
+  };
+
+  let sceneId: string | null = null;
+  for (let i = 0; i < 80; i++) {
+    if (mutateErr) {
+      return { ok: false, error: mutateErr };
+    }
+    const directId = readSceneId(resolvedScene);
+    if (directId) {
+      sceneId = directId;
+      break;
+    }
+    const mNow = getMap();
+    if (mNow instanceof Map) {
+      for (const [k, v] of mNow.entries()) {
+        if (String(v?.type || "").toUpperCase() === "SCENE" && !v?.isPending) {
+          const sid = String(v?.id ?? k);
+          if (!before.has(sid)) {
+            sceneId = sid;
+            break;
+          }
+        }
+      }
+    }
+    if (sceneId) break;
+    await delay(100);
+  }
+  if (!sceneId && !mutateErr) {
+    await Promise.race([mutatePromise, delay(200)]).catch(() => {});
+    sceneId = readSceneId(resolvedScene);
+  }
+  if (mutateErr) {
+    return { ok: false, error: mutateErr };
+  }
+  if (!sceneId) {
+    return { ok: false, error: "created_scene_id_not_found" };
+  }
+  return { ok: true, id: sceneId };
+}
+
+/** Matching descriptor used when picking an existing tile in Flow overlay pickers. */
+export interface PickerMatchTarget {
+  /** Primary tile or workflow ID. */
+  id: string;
+  /** Optional primary media identifier. */
+  primaryMediaId?: string | number | null;
+  /** Lowercase display name when present. */
+  lowName?: string;
+  /** Optional raw media URL. */
+  url?: string | null;
+  /** Optional normalized FIFE base URL without resize suffix. */
+  fife?: string;
+}
+
+/** Returns true when a picker item model or Angular payload matches `target`. */
+export function pickerAssetMatches(
+  a: unknown,
+  target: PickerMatchTarget,
+): boolean {
+  if (!a || typeof a !== "object") return false;
+  const aids = [
+    readOwn(a, "id"),
+    readOwn(a, "workflowId"),
+    readOwn(a, "entityId"),
+    readOwn(a, "mediaId"),
+    readOwn(a, "primaryMediaId"),
+  ]
+    .filter(Boolean)
+    .map(String);
+  if (aids.includes(target.id)) return true;
+  if (target.primaryMediaId && aids.includes(String(target.primaryMediaId))) {
+    return true;
+  }
+  const aFife = fifeBase(
+    readOwn(a, "Wb") ||
+      readOwn(a, "fifeUrl") ||
+      readOwn(a, "imageUrl") ||
+      readOwn(a, "url"),
+  );
+  return Boolean(target.fife && aFife && target.fife === aFife);
+}
+
+/** Returns true when a visible picker DOM node matches `target` via Ivy data, title, or media URL. */
+export function pickerElementMatches(
+  el: Element,
+  target: PickerMatchTarget,
+  mediaSelector = "img[src], video[src]",
+): boolean {
+  if (!el || el.getClientRects().length === 0) return false;
+  const lv = resolveLView(el);
+  if (Array.isArray(lv)) {
+    for (const cand of lv) {
+      if (!cand || typeof cand !== "object" || cand instanceof Node) continue;
+      if (pickerAssetMatches(cand, target)) return true;
+      const assetField = readOwn(cand, "asset");
+      const inner =
+        typeof assetField === "function" ? assetField.call(cand) : assetField;
+      if (pickerAssetMatches(inner, target)) return true;
+    }
+  }
+  if (target.lowName) {
+    const titleEl = el.querySelector(".asset-title");
+    const txt = (
+      (titleEl ? elText(titleEl) : "") ||
+      elText(el) ||
+      el.getAttribute("aria-label") ||
+      ""
+    ).toLowerCase();
+    if (txt && txt.includes(target.lowName)) return true;
+  }
+  if (target.url || target.fife) {
+    for (const m of el.querySelectorAll(mediaSelector)) {
+      const s = m.getAttribute("src") || "";
+      if (!s) continue;
+      if (
+        (target.url && (s === target.url || target.url.includes(s))) ||
+        (target.fife && fifeBase(s) === target.fife)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }

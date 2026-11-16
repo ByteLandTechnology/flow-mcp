@@ -362,6 +362,41 @@ impl FlowDb {
         .await
     }
 
+    /// Reads the saved look description for `role` from `character_looks`.
+    pub(crate) async fn get_character_look(&self, role: &str) -> Result<Option<String>> {
+        let role = role.to_string();
+        self.run_blocking(move |conn| {
+            let look = conn
+                .query_row(
+                    "SELECT look FROM character_looks WHERE role = ?1",
+                    params![role],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(look)
+        })
+        .await
+    }
+
+    /// Inserts or updates a `role` to `look` mapping in `character_looks`.
+    pub(crate) async fn save_character_look(&self, role: &str, look: &str) -> Result<()> {
+        let role = role.to_string();
+        let look = look.to_string();
+        let now = now_epoch_ms();
+        self.run_blocking(move |conn| {
+            conn.execute(
+                "INSERT INTO character_looks (role, look, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(role) DO UPDATE SET
+                    look = excluded.look,
+                    updated_at = excluded.updated_at",
+                params![role, look, now],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Loads all saved `role` to `look` entries from `character_looks`.
     pub(crate) async fn load_character_looks(&self) -> Result<HashMap<String, String>> {
         self.run_blocking(|conn| {

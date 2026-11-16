@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use serde_json::{Value, json};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -41,8 +42,33 @@ pub(crate) const DEFAULT_CHROME_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) Appl
 pub(crate) struct NetworkResponseEvent {
     /// Request URL reported by Chrome.
     pub(crate) url: String,
+    /// HTTP request method (for example `"GET"` or `"POST"`).
+    pub(crate) method: String,
     /// HTTP response status code.
     pub(crate) status: u16,
+    /// Optional truncated response body returned on HTTP error responses.
+    pub(crate) error_excerpt: Option<String>,
+}
+
+/// Verifies that every optional file path exists on disk and points to a regular file.
+pub(crate) async fn validate_local_files(paths: Option<&[String]>, label: &str) -> Result<()> {
+    let Some(paths) = paths else {
+        return Ok(());
+    };
+    for p in paths {
+        let path = Path::new(p);
+        if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+            anyhow::bail!("{} file does not exist: {}", label, p);
+        }
+        if tokio::fs::metadata(path)
+            .await
+            .map(|m| !m.is_file())
+            .unwrap_or(false)
+        {
+            anyhow::bail!("{} path is not a file: {}", label, p);
+        }
+    }
+    Ok(())
 }
 
 /// Active headless Chrome process paired with its CDP connection.
@@ -386,16 +412,94 @@ impl ChromeEngine {
     /// Dispatches a trusted CDP mouse move event at viewport coordinates `(x, y)`.
     pub(crate) async fn mouse_move(&self, x: f64, y: f64) -> Result<()> {
         let cdp = self.active_cdp().await?;
+        dispatch_mouse_moved(&cdp, x, y).await
+    }
+
+    /// Dispatches a trusted CDP left mouse click sequence at viewport coordinates `(x, y)`.
+    pub(crate) async fn mouse_click(&self, x: f64, y: f64) -> Result<()> {
+        let cdp = self.active_cdp().await?;
+        dispatch_mouse_moved(&cdp, x, y).await?;
+        tokio::time::sleep(Duration::from_millis(25)).await;
         cdp.call(
             "Input.dispatchMouseEvent",
             json!({
-                "type": "mouseMoved",
+                "type": "mousePressed",
                 "x": x,
                 "y": y,
+                "button": "left",
+                "buttons": 1,
+                "clickCount": 1,
                 "pointerType": "mouse",
             }),
         )
         .await?;
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        cdp.call(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "buttons": 0,
+                "clickCount": 1,
+                "pointerType": "mouse",
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Dispatches a trusted CDP left click when `point` contains numeric `x` and `y` coordinates.
+    pub(crate) async fn click_point(&self, point: &Value) -> Result<bool> {
+        let (Some(x), Some(y)) = (
+            point.get("x").and_then(|v| v.as_f64()),
+            point.get("y").and_then(|v| v.as_f64()),
+        ) else {
+            return Ok(false);
+        };
+        self.mouse_click(x, y).await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok(true)
+    }
+
+    /// Assigns local `files` to the `<input>` element matching `selector` through CDP `DOM.setFileInputFiles`.
+    pub(crate) async fn upload_files(&self, selector: &str, files: &[String]) -> Result<()> {
+        let cdp = self.active_cdp().await?;
+        let sel_json = serde_json::to_string(selector)?;
+        let query_expr = format!("document.querySelector({})", sel_json);
+
+        let mut object_id: Option<String> = None;
+        for _ in 0..20 {
+            let res = cdp
+                .call(
+                    "Runtime.evaluate",
+                    json!({
+                        "expression": query_expr,
+                        "returnByValue": false,
+                    }),
+                )
+                .await?;
+            if let Some(oid) = res.pointer("/result/objectId").and_then(|v| v.as_str()) {
+                object_id = Some(oid.to_string());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let Some(object_id) = object_id else {
+            anyhow::bail!("File input element not found for selector: {}", selector);
+        };
+
+        cdp.call(
+            "DOM.setFileInputFiles",
+            json!({
+                "objectId": object_id,
+                "files": files,
+            }),
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         Ok(())
     }
 
@@ -549,6 +653,21 @@ async fn flush_and_shutdown_active(a: ActiveChrome) {
     }
     drop(a.cdp);
     a.managed.shutdown().await;
+}
+
+/// Dispatches a CDP `mouseMoved` event on `cdp` at viewport coordinates `(x, y)`.
+async fn dispatch_mouse_moved(cdp: &CdpConnection, x: f64, y: f64) -> Result<()> {
+    cdp.call(
+        "Input.dispatchMouseEvent",
+        json!({
+            "type": "mouseMoved",
+            "x": x,
+            "y": y,
+            "pointerType": "mouse",
+        }),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Evaluates `expr` via CDP `Runtime.evaluate` and propagates JavaScript exception messages.

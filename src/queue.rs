@@ -95,9 +95,54 @@ pub(crate) struct SceneParams {
     /// Model name in the Flow UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) model: Option<String>,
+    /// Output aspect ratio (`"16:9"`, `"9:16"`, or `"1:1"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) aspect: Option<String>,
+    /// Requested output count (`1..=4`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) count: Option<u32>,
+    /// Local reference image paths to upload before generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) frames: Option<Vec<String>>,
     /// Scene or asset label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) name: Option<String>,
+    /// Download created assets when true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) download: Option<bool>,
+    /// Source asset match string for edit jobs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) edit_from: Option<String>,
+    /// Character role key in `character_looks` whose saved look `flow_generate` appends to prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) character_role: Option<String>,
+    /// Character look description to save in `character_looks`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) character_look: Option<String>,
+    /// Run through Flow Agent Mode when true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) agent: Option<bool>,
+    /// Existing Flow asset IDs to attach as generation ingredients or reference frames.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) asset_ids: Option<Vec<String>>,
+    /// Character names or IDs to attach to video or image generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) characters: Option<Vec<String>>,
+    /// Video generation mode (`"frames"` or `"ingredients"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) video_type: Option<String>,
+    /// Requested video duration (for example `"5s"` or `"8s"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) duration: Option<String>,
+    /// Requested video resolution (for example `"720p"`, `"1080p"`, or `"4K"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) resolution: Option<String>,
+    /// Source video asset match string for `flow_video` extend jobs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) video_extend_from: Option<String>,
+    /// Target scene ID for `flow_video` extend jobs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) scene_id: Option<String>,
 }
 
 /// Internal job record in [`JobQueue`].
@@ -344,6 +389,16 @@ impl JobQueue {
     /// Increments the watch state version to wake the worker and waiting callers.
     fn bump_state_version(&self) {
         self.state_tx.send_modify(|v| *v = v.wrapping_add(1));
+    }
+
+    /// Adds a [`SceneParams`] job in `Queued` state and wakes the worker.
+    pub(crate) async fn enqueue(&self, scene: SceneParams) -> JobView {
+        let view = {
+            let mut st = self.state.lock().await;
+            st.enqueue_job(scene, None)
+        };
+        self.bump_state_version();
+        view
     }
 
     /// Lists all tracked jobs in insertion order.

@@ -274,6 +274,122 @@ export interface FifeEnv {
   isSignedCdnHost: (parsed: URL) => boolean;
 }
 
+/** Flow prompt validation and submission state controller. */
+export interface PromptStateController {
+  /** Applies serialized prompt segments. */
+  Wn?: (doc: { Oe: Array<{ type: string; content: string }> }) => void;
+  /** Prompt text helper object. */
+  prompt?: { Le?: () => boolean };
+  /** Validator status object. */
+  lf?: { isValid?: () => boolean; jYa?: () => string };
+  /** Mode, output count, and model config signals. */
+  config?: {
+    mode?: () => string;
+    outputCount?: () => number;
+  };
+}
+
+/** Angular component controller for a base prompt box. */
+export interface BasePromptBoxInstance {
+  /** Prompt state signal container. */
+  Qa?: PromptStateController;
+  /** Returns rich editor wrapper containing ProseMirror `th`. */
+  CQ?: () => { th?: unknown } | null | undefined;
+  /** Submits or prepares prompt state. */
+  Wn?: (...args: unknown[]) => unknown;
+  /** Returns true when the prompt box can submit. */
+  qf?: () => boolean;
+  /** Controls settings overlay visibility. */
+  VJ?: (() => unknown) & { set?: (open: boolean) => void };
+}
+
+/** Host container managing manual and agent prompt boxes. */
+export interface PromptBoxHost {
+  /** Toggles between manual and agent composer modes. */
+  Tx: () => void;
+  /** Returns true while agent mode is active. */
+  Sk: () => boolean;
+  /** Returns the active manual base prompt box instance. */
+  mt?: () => BasePromptBoxInstance | null | undefined;
+  /** Returns the active agent prompt box wrapper. */
+  iU?: () => { mt?: () => BasePromptBoxInstance | null | undefined } | null | undefined;
+}
+
+/** Angular project page component instance. */
+export interface ProjectPageInstance {
+  /** Attaches a tile reference directly into composer state. */
+  Ph: (tile: FlowTile) => void;
+  /** Prompt state and attached item signal container. */
+  Qa: PromptStateController & { kc?: { all?: () => Array<Record<string, unknown>> } };
+  /** Store/mode mutation signal container. */
+  ub: { mutate: (value: unknown) => unknown };
+  /** Secondary agent state signal container. */
+  Ta?: { mutate?: (value: unknown) => void };
+  /** Returns the prompt box host component. */
+  jQ?: () => PromptBoxHost | null | undefined;
+}
+
+/** ProseMirror editor transaction builder subset. */
+export interface ProseMirrorTransaction {
+  /** Replaces document range `[from, to]` with `node`. */
+  replaceWith: (from: number, to: number, node: unknown) => ProseMirrorTransaction;
+}
+
+/** ProseMirror editor state subset. */
+export interface ProseMirrorState {
+  /** Document schema used to construct nodes. */
+  schema: {
+    text: (text: string) => unknown;
+    node?: (name: string, attrs?: unknown, content?: unknown[]) => unknown;
+    nodes?: {
+      hard_break?: { create?: () => unknown };
+      paragraph?: { create?: (attrs: unknown, content: unknown[]) => unknown };
+    };
+  };
+  /** Current document tree. */
+  doc: { content: { size: number } };
+  /** Default transaction builder. */
+  tr?: ProseMirrorTransaction;
+  /** Minified transaction builder alias. */
+  Fi?: ProseMirrorTransaction;
+}
+
+/** ProseMirror editor view subset. */
+export interface ProseMirrorView {
+  /** Current editor state. */
+  state: ProseMirrorState;
+  /** Standard transaction dispatch function. */
+  dispatch?: (tr: ProseMirrorTransaction) => void;
+  /** Minified transaction dispatch alias. */
+  Qd?: (tr: ProseMirrorTransaction) => void;
+}
+
+/** Options accepted by `writePromptBox`. */
+export interface WritePromptOptions {
+  /** Resolved base prompt box controller. */
+  liveUx?: BasePromptBoxInstance | null;
+  /** Candidate host DOM nodes searched first for Ivy controllers. */
+  seeds?: Array<Element | null>;
+  /** Selector excluding non-target prompt components. */
+  excludeSelector?: string | null;
+  /** Whether to require `PromptState` non-empty confirmation. */
+  strictSync?: boolean;
+  /** Whether clicking the Settings button is permitted to reveal Ivy maps. */
+  trySettingsClick?: boolean;
+  /** Selector restricting LView hover probing scope. */
+  hoverScopeSelector?: string | null;
+  /** Async cleanup callback invoked after temporarily opening Settings. */
+  onCloseSettings?: () => Promise<void>;
+}
+
+/** Result returned by `writePromptBox`. */
+export interface WritePromptResult {
+  /** True when the prompt box reflects the written text. */
+  ok: boolean;
+  /** Strategy tier that succeeded. */
+  tier: string;
+}
+
 /** Cached media resolution entry for a primary media identifier. */
 export interface CachedMediaInfo {
   /** Primary stream or image URL. */
@@ -399,6 +515,70 @@ export type ResolvedMediaResult =
   | { ok: false; error: string }
   | { ok: true; url: string; download_url: string; candidates: string[] };
 
+/** Configuration payload shared by `setupGeneration` and `attachIngredients`. */
+export interface GenerationConfig {
+  /** Generation mode (`video`, `image`, `character`, or `scene`). */
+  mode?: string | null;
+  /** Aspect ratio label. */
+  aspect?: string | null;
+  /** Model label. */
+  model?: string | null;
+  /** Requested output count. */
+  count?: number | null;
+  /** Prompt text. */
+  prompt?: string | null;
+  /** Project asset IDs attached as ingredients. */
+  asset_ids?: string[] | null;
+  /** Character names or IDs attached as ingredients. */
+  characters?: string[] | null;
+  /** Video sub-type (`frames` or `ingredients`). */
+  video_type?: string | null;
+  /** Video duration label. */
+  duration?: string | null;
+  /** Video resolution label. */
+  resolution?: string | null;
+  /** Whether to enable Agent Mode composer. */
+  agent?: boolean | null;
+}
+
+/** Request payload for `sceneOp`. */
+export interface SceneOpRequest {
+  /** Operation (`create` or `add_clips`). */
+  action?: string;
+  /** Clip asset IDs to include. */
+  asset_ids?: string[] | null;
+  /** Optional scene title. */
+  name?: string | null;
+  /** Existing scene ID for `add_clips`. */
+  scene_id?: string | null;
+  /** Optional insertion position index. */
+  position?: number | null;
+}
+
+/** Request payload for `videoOp`. */
+export interface VideoOpRequest {
+  /** Operation (`trim`, `prepare_extend`, `poll_extend`, or `done_scene`). */
+  action?: string;
+  /** Target video asset identifier. */
+  asset_id?: string | null;
+  /** Target scene identifier for `prepare_extend`. */
+  scene_id?: string | null;
+  /** Extend prompt text. */
+  prompt?: string | null;
+  /** Non-destructive trim start timestamp in seconds. */
+  start_seconds?: number | null;
+  /** Non-destructive trim end timestamp in seconds. */
+  end_seconds?: number | null;
+}
+
+/** Viewport click point computed in browser coordinates. */
+export interface ViewportPoint {
+  /** Horizontal viewport pixel coordinate. */
+  x: number;
+  /** Vertical viewport pixel coordinate. */
+  y: number;
+}
+
 /** Public browser runtime API exposed at `window.__flowMcp`. */
 export interface FlowMcpRuntime {
   /** Probes Google Flow authentication shell status. */
@@ -419,6 +599,20 @@ export interface FlowMcpRuntime {
   fetchMedia: (u: string, expectedKind: string) => Promise<FetchedMediaPayload>;
   /** Resolves stream and download URLs for a primary media identifier via `as29s`. */
   resolveVideoUrl: (primaryMediaId: string) => Promise<ResolvedMediaResult>;
+  /** Configures generation mode, video type, aspect ratio, count, duration, resolution, and model. */
+  setupGeneration: (cfg: GenerationConfig) => Promise<{ ok: boolean; error?: string }>;
+  /** Attaches ingredient assets or characters and writes the generation prompt. */
+  attachIngredients: (cfg: GenerationConfig) => Promise<unknown>;
+  /** Clicks the upload trigger button or accepts upload consent dialogs. */
+  uploadUiAction: (action: string) => boolean;
+  /** Opens the asset editor via Angular Router or grid tile UI controls. */
+  openEditAsset: (assetId: string, mediaUrl: string | null, primaryMediaId: string | null) => Promise<unknown>;
+  /** Locates the enabled generation submit button and returns its viewport click point. */
+  submitGeneration: () => Promise<unknown>;
+  /** Creates Flow scenes and adds clips. */
+  sceneOp: (req: SceneOpRequest) => Promise<unknown>;
+  /** Applies video trim timestamps or drives the scene builder extend workflow. */
+  videoOp: (req: VideoOpRequest) => Promise<unknown>;
 }
 
 declare global {

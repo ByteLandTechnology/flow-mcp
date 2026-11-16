@@ -25,8 +25,10 @@ use crate::assets::{AssetsParams, DownloadParams, RenameParams, TrashParams};
 use crate::auth::LoginParams;
 use crate::collections::CollectionsParams;
 use crate::db::{DOWNLOAD_ASSET_RESOURCE_PREFIX, DOWNLOAD_RESOURCE_PREFIX, DownloadsParams};
+use crate::generation::{AgentImagesParams, EditParams, GenerateParams};
 use crate::project::{NewProjectParams, ProjectsParams, StatusParams};
 use crate::queue::{JobIdParams, WaitParams};
+use crate::scenes::{ScenesParams, VideoParams};
 use crate::service::{self, FlowService, ResourceReadError};
 
 /// Inline wait limit (`45_000` ms) before slow tools return a pending task handle.
@@ -241,6 +243,39 @@ impl FlowMcpServer {
     #[tool(description = "Sign in to Google Flow through Google Chrome and save session cookies.")]
     async fn flow_login(&self, Parameters(req): Parameters<LoginParams>) -> CallToolResult {
         Self::format_result(self.service.login(req).await)
+    }
+
+    /// Queues an image or video generation job in Google Flow.
+    #[tool(description = "Queue an image or video generation job in Google Flow.")]
+    async fn flow_generate(&self, Parameters(req): Parameters<GenerateParams>) -> CallToolResult {
+        Self::format_result(self.service.generate(req).await)
+    }
+
+    /// Queues a Flow Agent Mode batch image job.
+    #[tool(description = "Queue a Flow Agent Mode batch image job.")]
+    async fn flow_agent_images(
+        &self,
+        Parameters(req): Parameters<AgentImagesParams>,
+    ) -> CallToolResult {
+        Self::format_result(self.service.agent_images(req).await)
+    }
+
+    /// Queues an edit job for a matching asset in Google Flow.
+    #[tool(description = "Queue an edit job for a matching asset in Google Flow.")]
+    async fn flow_edit(&self, Parameters(req): Parameters<EditParams>) -> CallToolResult {
+        Self::format_result(self.service.edit(req).await)
+    }
+
+    /// Lists, creates, adds clips to, renames, or trashes Google Flow scenes.
+    #[tool(description = "List, create, add clips to, rename, or trash Google Flow scenes.")]
+    async fn flow_scenes(&self, Parameters(req): Parameters<ScenesParams>) -> CallToolResult {
+        Self::format_result(self.service.scenes(req).await)
+    }
+
+    /// Trims a video immediately or queues a video extension job.
+    #[tool(description = "Trim a Google Flow video immediately or queue a video extension job.")]
+    async fn flow_video(&self, Parameters(req): Parameters<VideoParams>) -> CallToolResult {
+        Self::format_result(self.service.video(req).await)
     }
 }
 
