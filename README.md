@@ -6,12 +6,39 @@ It serves 22 tools and download resources through `rmcp` over standard input and
 `ChromeEngine` runs headless CDP Chrome (`--headless=new`) during background operations and opens a standard visible Chrome window without CDP flags during interactive Google Sign-In in `flow_login`.
 A single-worker `JobQueue` runs generation, edit, video extend, and character jobs one at a time with randomized pauses between jobs. Downloads stay in `<home>/downloads`, keep natural file names, and update a local SQLite index.
 
-## Build
+## Install with npm
+
+If you use Node.js `18` or newer, `npm` installs the `@flow-mcp/cli` launcher together with the native platform package for your operating system and CPU architecture:
+
+```sh
+npx -y @flow-mcp/cli --help
+```
+
+Or install the CLI globally:
+
+```sh
+npm install --global @flow-mcp/cli
+flow-mcp --help
+```
+
+`npm` installs one optional platform package (`@flow-mcp/darwin-arm64`, `@flow-mcp/darwin-x64`, `@flow-mcp/linux-arm64`, `@flow-mcp/linux-x64`, `@flow-mcp/win32-arm64`, or `@flow-mcp/win32-x64`). Do not pass `--omit=optional` or `--no-optional`, because those flags skip the native executable package. The Linux packages require `glibc`. On `musl` systems such as Alpine Linux, build from source instead. Google Chrome or Chromium is still required on the host machine at runtime.
+
+## Prebuilt executables
+
+Download standalone executables from [GitHub Releases](https://github.com/ByteLandTechnology/flow-mcp/releases):
+
+| Platform | x86_64 | ARM64 |
+| :--- | :--- | :--- |
+| macOS | `flow-mcp-macos-x86_64` | `flow-mcp-macos-arm64` |
+| Linux | `flow-mcp-linux-x86_64` | `flow-mcp-linux-arm64` |
+| Windows | `flow-mcp-windows-x86_64.exe` | `flow-mcp-windows-arm64.exe` |
+
+## Build from source
 
 Install a Rust 2024 toolchain (`1.88` or newer), Node.js with `npm` for build-time TypeScript bundling, and Google Chrome or Chromium for runtime automation (`--chrome` or `FLOW_MCP_CHROME` overrides OS binary discovery). The compiled `flow-mcp` binary embeds the browser runtime bundle and does not require Node.js at runtime.
 
 ```sh
-git clone <repo-url>
+git clone https://github.com/ByteLandTechnology/flow-mcp.git
 cd flow-mcp
 npm ci
 cargo build --release
@@ -40,14 +67,15 @@ Run the server directly over stdio:
 
 ## MCP client configuration
 
-Add `flow-mcp` to an MCP stdio client (`mcpServers`):
+Add `@flow-mcp/cli` to an MCP stdio client (`mcpServers`):
 
 ```json
 {
   "mcpServers": {
     "flow-mcp": {
-      "command": "/path/to/flow-mcp/target/release/flow-mcp",
+      "command": "npx",
       "args": [
+        "-y", "@flow-mcp/cli",
         "--home", "/path/to/.flow-mcp"
       ],
       "env": {
