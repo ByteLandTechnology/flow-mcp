@@ -1,6 +1,6 @@
 {
   "name": "@flow-mcp/cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Google Flow MCP server for image, video, scene, and character workflows over Chrome CDP.",
   "license": "MIT",
   "repository": {
@@ -29,11 +29,11 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@flow-mcp/darwin-arm64": "0.2.0",
-    "@flow-mcp/darwin-x64": "0.2.0",
-    "@flow-mcp/linux-arm64": "0.2.0",
-    "@flow-mcp/linux-x64": "0.2.0",
-    "@flow-mcp/win32-arm64": "0.2.0",
-    "@flow-mcp/win32-x64": "0.2.0"
+    "@flow-mcp/darwin-arm64": "0.3.0",
+    "@flow-mcp/darwin-x64": "0.3.0",
+    "@flow-mcp/linux-arm64": "0.3.0",
+    "@flow-mcp/linux-x64": "0.3.0",
+    "@flow-mcp/win32-arm64": "0.3.0",
+    "@flow-mcp/win32-x64": "0.3.0"
   }
 }
