@@ -5,17 +5,47 @@
 
 import type { FifeEnv, FlowMediaPayload, FlowTile } from "./types";
 
-/** Copies `od` to `Zc` and `xc` to `tc` when a media payload uses the field names of the Flow front end from 2026-11-15 on. */
-export function legacyMedia<T extends FlowMediaPayload | null | undefined>(m: T): T {
-  if (!m || typeof m !== "object") return m;
-  if (m.od === undefined && m.xc === undefined) return m;
-  return { ...m, Zc: m.Zc ?? m.od, tc: m.tc ?? m.xc };
+/** Short edge in pixels for each video resolution code of the Flow front end (4 = 360p, 1 = 720p, 2 = 1080p, 3 = 4K). */
+const VIDEO_SHORT_EDGE: Readonly<Record<number, number>> = { 1: 720, 2: 1080, 3: 2160, 4: 360 };
+
+/** Calculates video pixel dimensions from a Flow resolution code and an aspect ratio, or returns null. */
+function videoDimensions(
+  resolution: unknown,
+  aspectRatio: unknown,
+): { width: number; height: number } | null {
+  if (typeof resolution !== "number" || typeof aspectRatio !== "number" || !(aspectRatio > 0)) {
+    return null;
+  }
+  const edge = VIDEO_SHORT_EDGE[resolution];
+  if (!edge) return null;
+  return aspectRatio >= 1
+    ? { width: Math.round(edge * aspectRatio), height: edge }
+    : { width: edge, height: Math.round(edge / aspectRatio) };
 }
 
-/** Returns `t` with `Fb` set from `Eb` when the tile uses the media container name of the Flow front end from 2026-11-15 on. */
+/** Returns true when `d` holds a positive width and height. */
+function hasDimensions(d: { width?: number; height?: number } | undefined): boolean {
+  return Boolean(d && typeof d.width === "number" && d.width > 0 && typeof d.height === "number" && d.height > 0);
+}
+
+/** Copies the media field names of the Flow front end from 2026-11-15 on to the old names (`od` to `Zc`, `xc` to `tc`, `Bf` to `nf`, `xf` to `Lf`), and calculates video dimensions when `xc` is empty. */
+export function legacyMedia<T extends FlowMediaPayload | null | undefined>(m: T): T {
+  if (!m || typeof m !== "object") return m;
+  if (m.od === undefined && m.xc === undefined && m.xf === undefined) return m;
+  const dims = hasDimensions(m.xc) ? m.xc : (videoDimensions(m.resolution, m.aspectRatio) ?? m.xc);
+  return {
+    ...m,
+    Zc: m.Zc ?? m.od,
+    tc: m.tc ?? dims,
+    nf: m.nf ?? m.Bf,
+    Lf: m.Lf ?? (typeof m.xf === "number" ? m.xf : undefined),
+  };
+}
+
+/** Returns `t` with `Fb` set from `Eb` and `hc` set from `kc` when the tile uses the field names of the Flow front end from 2026-11-15 on. */
 export function legacyTile<T extends FlowTile | null | undefined>(t: T): T {
   if (!t || typeof t !== "object" || t.Fb || !t.Eb) return t;
-  return { ...t, Fb: legacyMedia(t.Eb) };
+  return { ...t, Fb: legacyMedia(t.Eb), hc: t.hc ?? (t.kc instanceof Date ? t.kc : undefined) };
 }
 
 /** Waits for `ms` milliseconds before resolving. */

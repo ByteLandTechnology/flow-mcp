@@ -62,6 +62,16 @@ export interface FlowMediaPayload {
   od?: string;
   /** Media failure payload or error code. */
   nf?: unknown;
+  /** Media failure payload in the Flow front end from 2026-11-15 on. */
+  Bf?: unknown;
+  /** Video length in seconds in the Flow front end from 2026-11-15 on. */
+  xf?: number;
+  /** Video resolution code in the Flow front end (4 = 360p, 1 = 720p, 2 = 1080p, 3 = 4K). */
+  resolution?: number;
+  /** Media width divided by media height. */
+  aspectRatio?: number;
+  /** Submission time in the Flow front end from 2026-11-15 on. */
+  kc?: unknown;
   /** Text prompt used to generate the media. */
   prompt?: string;
   /** Character personality notes on nested payloads. */
