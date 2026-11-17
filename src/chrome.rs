@@ -56,7 +56,11 @@ pub(crate) struct LoginProfileProbe {
     pub(crate) rejected_url: Option<String>,
     /// Signed-in Google Flow URL observed in profile history or session files.
     pub(crate) flow_url: Option<String>,
-    /// True when core Google Sign-In cookies were written since launch.
+    /// True when core Google Sign-In cookies were written since launch, or when Chrome locks the
+    /// cookie database so that it cannot be read (Chrome on Windows).
+    ///
+    /// For a locked database, the signed-in Flow URL alone starts the promotion, and the promotion
+    /// then verifies the session over CDP.
     pub(crate) has_google_auth_cookies: bool,
 }
 
@@ -468,14 +472,20 @@ pub(crate) async fn inspect_login_profile(
             dir.join("Default").join("Cookies"),
             dir.join("Default").join("Network").join("Cookies"),
         ];
+        let mut cookies_locked = false;
         for (idx, src) in cookie_candidates.iter().enumerate() {
             let base = format!("Cookies_{idx}");
-            if let Some(scratch_cookies) = copy_sqlite_files_to_scratch(src, scratch.path(), &base)
-                && probe_cookies_db(&scratch_cookies, min_webkit_us)
-            {
-                probe.has_google_auth_cookies = true;
-                break;
+            match copy_sqlite_files_to_scratch(src, scratch.path(), &base) {
+                Some(scratch_cookies) if probe_cookies_db(&scratch_cookies, min_webkit_us) => {
+                    probe.has_google_auth_cookies = true;
+                    break;
+                }
+                None if src.is_file() => cookies_locked = true,
+                _ => {}
             }
+        }
+        if cookies_locked {
+            probe.has_google_auth_cookies = true;
         }
 
         probe
