@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v0.3.0...v1.0.0) (2026-11-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **flow:** add subcommands and validated runtime flags
+
+### Features
+
+* **flow:** add subcommands and validated runtime flags ([d328dd8](https://github.com/ByteLandTechnology/flow-mcp/commit/d328dd8ebffe8b33bcdd9c335d07c21e078d4d03))
+
 ## [0.3.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v0.2.0...v0.3.0) (2026-11-16)
 
 
