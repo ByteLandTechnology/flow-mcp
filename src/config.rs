@@ -81,6 +81,11 @@ pub(crate) fn db_path() -> PathBuf {
     home_dir().join("flow-mcp.db")
 }
 
+/// Returns `<home_dir>/flow-mcp.lock`, which a process locks while it can start Chrome.
+pub(crate) fn instance_lock_path() -> PathBuf {
+    home_dir().join("flow-mcp.lock")
+}
+
 /// Returns `<home_dir>/cookies.json` for saved Google Flow session cookies.
 pub(crate) fn cookies_path() -> PathBuf {
     home_dir().join("cookies.json")

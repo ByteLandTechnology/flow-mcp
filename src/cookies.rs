@@ -6,12 +6,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
 use crate::config::cookies_path;
+use crate::platform::write_private_file_atomic;
 
 /// Normalized cookie record persisted in `cookies.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,55 +86,6 @@ impl NormalizedCookie {
 
         Some(Value::Object(obj))
     }
-}
-
-/// Creates `dir` and missing parents with owner-only (`0o700`) permissions on Unix.
-pub(crate) fn create_private_dir_all(dir: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-
-/// Sets owner read/write permissions (`0o600`) on `path` on Unix systems.
-pub(crate) fn set_private_file_permissions(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-}
-
-/// Writes `bytes` to `path` atomically with `0o600` permissions on Unix before data hits disk.
-pub(crate) fn write_private_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    create_private_dir_all(parent)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tmp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    tmp.write_all(bytes)?;
-    tmp.as_file().flush()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
 }
 
 /// Returns `true` when `domain` equals `suffix` or is a subdomain of `suffix`.

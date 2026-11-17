@@ -88,8 +88,9 @@ fn remove_cookies_file() {
     }
 }
 
-/// Deletes `cookies.json` and wipes `<home>/chrome-profile`.
+/// Takes the `<home>` lock, then deletes `cookies.json` and wipes `<home>/chrome-profile`.
 async fn clear_cookies_and_session(engine: &ChromeEngine) -> Result<()> {
+    crate::instance::acquire_instance_lock()?;
     remove_cookies_file();
     engine.clear_session().await
 }

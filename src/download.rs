@@ -14,13 +14,13 @@ use url::Url;
 
 use crate::assets::{FlowAsset, resolve_asset};
 use crate::config::downloads_dir;
-use crate::cookies::create_private_dir_all;
 use crate::db::{DownloadRecord, FlowDb, NewDownloadRecord};
 use crate::engine::{ChromeEngine, DEFAULT_CHROME_UA};
 use crate::media_files::{
     MEDIA_KIND_MISMATCH_TAG, disambiguate_dest, natural_asset_filename, resolve_stored_path,
     validate_content_type_header, validate_downloaded_file,
 };
+use crate::platform::create_private_dir_all;
 
 /// Returns the shared HTTP client for streaming media downloads.
 fn download_client() -> &'static reqwest::Client {
