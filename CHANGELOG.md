@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.0.0...v1.1.0) (2026-11-17)
+
+
+### Features
+
+* add instance lock and cross-platform process control ([5d4c496](https://github.com/ByteLandTechnology/flow-mcp/commit/5d4c4964d848d42beb236a42f610739717bcd25b))
+* **xtask:** run windows clippy with cargo xwin when available ([dc498fb](https://github.com/ByteLandTechnology/flow-mcp/commit/dc498fb5f14c27d5d1d50430bee8e5253fbbafbe))
+
+
+### Bug Fixes
+
+* **flow:** detect sign-in on windows when chrome locks cookies ([3beb2d7](https://github.com/ByteLandTechnology/flow-mcp/commit/3beb2d784e1b84c08e4b65c0eb4ce316c42d45aa))
+* **flow:** stop serve on ctrl-c without waiting for stdin ([70ad788](https://github.com/ByteLandTechnology/flow-mcp/commit/70ad7881579bdb02ae35fc76568a5f1fe041ad29))
+
 ## [1.0.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v0.3.0...v1.0.0) (2026-11-17)
 
 
