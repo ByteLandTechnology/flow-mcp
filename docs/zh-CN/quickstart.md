@@ -64,6 +64,15 @@ cargo build --release
 
 如果使用独立二进制文件，请将 `"command"` 设为二进制文件路径（例如 `/usr/local/bin/flow-mcp`）。并在 `"args"` 中传入 `["serve", "--home", "/path/to/.flow-mcp"]`。
 
+若要从其他计算机连接，请在服务器上带令牌启动 HTTP 模式，然后把 URL 加到客户端。以 Claude Code 为例：
+
+```sh
+FLOW_MCP_HTTP_TOKEN=<足够长的随机令牌> flow-mcp serve --http 0.0.0.0:8765
+claude mcp add --transport http flow-mcp http://<服务器IP>:8765/mcp --header "Authorization: Bearer <足够长的随机令牌>"
+```
+
+HTTP 选项与安全规则请参阅[工具参考](tools-reference.md#http-传输)。
+
 ## 3. 完成首次登录
 
 `flow-mcp` 默认运行无头 CDP Chrome。当你需要登录 Google 时，它会打开不带 CDP 标志的标准可见 Chrome 窗口。

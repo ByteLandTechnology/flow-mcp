@@ -64,6 +64,15 @@ Add `flow-mcp` to your MCP stdio client configuration (`mcpServers`):
 
 If you use a standalone binary, set `"command"` to the binary path (for example `/usr/local/bin/flow-mcp`). Pass `["serve", "--home", "/path/to/.flow-mcp"]` in `"args"`.
 
+To connect from another computer, start the server over HTTP with a token, and add the URL to your client. For example, with Claude Code:
+
+```sh
+FLOW_MCP_HTTP_TOKEN=<long-random-token> flow-mcp serve --http 0.0.0.0:8765
+claude mcp add --transport http flow-mcp http://<server-ip>:8765/mcp --header "Authorization: Bearer <long-random-token>"
+```
+
+Refer to [Tools Reference](tools-reference.md#http-transport) for the HTTP options and the security rules.
+
 ## 3. Sign in for the first time
 
 `flow-mcp` runs headless CDP Chrome by default. When you need to sign in to Google, it opens a standard visible Chrome window without CDP flags.

@@ -64,6 +64,15 @@ MCP stdio クライアント設定（`mcpServers`）へ `flow-mcp` を追加し�
 
 単体バイナリを使う場合は、`"command"` にバイナリパス（たとえば `/usr/local/bin/flow-mcp`）を設定します。`"args"` には `["serve", "--home", "/path/to/.flow-mcp"]` を渡してください。
 
+他のコンピューターから接続するには、サーバーでトークン付きの HTTP モードを起動し、URL をクライアントに追加します。Claude Code の例：
+
+```sh
+FLOW_MCP_HTTP_TOKEN=<十分に長いランダムなトークン> flow-mcp serve --http 0.0.0.0:8765
+claude mcp add --transport http flow-mcp http://<サーバーのIP>:8765/mcp --header "Authorization: Bearer <十分に長いランダムなトークン>"
+```
+
+HTTP オプションとセキュリティ規則は[ツールリファレンス](tools-reference.md#http-トランスポート)を参照してください。
+
 ## 3. 初回サインインの完了
 
 `flow-mcp` は既定でヘッドレス CDP Chrome を実行します。Google へサインインする必要がある場合、CDP フラグなしの標準的な可視 Chrome ウィンドウを開きます。
