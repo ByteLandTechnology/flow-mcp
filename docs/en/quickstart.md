@@ -51,19 +51,18 @@ Add `flow-mcp` to your MCP stdio client configuration (`mcpServers`):
     "flow-mcp": {
       "command": "npx",
       "args": [
-        "-y", "@flow-mcp/cli",
+        "-y", "@flow-mcp/cli", "serve",
         "--home", "/path/to/.flow-mcp"
       ],
       "env": {
-        "FLOW_MCP_PAUSE_MIN_S": "25",
-        "FLOW_MCP_PAUSE_MAX_S": "70"
+        "FLOW_MCP_PAUSE": "25,70"
       }
     }
   }
 }
 ```
 
-If you use a standalone binary, set `"command"` to the binary path (for example `/usr/local/bin/flow-mcp`). Pass `["--home", "/path/to/.flow-mcp"]` in `"args"`.
+If you use a standalone binary, set `"command"` to the binary path (for example `/usr/local/bin/flow-mcp`). Pass `["serve", "--home", "/path/to/.flow-mcp"]` in `"args"`.
 
 ## 3. Sign in for the first time
 
@@ -94,6 +93,8 @@ If `signed_in` is `true`, skip step 2.
 ```
 
 Complete Google Sign-In in the visible Chrome window. After you sign in, `flow-mcp` closes the visible window and flushes `<home>/chrome-profile`. It then starts headless CDP Chrome on that profile and saves `<home>/cookies.json` (`0600` permissions on Unix).
+
+You can also sign in from a terminal with `flow-mcp login --home /path/to/.flow-mcp`. Stop your MCP client first, because two `flow-mcp` processes cannot use one Chrome profile at the same time. Run `flow-mcp status` to check the result.
 
 ## 4. Create a project and generate a video
 
@@ -144,6 +145,7 @@ Complete Google Sign-In in the visible Chrome window. After you sign in, `flow-m
 
 ## Troubleshooting
 
+- **Check the installation**: Run `flow-mcp doctor` to check the Chrome binary, `<home>` and file permissions, the profile lock, and the sign-in status.
 - **Missing native executable package**: Reinstall `@flow-mcp/cli` without `--omit=optional` or `--no-optional`.
 - **Chrome binary not found**: Set `--chrome <PATH>` or `FLOW_MCP_CHROME` to your Chrome or Chromium executable path.
 - **Expired or rejected Google sign-in**: Call `flow_login` with `{"action": "login", "force": true}` to open a clean Chrome window. Or call `{"action": "logout"}` to delete `<home>/chrome-profile` and `<home>/cookies.json`.

@@ -51,19 +51,18 @@ MCP stdio クライアント設定（`mcpServers`）へ `flow-mcp` を追加し�
     "flow-mcp": {
       "command": "npx",
       "args": [
-        "-y", "@flow-mcp/cli",
+        "-y", "@flow-mcp/cli", "serve",
         "--home", "/path/to/.flow-mcp"
       ],
       "env": {
-        "FLOW_MCP_PAUSE_MIN_S": "25",
-        "FLOW_MCP_PAUSE_MAX_S": "70"
+        "FLOW_MCP_PAUSE": "25,70"
       }
     }
   }
 }
 ```
 
-単体バイナリを使う場合は、`"command"` にバイナリパス（たとえば `/usr/local/bin/flow-mcp`）を設定します。`"args"` には `["--home", "/path/to/.flow-mcp"]` を渡してください。
+単体バイナリを使う場合は、`"command"` にバイナリパス（たとえば `/usr/local/bin/flow-mcp`）を設定します。`"args"` には `["serve", "--home", "/path/to/.flow-mcp"]` を渡してください。
 
 ## 3. 初回サインインの完了
 
@@ -94,6 +93,8 @@ MCP クライアントから次の手順を順番に実行します：
 ```
 
 可視 Chrome ウィンドウ上で Google サインインを完了してください。サインイン後に `flow-mcp` は可視ウィンドウを閉じ、`<home>/chrome-profile` へ状態をフラッシュします。続いて同じプロファイルでヘッドレス CDP Chrome を起動し、`<home>/cookies.json`（Unix 権限 `0600`）を保存します。
+
+ターミナルから `flow-mcp login --home /path/to/.flow-mcp` を実行してサインインすることもできます。2 つの `flow-mcp` プロセスは同じ Chrome プロファイルを同時に使用できないため、先に MCP クライアントを停止してください。結果は `flow-mcp status` で確認できます。
 
 ## 4. プロジェクトの作成と動画生成
 
@@ -144,6 +145,7 @@ MCP クライアントから次の手順を順番に実行します：
 
 ## トラブルシューティング
 
+- **インストール状態を確認する**：`flow-mcp doctor` を実行すると、Chrome バイナリ、`<home>` とファイル権限、プロファイルロック、サインイン状態を確認できます。
 - **ネイティブ実行ファイルパッケージがない**：`--omit=optional` および `--no-optional` を付けずに `@flow-mcp/cli` を再インストールしてください。
 - **Chrome バイナリが見つからない**：`--chrome <PATH>` または `FLOW_MCP_CHROME` に Chrome または Chromium の実行ファイルパスを設定してください。
 - **Google サインインの期限切れや拒否**：`{"action": "login", "force": true}` で `flow_login` を呼び出し、クリーンな Chrome ウィンドウを開きます。または `{"action": "logout"}` を呼び出して `<home>/chrome-profile` と `<home>/cookies.json` を削除します。

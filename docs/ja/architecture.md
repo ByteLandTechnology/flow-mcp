@@ -30,7 +30,7 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
    - `wait=true`（既定、`timeout_secs=180`）の間、`flow_login` は CDP 干渉なしでプロファイルディレクトリの Flow URL と Google Cookie を確認します。
    - サインイン終了後、`ChromeEngine::promote_login_chrome` は `LoginChrome` を停止します。続いて Chromium が Cookie と DBSC 鍵を `<home>/chrome-profile` へフラッシュします。
 2. **`ManagedChrome`（既定のバックグラウンドモード）**：
-   - `<home>/chrome-profile` 上でローカル WebSocket CDP 接続（`FLOW_MCP_CHROME_CDP_PORT` またはポート `0`）付きのヘッドレス Chrome（`--headless=new`）を起動します。
+   - `<home>/chrome-profile` 上でローカル WebSocket CDP 接続（`--cdp-port`、`FLOW_MCP_CDP_PORT`、またはポート `0`）付きのヘッドレス Chrome（`--headless=new`）を起動します。
    - ページ読み込み時に埋め込み済み `flow_runtime.js` IIFE バンドルを実行し、正規化済み Cookie を `<home>/cookies.json`（Unix 権限 `0600`）へ原子的に書き込みます。
 3. **Cookie 正規化とネイティブプロファイル優先**：
    - 正規化では `google.com`、`labs.google`、`googleusercontent.com`、`gstatic.com` ドメインのみを保持し、`__Host-` プレフィックスと `hostOnly` フラグも維持します。
@@ -43,7 +43,7 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
 ![JobQueue 状態遷移と 45 秒インライン待機タイムライン](../assets/ja/job-queue-lifecycle.svg)
 
 - **単一バックグラウンドワーカー**：生成、編集、動画延長、またはキャラクタージョブを一度に 1 件だけ実行します。完了済みジョブは最大 `200` 件までの FIFO 履歴リストに残ります。
-- **ジョブ間のランダム休止**：次のジョブを開始する前に、ワーカーは `FLOW_MCP_PAUSE_MIN_S`（既定 `25s`）から `FLOW_MCP_PAUSE_MAX_S`（既定 `70s`）までのランダムな時間だけ休止します。
+- **ジョブ間のランダム休止**：次のジョブを開始する前に、ワーカーは `--pause` または `FLOW_MCP_PAUSE` で指定した範囲（既定 `25,70` 秒）のランダムな時間だけ休止します。
 - **Agent モード自動リトライ**：ジョブが `"agent finished without creating"` で失敗し、かつ `retried_from` が `None` の場合、`JobQueue` は `retried_from` にその ID を設定したリトライジョブを 1 件キューに追加します。
 - **インライン待機ウィンドウ（`PATIENCE_MS = 45_000`）**：多くの MCP クライアントは `60` 秒後にツール呼び出しをキャンセルします。`flow_wait` と `flow_download` は呼び出しごとに最大 `45` 秒まで待機してから `{"pending": true, ...}` を返すため、`flow_wait`、`flow_status`、または `flow_downloads` で再度ポーリングできます。
 

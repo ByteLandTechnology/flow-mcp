@@ -1,29 +1,49 @@
 # Tools Reference
 
-This page documents CLI flags, environment variables, MCP resources, response objects, and all MCP tools in `flow-mcp` (`v0.2.0`).
+This page documents CLI subcommands, flags, environment variables, MCP resources, response objects, and all MCP tools in `flow-mcp` (`v0.2.0`).
 
 ## CLI options
 
 ```text
-flow-mcp [OPTIONS]
+flow-mcp [OPTIONS] <COMMAND>
 ```
 
-| Option | Effect | Priority and default |
-| :--- | :--- | :--- |
-| `--home <PATH>` | Set the data root directory | Overrides `FLOW_MCP_HOME`; defaults to `~/.flow-mcp` |
-| `--chrome <PATH>` | Set the Chrome or Chromium binary path | Overrides `FLOW_MCP_CHROME` and OS discovery |
-| `-h`, `--help` | Print CLI help and exit | — |
-| `-V`, `--version` | Print `flow-mcp 0.2.0` and exit | — |
+`flow-mcp` has no default subcommand. If you start `flow-mcp` without a subcommand, it prints help and exits with status `2`.
 
-## Environment variables
+### Subcommands
 
-| Variable | Effect | Default and bounds |
-| :--- | :--- | :--- |
-| `FLOW_MCP_HOME` | Root directory for `flow-mcp.db`, `downloads/`, `cookies.json`, and `chrome-profile/` | `~/.flow-mcp` |
-| `FLOW_MCP_CHROME` | Override path to Chrome or Chromium executable | OS paths and Playwright cache |
-| `FLOW_MCP_CHROME_CDP_PORT` | Pin the local Chrome DevTools Protocol TCP port | Ephemeral port (`0`); positive `u16` |
-| `FLOW_MCP_PAUSE_MIN_S` | Minimum random delay in seconds between queued jobs | `25` (`0.0..=86400.0`) |
-| `FLOW_MCP_PAUSE_MAX_S` | Maximum random delay in seconds between queued jobs | `70` (`0.0..=86400.0`, at least min) |
+| Subcommand | Effect |
+| :--- | :--- |
+| `serve` | Serve the MCP tools and resources over standard input and output. MCP clients use this subcommand. |
+| `login [--timeout <SECS>] [--force] [--json]` | Open a visible Chrome window for Google Sign-In and wait until sign-in completes. `--timeout` sets the maximum wait in seconds (`180` default, `15..=3600`). `--force` clears the saved cookies and session first. |
+| `status [--json]` | Show the sign-in status. If a saved session exists, this subcommand starts headless Chrome. |
+| `logout [--json]` | Delete `<home>/chrome-profile` and `<home>/cookies.json`. |
+| `doctor [--json]` | Check the Chrome binary, `<home>` and file permissions, the profile lock, and the sign-in status. |
+
+`login`, `status`, and `logout` use the same actions as `flow_login`. They write one `key: value` line for each result field. With `--json`, they write the `flow_login` result object. `doctor` writes one line for each check with the status `ok`, `warn`, `fail`, or `skip`.
+
+The exit status is `0` when the subcommand runs to completion. This is also true when you are not signed in or when a `doctor` check fails. The exit status is `1` when an error occurs, for example a sign-in timeout or a Chrome profile that another running `flow-mcp` uses. The exit status is `2` when a flag value is not valid.
+
+### Global options
+
+You can write these options before or after the subcommand. A flag has priority over its environment variable.
+
+| Option | Environment variable | Effect | Default and bounds |
+| :--- | :--- | :--- | :--- |
+| `--home <PATH>` | `FLOW_MCP_HOME` | Set the root directory for `flow-mcp.db`, `downloads/`, `cookies.json`, and `chrome-profile/` | `~/.flow-mcp` |
+| `--chrome <PATH>` | `FLOW_MCP_CHROME` | Set the Chrome or Chromium binary path | OS paths and Playwright cache |
+| `--cdp-port <PORT>` | `FLOW_MCP_CDP_PORT` | Set a fixed local Chrome DevTools Protocol TCP port | Ephemeral port; `1..=65535` |
+| `--pause <MIN[,MAX]>` | `FLOW_MCP_PAUSE` | Set the random pause in seconds between queued jobs. One value sets a fixed pause. `0` disables the pause. | `25,70`; `0..=86400`, `MIN` not greater than `MAX` |
+| `-h`, `--help` | — | Print help and exit | — |
+| `-V`, `--version` | — | Print the version and exit | — |
+
+If a value is not valid, `flow-mcp` writes an error to standard error and stops before it starts Chrome.
+
+### Upgrade from 0.3
+
+- Add `serve` to the `"args"` of your MCP client configuration.
+- Replace `FLOW_MCP_CHROME_CDP_PORT` with `FLOW_MCP_CDP_PORT`.
+- Replace `FLOW_MCP_PAUSE_MIN_S` and `FLOW_MCP_PAUSE_MAX_S` with `FLOW_MCP_PAUSE` (for example `25,70`).
 
 ## MCP resources specification
 

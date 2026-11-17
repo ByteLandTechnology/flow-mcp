@@ -30,7 +30,7 @@ Google authentication checks Device Bound Session Credentials (DBSC) and automat
    - When `wait=true` (default, `timeout_secs=180`), `flow_login` checks the profile directory for Flow URLs and Google cookies without CDP probes.
    - After sign-in finishes, `ChromeEngine::promote_login_chrome` stops `LoginChrome`. Chromium then flushes cookies and DBSC keys to `<home>/chrome-profile`.
 2. **`ManagedChrome` (default background mode)**:
-   - Starts headless Chrome (`--headless=new`) on `<home>/chrome-profile` with a local WebSocket CDP connection (`FLOW_MCP_CHROME_CDP_PORT` or port `0`).
+   - Starts headless Chrome (`--headless=new`) on `<home>/chrome-profile` with a local WebSocket CDP connection (`--cdp-port`, `FLOW_MCP_CDP_PORT`, or port `0`).
    - Evaluates the embedded `flow_runtime.js` IIFE bundle on page load. It writes normalized cookies atomically to `<home>/cookies.json` (`0600` permissions on Unix).
 3. **Cookie normalization and native profile priority**:
    - Normalization keeps only `google.com`, `labs.google`, `googleusercontent.com`, and `gstatic.com` domains. It also keeps `__Host-` prefixes and `hostOnly` flags.
@@ -43,7 +43,7 @@ Running parallel edits on one Google Flow Angular tab causes UI race conditions,
 ![JobQueue lifecycle and 45-second inline wait](../assets/en/job-queue-lifecycle.svg)
 
 - **Single background worker**: Only one generation, edit, video extend, or character job runs at a time. Finished jobs stay in a FIFO history list with at most `200` items.
-- **Random pauses between jobs**: Before each next job, the worker pauses for a random time between `FLOW_MCP_PAUSE_MIN_S` (`25s` default) and `FLOW_MCP_PAUSE_MAX_S` (`70s` default).
+- **Random pauses between jobs**: Before each next job, the worker pauses for a random time in the `--pause` or `FLOW_MCP_PAUSE` range (`25,70` seconds by default).
 - **Automatic Agent Mode retry**: If a job fails with `"agent finished without creating"` and `retried_from` is `None`, `JobQueue` queues one retry job with `retried_from` set to that ID.
 - **Inline wait window (`PATIENCE_MS = 45_000`)**: Many MCP clients cancel tool calls after `60` seconds. `flow_wait` and `flow_download` wait up to `45` seconds per call, then return `{"pending": true, ...}` so you can poll again with `flow_wait`, `flow_status`, or `flow_downloads`.
 

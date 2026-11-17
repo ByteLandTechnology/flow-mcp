@@ -56,10 +56,9 @@ MCP stdio クライアント設定（`mcpServers`）へ `@flow-mcp/cli` を追�
   "mcpServers": {
     "flow-mcp": {
       "command": "npx",
-      "args": ["-y", "@flow-mcp/cli", "--home", "/path/to/.flow-mcp"],
+      "args": ["-y", "@flow-mcp/cli", "serve", "--home", "/path/to/.flow-mcp"],
       "env": {
-        "FLOW_MCP_PAUSE_MIN_S": "25",
-        "FLOW_MCP_PAUSE_MAX_S": "70"
+        "FLOW_MCP_PAUSE": "25,70"
       }
     }
   }

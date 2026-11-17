@@ -5,25 +5,45 @@
 ## CLI 选项
 
 ```text
-flow-mcp [OPTIONS]
+flow-mcp [OPTIONS] <COMMAND>
 ```
 
-| 选项 | 作用 | 优先级与默认值 |
-| :--- | :--- | :--- |
-| `--home <PATH>` | 设置数据根目录 | 优先于 `FLOW_MCP_HOME`；默认为 `~/.flow-mcp` |
-| `--chrome <PATH>` | 设置 Chrome 或 Chromium 二进制路径 | 优先于 `FLOW_MCP_CHROME` 与系统探测 |
-| `-h`, `--help` | 输出 CLI 帮助并退出 | — |
-| `-V`, `--version` | 输出 `flow-mcp 0.2.0` 并退出 | — |
+`flow-mcp` 没有默认子命令。不带子命令启动 `flow-mcp` 时，它会输出帮助并以状态码 `2` 退出。
 
-## 环境变量
+### 子命令
 
-| 变量名 | 作用 | 默认值与范围 |
-| :--- | :--- | :--- |
-| `FLOW_MCP_HOME` | `flow-mcp.db`、`downloads/`、`cookies.json` 与 `chrome-profile/` 的根目录 | `~/.flow-mcp` |
-| `FLOW_MCP_CHROME` | 覆盖 Chrome 或 Chromium 可执行文件路径 | 系统路径与 Playwright 缓存 |
-| `FLOW_MCP_CHROME_CDP_PORT` | 固定本地 Chrome DevTools Protocol TCP 端口 | 临时端口（`0`）；正整数 `u16` |
-| `FLOW_MCP_PAUSE_MIN_S` | 队列任务之间的最小随机延迟秒数 | `25`（`0.0..=86400.0`） |
-| `FLOW_MCP_PAUSE_MAX_S` | 队列任务之间的最大随机延迟秒数 | `70`（`0.0..=86400.0`，不小于最小值） |
+| 子命令 | 作用 |
+| :--- | :--- |
+| `serve` | 通过标准输入输出提供 MCP 工具与资源。MCP 客户端使用此子命令。 |
+| `login [--timeout <SECS>] [--force] [--json]` | 打开可见 Chrome 窗口进行 Google 登录，并等待登录完成。`--timeout` 设置最长等待秒数（默认 `180`，范围 `15..=3600`）。`--force` 会先清除已保存的 Cookie 与会话。 |
+| `status [--json]` | 显示登录状态。若存在已保存的会话，此子命令会启动无头 Chrome。 |
+| `logout [--json]` | 删除 `<home>/chrome-profile` 与 `<home>/cookies.json`。 |
+| `doctor [--json]` | 检查 Chrome 二进制文件、`<home>` 与文件权限、配置目录锁以及登录状态。 |
+
+`login`、`status` 与 `logout` 使用与 `flow_login` 相同的操作，并为每个结果字段输出一行 `key: value`。加上 `--json` 时，输出 `flow_login` 的结果对象。`doctor` 为每项检查输出一行，状态为 `ok`、`warn`、`fail` 或 `skip`。
+
+子命令正常执行完毕时退出状态码为 `0`，即使尚未登录或 `doctor` 有检查未通过也是如此。发生错误时（例如登录超时，或 Chrome 配置目录正被另一个运行中的 `flow-mcp` 使用）退出状态码为 `1`。参数值无效时退出状态码为 `2`。
+
+### 全局选项
+
+这些选项可以写在子命令之前或之后。命令行标志优先于对应的环境变量。
+
+| 选项 | 环境变量 | 作用 | 默认值与范围 |
+| :--- | :--- | :--- | :--- |
+| `--home <PATH>` | `FLOW_MCP_HOME` | 设置 `flow-mcp.db`、`downloads/`、`cookies.json` 与 `chrome-profile/` 的根目录 | `~/.flow-mcp` |
+| `--chrome <PATH>` | `FLOW_MCP_CHROME` | 设置 Chrome 或 Chromium 二进制路径 | 系统路径与 Playwright 缓存 |
+| `--cdp-port <PORT>` | `FLOW_MCP_CDP_PORT` | 固定本地 Chrome DevTools Protocol TCP 端口 | 临时端口；`1..=65535` |
+| `--pause <MIN[,MAX]>` | `FLOW_MCP_PAUSE` | 设置队列任务之间的随机暂停秒数。只写一个值表示固定暂停，`0` 表示不暂停。 | `25,70`；`0..=86400`，`MIN` 不大于 `MAX` |
+| `-h`, `--help` | — | 输出帮助并退出 | — |
+| `-V`, `--version` | — | 输出版本并退出 | — |
+
+参数值无效时，`flow-mcp` 会将错误写到标准错误输出，并在启动 Chrome 之前退出。
+
+### 从 0.3 升级
+
+- 在 MCP 客户端配置的 `"args"` 中加入 `serve`。
+- 将 `FLOW_MCP_CHROME_CDP_PORT` 改为 `FLOW_MCP_CDP_PORT`。
+- 将 `FLOW_MCP_PAUSE_MIN_S` 与 `FLOW_MCP_PAUSE_MAX_S` 改为 `FLOW_MCP_PAUSE`（例如 `25,70`）。
 
 ## MCP 资源规范
 

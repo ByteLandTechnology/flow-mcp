@@ -51,19 +51,18 @@ cargo build --release
     "flow-mcp": {
       "command": "npx",
       "args": [
-        "-y", "@flow-mcp/cli",
+        "-y", "@flow-mcp/cli", "serve",
         "--home", "/path/to/.flow-mcp"
       ],
       "env": {
-        "FLOW_MCP_PAUSE_MIN_S": "25",
-        "FLOW_MCP_PAUSE_MAX_S": "70"
+        "FLOW_MCP_PAUSE": "25,70"
       }
     }
   }
 }
 ```
 
-如果使用独立二进制文件，请将 `"command"` 设为二进制文件路径（例如 `/usr/local/bin/flow-mcp`）。并在 `"args"` 中传入 `["--home", "/path/to/.flow-mcp"]`。
+如果使用独立二进制文件，请将 `"command"` 设为二进制文件路径（例如 `/usr/local/bin/flow-mcp`）。并在 `"args"` 中传入 `["serve", "--home", "/path/to/.flow-mcp"]`。
 
 ## 3. 完成首次登录
 
@@ -94,6 +93,8 @@ cargo build --release
 ```
 
 在可见 Chrome 窗口中完成 Google 登录。登录完成后，`flow-mcp` 会关闭可见窗口并将数据刷盘到 `<home>/chrome-profile`。随后它会在同一配置目录上启动无头 CDP Chrome 并保存 `<home>/cookies.json`（Unix 权限 `0600`）。
+
+也可以在终端中运行 `flow-mcp login --home /path/to/.flow-mcp` 完成登录。请先停止 MCP 客户端，因为两个 `flow-mcp` 进程不能同时使用同一个 Chrome 配置目录。之后可运行 `flow-mcp status` 查看结果。
 
 ## 4. 创建项目并生成视频
 
@@ -144,6 +145,7 @@ cargo build --release
 
 ## 常见问题排查
 
+- **检查安装状态**：运行 `flow-mcp doctor` 检查 Chrome 二进制文件、`<home>` 与文件权限、配置目录锁以及登录状态。
 - **缺少原生可执行文件包**：不带 `--omit=optional` 或 `--no-optional` 重新安装 `@flow-mcp/cli`。
 - **未找到 Chrome 二进制文件**：将 `--chrome <PATH>` 或 `FLOW_MCP_CHROME` 设为 Chrome 或 Chromium 可执行文件路径。
 - **Google 登录过期或遭拒绝**：调用 `flow_login` 传入 `{"action": "login", "force": true}` 以打开干净的 Chrome 窗口。或者调用 `{"action": "logout"}` 删除 `<home>/chrome-profile` 与 `<home>/cookies.json`。

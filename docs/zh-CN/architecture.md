@@ -30,7 +30,7 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
    - 当 `wait=true`（默认，`timeout_secs=180`）时，`flow_login` 检查配置目录中的 Flow URL 与 Google Cookie，而不执行 CDP 探测。
    - 登录完成后，`ChromeEngine::promote_login_chrome` 停止 `LoginChrome`。随后 Chromium 将 Cookie 与 DBSC 密钥刷盘至 `<home>/chrome-profile`。
 2. **`ManagedChrome`（默认后台模式）**：
-   - 在 `<home>/chrome-profile` 上启动无头 Chrome（`--headless=new`），并建立本地 WebSocket CDP 连接（`FLOW_MCP_CHROME_CDP_PORT` 或随机端口 `0`）。
+   - 在 `<home>/chrome-profile` 上启动无头 Chrome（`--headless=new`），并建立本地 WebSocket CDP 连接（`--cdp-port`、`FLOW_MCP_CDP_PORT` 或随机端口 `0`）。
    - 在页面加载时执行内嵌的 `flow_runtime.js` IIFE 包，并将归一化后的 Cookie 原子写入 `<home>/cookies.json`（Unix 权限 `0600`）。
 3. **Cookie 归一化与原生配置优先级**：
    - 归一化仅保留 `google.com`、`labs.google`、`googleusercontent.com` 与 `gstatic.com` 域名，同时保留 `__Host-` 前缀与 `hostOnly` 标志。
@@ -43,7 +43,7 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 ![JobQueue 生命周期与 45 秒内联等待](../assets/zh-CN/job-queue-lifecycle.svg)
 
 - **单后台工作器**：同一时刻仅运行一个生成、编辑、视频续写或角色任务。已完成的任务留在最多保存 `200` 条记录的 FIFO 历史列表中。
-- **任务之间随机暂停**：在开始下一条任务前，工作器会在 `FLOW_MCP_PAUSE_MIN_S`（默认 `25s`）与 `FLOW_MCP_PAUSE_MAX_S`（默认 `70s`）之间随机暂停一段时间。
+- **任务之间随机暂停**：在开始下一条任务前，工作器会在 `--pause` 或 `FLOW_MCP_PAUSE` 指定的范围内（默认 `25,70` 秒）随机暂停一段时间。
 - **Agent 模式自动重试**：如果任务因 `"agent finished without creating"` 失败且 `retried_from` 为 `None`，`JobQueue` 会将 `retried_from` 设为该任务 ID 并自动追加一次重试任务。
 - **内联等待窗口（`PATIENCE_MS = 45_000`）**：许多 MCP 客户端会在 `60` 秒后取消工具调用。`flow_wait` 与 `flow_download` 每次最多等待 `45` 秒，随后返回 `{"pending": true, ...}`，以便你使用 `flow_wait`、`flow_status` 或 `flow_downloads` 继续轮询。
 

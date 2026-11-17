@@ -5,25 +5,45 @@
 ## CLI オプション
 
 ```text
-flow-mcp [OPTIONS]
+flow-mcp [OPTIONS] <COMMAND>
 ```
 
-| オプション | 効果 | 優先順位と既定値 |
-| :--- | :--- | :--- |
-| `--home <PATH>` | データルートディレクトリを設定する | `FLOW_MCP_HOME` に優先。既定は `~/.flow-mcp` |
-| `--chrome <PATH>` | Chrome または Chromium バイナリのパスを設定する | `FLOW_MCP_CHROME` および OS 検出に優先 |
-| `-h`, `--help` | CLI ヘルプを表示して終了する | — |
-| `-V`, `--version` | `flow-mcp 0.2.0` を表示して終了する | — |
+`flow-mcp` には既定のサブコマンドがありません。サブコマンドを付けずに `flow-mcp` を起動すると、ヘルプを表示してステータス `2` で終了します。
 
-## 環境変数
+### サブコマンド
 
-| 変数 | 効果 | 既定値と範囲 |
-| :--- | :--- | :--- |
-| `FLOW_MCP_HOME` | `flow-mcp.db`、`downloads/`、`cookies.json`、`chrome-profile/` のルートディレクトリ | `~/.flow-mcp` |
-| `FLOW_MCP_CHROME` | Chrome または Chromium 実行ファイルのパスを上書きする | OS パスおよび Playwright キャッシュ |
-| `FLOW_MCP_CHROME_CDP_PORT` | ローカル Chrome DevTools Protocol TCP ポートを固定する | エフェメラルポート（`0`）、正の `u16` |
-| `FLOW_MCP_PAUSE_MIN_S` | キュー実行ジョブ間の最小ランダム遅延（秒） | `25`（`0.0..=86400.0`） |
-| `FLOW_MCP_PAUSE_MAX_S` | キュー実行ジョブ間の最大ランダム遅延（秒） | `70`（`0.0..=86400.0`、最小値以上） |
+| サブコマンド | 効果 |
+| :--- | :--- |
+| `serve` | 標準入出力で MCP ツールとリソースを提供します。MCP クライアントはこのサブコマンドを使用します。 |
+| `login [--timeout <SECS>] [--force] [--json]` | Google サインイン用に可視 Chrome ウィンドウを開き、サインインの完了まで待機します。`--timeout` は最大待機秒数です（既定 `180`、`15..=3600`）。`--force` は保存済みの Cookie とセッションを先に消去します。 |
+| `status [--json]` | サインイン状態を表示します。保存済みのセッションがある場合は、ヘッドレス Chrome を起動します。 |
+| `logout [--json]` | `<home>/chrome-profile` と `<home>/cookies.json` を削除します。 |
+| `doctor [--json]` | Chrome バイナリ、`<home>` とファイル権限、プロファイルロック、サインイン状態を確認します。 |
+
+`login`、`status`、`logout` は `flow_login` と同じアクションを使用し、結果フィールドごとに `key: value` を 1 行ずつ出力します。`--json` を付けると、`flow_login` の結果オブジェクトを出力します。`doctor` はチェックごとに 1 行を出力し、ステータスは `ok`、`warn`、`fail`、`skip` のいずれかです。
+
+サブコマンドが最後まで実行されると、終了ステータスは `0` です。未サインインの場合や `doctor` のチェックが失敗した場合も同じです。エラーが発生した場合（たとえばサインインのタイムアウトや、実行中の別の `flow-mcp` が Chrome プロファイルを使用している場合）は `1` です。フラグの値が無効な場合は `2` です。
+
+### グローバルオプション
+
+これらのオプションはサブコマンドの前後どちらにも書けます。フラグは対応する環境変数に優先します。
+
+| オプション | 環境変数 | 効果 | 既定値と範囲 |
+| :--- | :--- | :--- | :--- |
+| `--home <PATH>` | `FLOW_MCP_HOME` | `flow-mcp.db`、`downloads/`、`cookies.json`、`chrome-profile/` のルートディレクトリを設定する | `~/.flow-mcp` |
+| `--chrome <PATH>` | `FLOW_MCP_CHROME` | Chrome または Chromium バイナリのパスを設定する | OS パスおよび Playwright キャッシュ |
+| `--cdp-port <PORT>` | `FLOW_MCP_CDP_PORT` | ローカル Chrome DevTools Protocol TCP ポートを固定する | エフェメラルポート。`1..=65535` |
+| `--pause <MIN[,MAX]>` | `FLOW_MCP_PAUSE` | キュー実行ジョブ間のランダムな休止秒数を設定する。値が 1 つの場合は固定の休止、`0` は休止なし | `25,70`。`0..=86400`、`MIN` は `MAX` 以下 |
+| `-h`, `--help` | — | ヘルプを表示して終了する | — |
+| `-V`, `--version` | — | バージョンを表示して終了する | — |
+
+値が無効な場合、`flow-mcp` は標準エラー出力にエラーを書き込み、Chrome を起動する前に終了します。
+
+### 0.3 からのアップグレード
+
+- MCP クライアント設定の `"args"` に `serve` を追加します。
+- `FLOW_MCP_CHROME_CDP_PORT` を `FLOW_MCP_CDP_PORT` に置き換えます。
+- `FLOW_MCP_PAUSE_MIN_S` と `FLOW_MCP_PAUSE_MAX_S` を `FLOW_MCP_PAUSE`（たとえば `25,70`）に置き換えます。
 
 ## MCP リソース仕様
 
