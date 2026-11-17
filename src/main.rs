@@ -8,6 +8,7 @@ mod auth;
 mod cdp;
 mod characters;
 mod chrome;
+mod cli;
 mod collections;
 mod config;
 mod cookies;
@@ -24,61 +25,9 @@ mod service;
 
 use anyhow::Result;
 use clap::Parser;
-use std::path::PathBuf;
-use std::sync::Arc;
 
-use engine::ChromeEngine;
-use mcp::FlowMcpServer;
-use service::FlowService;
-
-/// Command-line flags for `flow-mcp`.
-#[derive(Debug, Parser)]
-#[command(
-    name = "flow-mcp",
-    version,
-    about = "Rust MCP server for Google Flow with Chrome CDP browser engine"
-)]
-struct Cli {
-    /// Set the data root directory (defaults to ~/.flow-mcp)
-    #[arg(long, value_name = "PATH", env = "FLOW_MCP_HOME")]
-    home: Option<PathBuf>,
-
-    /// Set the Chrome or Chromium binary path (defaults to auto-detect)
-    #[arg(long, value_name = "PATH", env = "FLOW_MCP_CHROME")]
-    chrome: Option<PathBuf>,
-}
-
-/// Waits for `SIGINT` or Unix `SIGTERM` to initiate graceful Chrome shutdown.
-async fn wait_shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = sigterm.recv() => {}
-            }
-            return;
-        }
-    }
-    let _ = tokio::signal::ctrl_c().await;
-}
-
-/// Parses CLI flags, starts the stdio MCP server, and shuts down Chrome on exit.
+/// Parses the command line and runs the selected subcommand.
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    config::init_cli_home(cli.home);
-    if let Some(chrome) = cli.chrome {
-        config::set_chrome_path(chrome);
-    }
-
-    let engine = ChromeEngine::new();
-    let server = FlowMcpServer::new(FlowService::new(Arc::clone(&engine)));
-    let result = tokio::select! {
-        res = server.serve_stdio() => res,
-        _ = wait_shutdown_signal() => Ok(()),
-    };
-    engine.shutdown().await;
-    result
+    cli::run(cli::Cli::parse()).await
 }

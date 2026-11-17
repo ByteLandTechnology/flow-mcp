@@ -12,35 +12,59 @@ pub(crate) const FLOW_URL: &str = "https://flow.google.com/?hl=en";
 /// Google Accounts sign-in URL that redirects to Google Flow in English.
 pub(crate) const FLOW_SSO_URL: &str = "https://accounts.google.com/ServiceLogin?hl=en&passive=1209600&osid=1&continue=https%3A%2F%2Fflow.google.com%2F%3Fhl%3Den&followup=https%3A%2F%2Fflow.google.com%2F%3Fhl%3Den&ec=GAZA7QU";
 
-/// Process-wide override for `--home`.
-static CLI_HOME_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// Default lower bound of the pause between queue jobs, in milliseconds.
+pub(crate) const DEFAULT_PAUSE_MIN_MS: u64 = 25_000;
 
-/// Process-wide override for `--chrome`.
-static CLI_CHROME_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// Default upper bound of the pause between queue jobs, in milliseconds.
+pub(crate) const DEFAULT_PAUSE_MAX_MS: u64 = 70_000;
 
-/// Stores the `--home` override once at startup.
-///
-/// [`home_dir`] checks this value before the platform default.
-pub(crate) fn init_cli_home(home: Option<PathBuf>) {
-    if let Some(h) = home {
-        let _ = CLI_HOME_DIR.set(h);
+/// Runtime settings that the command line or its environment variables supply.
+#[derive(Debug, Clone)]
+pub(crate) struct Settings {
+    /// Data root from `--home` or `FLOW_MCP_HOME`.
+    pub(crate) home: Option<PathBuf>,
+    /// Chrome or Chromium binary from `--chrome` or `FLOW_MCP_CHROME`.
+    pub(crate) chrome: Option<PathBuf>,
+    /// Fixed Chrome CDP port from `--cdp-port` or `FLOW_MCP_CDP_PORT`.
+    pub(crate) cdp_port: Option<u16>,
+    /// Inclusive pause bounds between queue jobs in milliseconds, from `--pause` or `FLOW_MCP_PAUSE`.
+    pub(crate) pause_ms: (u64, u64),
+}
+
+impl Default for Settings {
+    /// Returns settings with no overrides and the default pause bounds.
+    fn default() -> Self {
+        Self {
+            home: None,
+            chrome: None,
+            cdp_port: None,
+            pause_ms: (DEFAULT_PAUSE_MIN_MS, DEFAULT_PAUSE_MAX_MS),
+        }
     }
 }
 
-/// Stores the `--chrome` executable override once at startup.
-pub(crate) fn set_chrome_path(path: PathBuf) {
-    let _ = CLI_CHROME_PATH.set(path);
+/// Process-wide settings that `init_settings` stores once at startup.
+static SETTINGS: OnceLock<Settings> = OnceLock::new();
+
+/// Stores the parsed runtime settings once at startup.
+pub(crate) fn init_settings(settings: Settings) {
+    let _ = SETTINGS.set(settings);
+}
+
+/// Returns the stored runtime settings, or the defaults before `init_settings` runs.
+fn settings() -> Settings {
+    SETTINGS.get().cloned().unwrap_or_default()
 }
 
 /// Returns the `--chrome` binary path override if set at startup.
 pub(crate) fn cli_chrome_path() -> Option<PathBuf> {
-    CLI_CHROME_PATH.get().cloned()
+    settings().chrome
 }
 
 /// Returns the `flow-mcp` data root (`--home` or `FLOW_MCP_HOME`, then `~/.flow-mcp`).
 pub(crate) fn home_dir() -> PathBuf {
-    if let Some(v) = CLI_HOME_DIR.get() {
-        return v.clone();
+    if let Some(v) = settings().home {
+        return v;
     }
     std::env::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -72,28 +96,12 @@ pub(crate) fn has_persisted_session() -> bool {
     cookies_path().is_file() || chrome_profile_dir().join("Default").is_dir()
 }
 
-/// Returns the explicit Chrome CDP port from `FLOW_MCP_CHROME_CDP_PORT` when valid and positive.
+/// Returns the fixed Chrome CDP port from `--cdp-port` or `FLOW_MCP_CDP_PORT`.
 pub(crate) fn configured_cdp_port() -> Option<u16> {
-    std::env::var("FLOW_MCP_CHROME_CDP_PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .filter(|&p| p > 0)
+    settings().cdp_port
 }
 
-/// Reads inter-job pause bounds in milliseconds from `FLOW_MCP_PAUSE_MIN_S`
-/// and `FLOW_MCP_PAUSE_MAX_S`, defaulting to `25_000..=70_000`.
+/// Returns the inclusive pause bounds between queue jobs in milliseconds.
 pub(crate) fn pause_bounds_ms() -> (u64, u64) {
-    let min_ms = std::env::var("FLOW_MCP_PAUSE_MIN_S")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .filter(|s| s.is_finite())
-        .map(|s| (s.clamp(0.0, 86_400.0) * 1000.0) as u64)
-        .unwrap_or(25_000);
-    let max_ms = std::env::var("FLOW_MCP_PAUSE_MAX_S")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .filter(|s| s.is_finite())
-        .map(|s| ((s.clamp(0.0, 86_400.0) * 1000.0) as u64).max(min_ms))
-        .unwrap_or(70_000.max(min_ms));
-    (min_ms, max_ms)
+    settings().pause_ms
 }
