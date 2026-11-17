@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.1.0...v1.2.0) (2026-11-17)
+
+
+### Features
+
+* serve mcp over streamable http with an optional token ([51aa90a](https://github.com/ByteLandTechnology/flow-mcp/commit/51aa90a7e8b7084538f415d48b20c7f0fc3d833d))
+
 ## [1.1.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.0.0...v1.1.0) (2026-11-17)
 
 
