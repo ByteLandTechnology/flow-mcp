@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.1](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.2.0...v1.2.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **flow:** read failure, length, and resolution fields of new tiles ([a30eb20](https://github.com/ByteLandTechnology/flow-mcp/commit/a30eb205646cd09dd27c444f3cd2299feec2de2d))
+* **flow:** read media fields of the 2026-11-15 front end ([cf736c9](https://github.com/ByteLandTechnology/flow-mcp/commit/cf736c94d5d3499917dc23dd60e45d3a9eb138c6))
+* **flow:** set video resolution and length after a model change ([6de1b59](https://github.com/ByteLandTechnology/flow-mcp/commit/6de1b59f0b4764a71d2dbe1a59adac471056eed9))
+
 ## [1.2.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.1.0...v1.2.0) (2026-11-17)
 
 
