@@ -18,7 +18,8 @@ The command `cargo xtask ci` checks most of these rules.
 - `ChromeEngine` runs headless CDP Chrome (`--headless=new`) during background operations and opens standard visible Chrome without CDP flags during interactive Google Sign-In in `flow_login`.
 - Pin Google Flow and `ChromeEngine` sessions to the English interface (`hl=en` and `en-US`).
 - Run generation, edit, video extend, and character jobs one at a time through `JobQueue`.
-- Write `cookies.json` and `flow-mcp.db` with `0600` permissions, and create `<home>/chrome-profile` with `0700` permissions on Unix.
+- Write `cookies.json`, `flow-mcp.db`, and `flow-mcp.lock` with `0600` permissions, and create `<home>/chrome-profile` with `0700` permissions on Unix.
+- Take an exclusive lock on `<home>/flow-mcp.lock` before Chrome starts, and keep it until the process stops. Stop orphaned Chrome processes on `<home>/chrome-profile` only while the process holds this lock.
 - Store the SQLite index, all downloads, cookies, and the persistent Chrome profile under `<home>`.
 - Preserve natural download file names from `Content-Disposition`, the URL path, or `<asset_id>.<ext>`.
 - Keep build outputs, `node_modules`, SQLite databases, downloaded media, local browser profiles, and credentials outside Git.
@@ -45,6 +46,8 @@ The command `cargo xtask ci` checks most of these rules.
 - Divide `src/` into flat modules by domain.
 - Use private or `pub(crate)` visibility by default. The `unreachable_pub` lint is on.
 - Before you write a helper, look in existing modules. Do not copy a helper into a second module.
+- Keep file permission and process control code in `src/platform.rs`.
+- Put each platform `cfg` attribute inside a function body, or define the item on every platform with the same signature. Do not put a platform `cfg` attribute on an enum variant, a struct field, or a match arm.
 - Each `.rs` and `.ts` source file must have no more than 800 lines of code. Comments and blank lines are not counted. There are no exceptions.
 - Use LF line endings in all `.rs`, `.ts`, `.js`, `.json`, `.toml`, `.svg`, and `.md` files.
 
@@ -114,6 +117,7 @@ Run `cargo xtask ci`. It runs these checks in order:
 - `cargo fmt --all -- --check`
 - `cargo xtask check`: license headers, line endings, code line limit, forbidden code checks, and TypeScript type checks
 - `cargo clippy --locked --workspace --all-targets -- -D warnings`
+- `cargo xwin clippy --target x86_64-pc-windows-msvc`: only when `cargo-xwin` and the Windows standard library are installed
 - `cargo doc --locked --workspace --no-deps --document-private-items`
 - `cargo build --locked --workspace`
 - `cargo deny --locked --workspace check`

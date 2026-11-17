@@ -18,7 +18,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | `login [--timeout <SECS>] [--force] [--json]` | Google サインイン用に可視 Chrome ウィンドウを開き、サインインの完了まで待機します。`--timeout` は最大待機秒数です（既定 `180`、`15..=3600`）。`--force` は保存済みの Cookie とセッションを先に消去します。 |
 | `status [--json]` | サインイン状態を表示します。保存済みのセッションがある場合は、ヘッドレス Chrome を起動します。 |
 | `logout [--json]` | `<home>/chrome-profile` と `<home>/cookies.json` を削除します。 |
-| `doctor [--json]` | Chrome バイナリ、`<home>` とファイル権限、プロファイルロック、サインイン状態を確認します。 |
+| `doctor [--json]` | Chrome バイナリ、`<home>` とファイル権限、インスタンスロック、サインイン状態を確認します。 |
 
 `login`、`status`、`logout` は `flow_login` と同じアクションを使用し、結果フィールドごとに `key: value` を 1 行ずつ出力します。`--json` を付けると、`flow_login` の結果オブジェクトを出力します。`doctor` はチェックごとに 1 行を出力し、ステータスは `ok`、`warn`、`fail`、`skip` のいずれかです。
 

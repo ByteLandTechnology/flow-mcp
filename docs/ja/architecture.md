@@ -13,7 +13,7 @@
 | 直列ワーカー | `src/queue.rs` | ランダム休止を挟みながら FIFO キュー上でブラウザ変更ジョブを 1 件ずつ実行 |
 | ブラウザエンジン | `src/engine.rs`、`src/chrome.rs`、`src/cdp.rs` | `ManagedChrome`（ヘッドレス CDP）、`LoginChrome`（可視・非 CDP）、WebSocket CDP RPC、および `Network` イベントを管理 |
 | ブラウザランタイム | `ts/*.ts`（`build.rs`） | `esbuild` が 26 個のフラットな TypeScript モジュールを `OUT_DIR/flow_runtime.js` へバンドルし、`src/engine.rs` が単一埋め込みして `window.__flowMcp` を設定 |
-| ローカル永続化 | `src/db.rs`、`src/cookies.rs`、`src/download.rs` | `flow-mcp.db`（`0600`）、`cookies.json`（`0600`）、`<home>/chrome-profile`（`0700`）、および `<home>/downloads` を管理 |
+| ローカル永続化 | `src/db.rs`、`src/cookies.rs`、`src/download.rs`、`src/platform.rs`、`src/instance.rs` | `flow-mcp.db`（`0600`）、`cookies.json`（`0600`）、`<home>/chrome-profile`（`0700`）、および `<home>/downloads` を管理 |
 
 Google Flow ページ内部では、`ts/` は静的モックを使わず `lService` ストアからライブ Angular 状態（`read_store_snapshot.ts` と `discover_store.ts`）を読み取ります。変更処理の実行時、Rust はストア更新と、`aisandbox-pa.googleapis.com` および `batchexecute` 向けの CDP HTTP 応答（`is_flow_mutation_rpc_ok`）の両方を監視します。
 
@@ -35,6 +35,10 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
 3. **Cookie 正規化とネイティブプロファイル優先**：
    - 正規化では `google.com`、`labs.google`、`googleusercontent.com`、`gstatic.com` ドメインのみを保持し、`__Host-` プレフィックスと `hostOnly` フラグも維持します。
    - `<home>/chrome-profile` に有効なネイティブ Google Cookie がある場合、`flow-mcp` はそれらを変更せずに保持し、`<home>/cookies.json` の古いデータで上書きしません。
+4. **単一インスタンスロックと孤立 Chrome**：
+   - Chrome を起動する前に、`flow-mcp` は `<home>/flow-mcp.lock`（Unix 権限 `0600`）に排他ロックを取得し、プロセス終了まで保持します。プロセスが終了すると（クラッシュ時も含む）、OS がロックを解放します。
+   - 別のプロセスがロックを保持している場合、Chrome の起動、`login`、`status`、`logout`、および `flow_login` の `logout` はエラーになります。`doctor` は警告を表示します。
+   - ロックを保持している間、`<home>/chrome-profile` 上でこのプロセスが起動していない Chrome プロセスは孤立プロセスです。`flow-mcp` はまず通常終了を要求し（Unix では `SIGINT`、Windows では `taskkill`）、3 秒後も残っている場合は強制終了します。
 
 ## 3. `JobQueue` 直列化と 45 秒インライン待機
 
@@ -57,6 +61,7 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
 | :--- | :--- | :--- |
 | `chrome-profile/` | `0700` | 永続 Chrome プロファイル、DBSC 鍵、ライブセッション Cookie |
 | `cookies.json` | `0600` | `flow-mcp` が原子的に書き込む正規化済み Google / Flow Cookie 配列 |
+| `flow-mcp.lock` | `0600` | Chrome を起動できる間にプロセスが保持する単一インスタンスロック |
 | `flow-mcp.db` | `0600` | `downloads`、`character_looks`、`characters` 用の `WAL` モード SQLite DB |
 | `downloads/` | プライベートディレクトリ | すべてのダウンロードメディアの固定フォルダ（`flow-mcp` は外部出力パスを拒否します） |
 

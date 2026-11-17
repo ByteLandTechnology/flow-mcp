@@ -13,7 +13,7 @@
 | 串行工作器 | `src/queue.rs` | 在 FIFO 队列上每次运行一个浏览器变更任务，并在任务之间随机暂停 |
 | 浏览器引擎 | `src/engine.rs`、`src/chrome.rs`、`src/cdp.rs` | 管理 `ManagedChrome`（无头 CDP）、`LoginChrome`（可见无 CDP）、WebSocket CDP RPC 与 `Network` 事件 |
 | 浏览器运行时 | `ts/*.ts`（`build.rs`） | `esbuild` 将 26 个扁平 TypeScript 模块打包为 `OUT_DIR/flow_runtime.js`；`src/engine.rs` 单次嵌入并设置 `window.__flowMcp` |
-| 本地持久化 | `src/db.rs`、`src/cookies.rs`、`src/download.rs` | 管理 `flow-mcp.db`（`0600`）、`cookies.json`（`0600`）、`<home>/chrome-profile`（`0700`）与 `<home>/downloads` |
+| 本地持久化 | `src/db.rs`、`src/cookies.rs`、`src/download.rs`、`src/platform.rs`、`src/instance.rs` | 管理 `flow-mcp.db`（`0600`）、`cookies.json`（`0600`）、`<home>/chrome-profile`（`0700`）与 `<home>/downloads` |
 
 在 Google Flow 页面内部，`ts/` 从 `lService` 状态存储读取实时 Angular 状态（`read_store_snapshot.ts` 与 `discover_store.ts`），而不使用静态模拟数据。执行变更操作时，Rust 同时监控存储更新以及匹配 `aisandbox-pa.googleapis.com` 与 `batchexecute` 的 CDP HTTP 响应（`is_flow_mutation_rpc_ok`）。
 
@@ -35,6 +35,10 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 3. **Cookie 归一化与原生配置优先级**：
    - 归一化仅保留 `google.com`、`labs.google`、`googleusercontent.com` 与 `gstatic.com` 域名，同时保留 `__Host-` 前缀与 `hostOnly` 标志。
    - 如果 `<home>/chrome-profile` 已保存有效的原生 Google Cookie，`flow-mcp` 会原样保留它们，不会用 `<home>/cookies.json` 中的旧数据覆盖。
+4. **单实例锁与孤儿 Chrome**：
+   - 启动 Chrome 前，`flow-mcp` 会对 `<home>/flow-mcp.lock`（Unix 权限 `0600`）加独占锁，并持有到进程结束。进程结束时（包括崩溃），操作系统会释放该锁。
+   - 若锁已被其他进程持有，启动 Chrome、`login`、`status`、`logout` 以及 `flow_login` 的 `logout` 操作都会报错，`doctor` 会显示警告。
+   - 持有锁期间，`<home>/chrome-profile` 上任何不是由本进程启动的 Chrome 进程都视为孤儿进程。`flow-mcp` 会先请求其正常退出（Unix 上发送 `SIGINT`，Windows 上执行 `taskkill`），3 秒后仍未退出则强制结束。
 
 ## 3. `JobQueue` 串行化与 45 秒内联等待
 
@@ -57,6 +61,7 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 | :--- | :--- | :--- |
 | `chrome-profile/` | `0700` | 持久化 Chrome 配置目录、DBSC 密钥与实时会话 Cookie |
 | `cookies.json` | `0600` | `flow-mcp` 原子写入的归一化 Google 与 Flow Cookie 数组 |
+| `flow-mcp.lock` | `0600` | 进程可启动 Chrome 期间持有的单实例锁 |
 | `flow-mcp.db` | `0600` | `WAL` 模式 SQLite 数据库，包含 `downloads`、`character_looks` 与 `characters` |
 | `downloads/` | 私有目录 | 全部下载媒体的固定目录；`flow-mcp` 拒绝外部输出路径 |
 

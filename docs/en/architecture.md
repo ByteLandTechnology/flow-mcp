@@ -13,7 +13,7 @@
 | Serial Worker | `src/queue.rs` | Runs browser mutation jobs one at a time on a FIFO queue with random pauses |
 | Browser Engine | `src/engine.rs`, `src/chrome.rs`, `src/cdp.rs` | Manages `ManagedChrome` (headless CDP), `LoginChrome` (visible non-CDP), WebSocket CDP RPC, and `Network` events |
 | Browser Runtime | `ts/*.ts` (`build.rs`) | `esbuild` bundles 26 flat TypeScript modules into `OUT_DIR/flow_runtime.js`; `src/engine.rs` embeds it once and sets `window.__flowMcp` |
-| Local Persistence | `src/db.rs`, `src/cookies.rs`, `src/download.rs` | Manages `flow-mcp.db` (`0600`), `cookies.json` (`0600`), `<home>/chrome-profile` (`0700`), and `<home>/downloads` |
+| Local Persistence | `src/db.rs`, `src/cookies.rs`, `src/download.rs`, `src/platform.rs`, `src/instance.rs` | Manages `flow-mcp.db` (`0600`), `cookies.json` (`0600`), `<home>/chrome-profile` (`0700`), and `<home>/downloads` |
 
 Inside the Google Flow page, `ts/` reads live Angular state from the `lService` store (`read_store_snapshot.ts` and `discover_store.ts`) instead of static mocks. When mutations run, Rust monitors both store updates and CDP HTTP responses for `aisandbox-pa.googleapis.com` and `batchexecute` (`is_flow_mutation_rpc_ok`).
 
@@ -35,6 +35,10 @@ Google authentication checks Device Bound Session Credentials (DBSC) and automat
 3. **Cookie normalization and native profile priority**:
    - Normalization keeps only `google.com`, `labs.google`, `googleusercontent.com`, and `gstatic.com` domains. It also keeps `__Host-` prefixes and `hostOnly` flags.
    - If `<home>/chrome-profile` holds valid native Google cookies, `flow-mcp` keeps them unchanged. It does not overwrite them with older data from `<home>/cookies.json`.
+4. **Single-instance lock and orphaned Chrome**:
+   - Before Chrome starts, `flow-mcp` takes an exclusive lock on `<home>/flow-mcp.lock` (`0600` on Unix) and keeps it until the process stops. The operating system releases the lock when the process stops, also after a crash.
+   - If another process holds the lock, the Chrome start, `login`, `status`, `logout`, and `flow_login` with `logout` fail with an error. `doctor` shows a warning.
+   - While `flow-mcp` holds the lock, each Chrome process on `<home>/chrome-profile` that it did not start is orphaned. `flow-mcp` asks these processes to stop (`SIGINT` on Unix, `taskkill` on Windows) and stops them by force after 3 seconds.
 
 ## 3. `JobQueue` serialization and 45-second inline wait
 
@@ -57,6 +61,7 @@ Running parallel edits on one Google Flow Angular tab causes UI race conditions,
 | :--- | :--- | :--- |
 | `chrome-profile/` | `0700` | Persistent Chrome profile, DBSC keys, and live session cookies |
 | `cookies.json` | `0600` | Normalized Google and Flow cookie array that `flow-mcp` writes atomically |
+| `flow-mcp.lock` | `0600` | Single-instance lock that a process holds while it can start Chrome |
 | `flow-mcp.db` | `0600` | SQLite database in `WAL` mode for `downloads`, `character_looks`, and `characters` |
 | `downloads/` | Private dir | Fixed folder for all downloaded media; `flow-mcp` rejects external output paths |
 
