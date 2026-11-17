@@ -58,6 +58,8 @@ export interface FlowMediaPayload {
   url?: string;
   /** Media lifecycle status string. */
   Zc?: string;
+  /** Media lifecycle status string in the Flow front end from 2026-11-15 on. */
+  od?: string;
   /** Media failure payload or error code. */
   nf?: unknown;
   /** Text prompt used to generate the media. */
@@ -82,6 +84,8 @@ export interface FlowMediaPayload {
   height?: number;
   /** Dimension container carrying width and height. */
   tc?: { width?: number; height?: number };
+  /** Dimension container in the Flow front end from 2026-11-15 on. */
+  xc?: { width?: number; height?: number };
   /** Clip duration in seconds. */
   durationSeconds?: number;
   /** Duration alias in seconds. */
@@ -170,6 +174,8 @@ export interface FlowTile extends FlowMediaPayload {
   Fb?: FlowMediaPayload;
   /** Legacy lowercase media container. */
   fb?: FlowMediaPayload;
+  /** Primary media container in the Flow front end from 2026-11-15 on. */
+  Eb?: FlowMediaPayload;
   /** Character preview fallback URL. */
   ue?: string;
   /** Character look slots map. */

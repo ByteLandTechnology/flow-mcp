@@ -3,7 +3,7 @@
 
 // Read all project tiles, scene clips, and collections from the bound store map.
 
-import { fifeEnv as getFifeEnv } from "./dom";
+import { fifeEnv as getFifeEnv, legacyMedia, legacyTile } from "./dom";
 import { clearStore, runtimeState } from "./state";
 import type {
   FlowMediaPayload,
@@ -121,7 +121,8 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     }
   };
 
-  for (const [id, t] of tileMap.entries()) {
+  for (const [id, rawTile] of tileMap.entries()) {
+    const t = legacyTile(rawTile);
     if (!t || t.trashed === true || t.isTrashed === true || t.yb === true) {
       continue;
     }
@@ -401,7 +402,8 @@ export function readStoreSnapshot(): StoreSnapshotResult {
       candidates.push([wfId, null, mObj]);
     }
 
-    for (const [wfId, clip, mObj] of candidates) {
+    for (const [wfId, clip, rawMedia] of candidates) {
+      const mObj = legacyMedia(rawMedia);
       if (!wfId || topLevelIds.has(wfId)) continue;
       topLevelIds.add(wfId);
       const mStatus = String(mObj?.Zc ?? clip?.Zc ?? "").toLowerCase();

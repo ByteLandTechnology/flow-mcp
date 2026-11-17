@@ -3,7 +3,20 @@
 
 // Shared DOM, event, input, and FIFE URL helpers for Flow browser modules.
 
-import type { FifeEnv, FlowTile } from "./types";
+import type { FifeEnv, FlowMediaPayload, FlowTile } from "./types";
+
+/** Copies `od` to `Zc` and `xc` to `tc` when a media payload uses the field names of the Flow front end from 2026-11-15 on. */
+export function legacyMedia<T extends FlowMediaPayload | null | undefined>(m: T): T {
+  if (!m || typeof m !== "object") return m;
+  if (m.od === undefined && m.xc === undefined) return m;
+  return { ...m, Zc: m.Zc ?? m.od, tc: m.tc ?? m.xc };
+}
+
+/** Returns `t` with `Fb` set from `Eb` when the tile uses the media container name of the Flow front end from 2026-11-15 on. */
+export function legacyTile<T extends FlowTile | null | undefined>(t: T): T {
+  if (!t || typeof t !== "object" || t.Fb || !t.Eb) return t;
+  return { ...t, Fb: legacyMedia(t.Eb) };
+}
 
 /** Waits for `ms` milliseconds before resolving. */
 export function delay(ms: number): Promise<void> {
@@ -184,7 +197,8 @@ export function fifeBase(u: unknown): string {
 }
 
 /** Selects the best available media URL from a project tile object. */
-export function pickTileUrl(t: FlowTile | null | undefined): string | null {
+export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
+  const t = legacyTile(tile);
   return (
     t?.Fb?.Wb ||
     t?.Fb?.fifeUrl ||
