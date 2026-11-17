@@ -16,6 +16,7 @@ mod db;
 mod download;
 mod engine;
 mod generation;
+mod http;
 mod instance;
 mod mcp;
 mod media_files;

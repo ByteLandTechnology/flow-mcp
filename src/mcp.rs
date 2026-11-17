@@ -38,7 +38,7 @@ const PATIENCE_MS: u64 = 45_000;
 /// Maximum resource entries returned per `resources/list` page.
 const RESOURCE_PAGE_SIZE: usize = 100;
 
-/// MCP stdio server that routes tool calls to [`FlowService`].
+/// MCP server that routes tool calls to [`FlowService`] over standard input and output or HTTP.
 #[derive(Clone)]
 pub(crate) struct FlowMcpServer {
     /// Application service instance.
