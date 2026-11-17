@@ -114,6 +114,25 @@ function clickInsideGroup(
   return clickByText(regex, scopeRoot, false);
 }
 
+/** Sets the video length slider of the Flow settings panel to `secs` seconds, and returns true when the slider accepts the value. */
+function setLengthSlider(secs: number, scopeRoot: ParentNode): boolean {
+  const root =
+    document.querySelector("flow-prompt-box-settings, .settings-content-overlay") || scopeRoot;
+  const input = root.querySelector('input[type="range"][aria-label="Length"]');
+  if (!(input instanceof HTMLInputElement)) return false;
+  const text = root instanceof HTMLElement ? root.innerText : document.body.innerText;
+  const shown = /Length\s*(\d+)\s*Sec/i.exec(text || "");
+  if (!shown) return false;
+  const target = secs - (Number(shown[1]) - Number(input.value));
+  if (target < Number(input.min) || target > Number(input.max)) return false;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (!setter) return false;
+  setter.call(input, String(target));
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
 /** Ensures `runtimeState.ngLViewMap` is populated via non-destructive hover or settings probes. */
 async function ensureLViewCapture(allowSettingsClick = false): Promise<void> {
   const hasLViewMap = (): boolean => runtimeState.ngLViewMap instanceof Map;
@@ -449,6 +468,26 @@ export async function setupGeneration(
       }
     } catch {
       // Optional model selector may differ by mode.
+    }
+
+    try {
+      // Some models show the resolution toggle and the length slider only after the model changes.
+      if (mode === "video" && cfg.model) {
+        if (cfg.resolution) {
+          const rRe = new RegExp(escapeRegex(String(cfg.resolution).trim()), "i");
+          if (clickInsideGroup("Video resolution", rRe, settingsScope())) {
+            await delay(120);
+          }
+        }
+        if (cfg.duration) {
+          const secs = Number.parseInt(String(cfg.duration).replace(/s$/i, ""), 10);
+          if (Number.isFinite(secs) && setLengthSlider(secs, settingsScope())) {
+            await delay(160);
+          }
+        }
+      }
+    } catch {
+      // Optional resolution and length controls may be unavailable.
     }
 
     if (!wantAgent) {
