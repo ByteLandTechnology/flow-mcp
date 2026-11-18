@@ -57,11 +57,14 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     await helper.mutate({
       type: "add_workflows_to_scene",
       Lc: sceneId,
+      Ic: sceneId,
       rg: resolveWfIds(assetIds),
+      YWa: resolveWfIds(assetIds),
       position: typeof req.position === "number" ? req.position : undefined,
       Mh: undefined,
       Eh: undefined,
       De: { resolve: resolveDe, reject: rejectDe },
+      ve: { resolve: resolveDe, reject: rejectDe },
     });
     await dePromise;
     await delay(400);

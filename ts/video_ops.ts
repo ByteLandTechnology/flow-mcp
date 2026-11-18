@@ -37,11 +37,14 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     await helper.mutate({
       type: "single_tile",
       Xc: String(tile.id ?? id),
+      Uc: String(tile.id ?? id),
       Ve: {
         type: "set_video_trim_seconds",
         mediaId,
         Cg: startSec,
         Rf: endSec,
+        Gg: startSec,
+        Wf: endSec,
       },
     });
     await delay(500);

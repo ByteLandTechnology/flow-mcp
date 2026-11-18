@@ -39,6 +39,7 @@ export async function assetOps(
       await helper.mutate({
         type: "single_tile",
         Xc: id,
+        Uc: id,
         Ve: { type: "set_display_name", displayName: newName },
       });
     } else {
@@ -78,7 +79,7 @@ export async function assetOps(
       }
     }
     if (inSceneClip) {
-      await mutate({ type: "batch_delete_tiles", rg: [id] });
+      await mutate({ type: "batch_delete_tiles", rg: [id], fg: [id] });
       return { ok: true, method: "batch_delete_tiles:scene_clip" };
     }
     return { ok: false, error: "asset_not_found" };
@@ -95,20 +96,34 @@ export async function assetOps(
     await mutate({
       type: "batch_move_and_delete_collection",
       Cb: members,
+      Db: members,
       rj: undefined,
       rWa: id,
     });
     return { ok: true, method: "batch_move_and_delete_collection" };
   }
 
+  // The 2026-11-15 front end trashes tiles in a batch with `Bv` entries.
+  try {
+    await mutate({
+      type: "batch_set_tiles_trashed",
+      jc: new Date(),
+      Bv: [{ Oa: tile, Ab: true, um: { mode: "root" } }],
+    });
+    return { ok: true, method: "batch_set_tiles_trashed:Bv" };
+  } catch {
+    // Use the older mutation shapes below.
+  }
   try {
     await mutate({
       type: "single_tile",
       Xc: String(tile.id ?? id),
+      Uc: String(tile.id ?? id),
       Ve: {
         type: "set_trashed",
         yb: true,
         jc: new Date(),
+        fm: new Date(),
       },
     });
     return { ok: true, method: "single_tile:set_trashed" };
@@ -117,6 +132,7 @@ export async function assetOps(
       type: "batch_set_tiles_trashed",
       jc: new Date(),
       uu: [{ Oa: tile, yb: true }],
+      nv: [{ Na: tile, yb: true }],
     });
     return { ok: true, method: "batch_set_tiles_trashed" };
   }

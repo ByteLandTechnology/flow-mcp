@@ -180,6 +180,8 @@ export interface FlowTile extends FlowMediaPayload {
   isTrashed?: boolean;
   /** Minified trash flag. */
   yb?: boolean;
+  /** Minified trash flag of the 2026-11-15 front end. */
+  Ab?: boolean;
   /** Primary uppercase media container. */
   Fb?: FlowMediaPayload;
   /** Legacy lowercase media container. */

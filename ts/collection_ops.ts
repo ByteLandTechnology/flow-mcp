@@ -39,7 +39,9 @@ export async function collectionOps(
     await helper.mutate({
       type: "batch_move_to_collection",
       rj: targetId || undefined,
+      Gj: targetId || undefined,
       Cb: objs,
+      Db: objs,
     });
     return {
       ok: true,
@@ -81,15 +83,20 @@ export async function collectionOps(
     type: "create_collection",
     id: genId,
     Fc: undefined,
+    wc: undefined,
     displayName: colName,
   });
-  const resObj = rawRes as { O2?: string | { id?: unknown }; id?: unknown } | null | undefined;
+  const rawObj = rawRes as
+    | { O2?: string | { id?: unknown }; M4?: string | { id?: unknown }; id?: unknown }
+    | null
+    | undefined;
+  const created = rawObj?.M4 ?? rawObj?.O2;
   let createdId =
-    typeof resObj?.O2 === "string"
-      ? resObj.O2
-      : resObj?.O2?.id
-        ? String(resObj.O2.id)
-        : String(resObj?.id || genId);
+    typeof created === "string"
+      ? created
+      : created?.id
+        ? String(created.id)
+        : String(rawObj?.id || genId);
 
   let targetTile: FlowTile | null = null;
   for (let i = 0; i < 50; i++) {
@@ -126,6 +133,7 @@ export async function collectionOps(
       await helper.mutate({
         type: "single_tile",
         Xc: createdId,
+        Uc: createdId,
         Ve: { type: "set_display_name", displayName: colName },
       });
     }

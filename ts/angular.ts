@@ -227,8 +227,10 @@ export async function createScene(
       type: "create_scene",
       rg: workflowIds,
       Fc: undefined,
+      wc: undefined,
       aspectRatio: 1,
       De: { resolve: resolveDe, reject: rejectDe },
+      ve: { resolve: resolveDe, reject: rejectDe },
     }),
   ).then(
     (v) => {

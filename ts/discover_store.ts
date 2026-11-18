@@ -131,12 +131,47 @@ function resolveTileMapFrom(svc: FlowStoreService | null): Map<string, FlowTile>
   return emptyMapFallback;
 }
 
+/** Returns the async mutate function of a TanStack mutation result (`oe`, `re` or `mutateAsync` by Flow build), or null. */
+function mutateAsyncOf(
+  obj: unknown,
+): ((payload: Record<string, unknown>) => Promise<unknown>) | null {
+  if (!obj || typeof obj !== "object") return null;
+  const rec = obj as Record<string, unknown>;
+  const keys = Object.keys(rec);
+  const bind = (fn: unknown) => (payload: Record<string, unknown>) =>
+    Promise.resolve((fn as (p: unknown) => unknown).call(rec, payload));
+  if (keys.includes("mutate") && keys.includes("reset")) {
+    for (const k of keys) {
+      const fn = readOwn(rec, k);
+      if (k !== "mutate" && k !== "reset" && typeof fn === "function" && (fn as () => unknown).length === 2) {
+        return bind(fn);
+      }
+    }
+  }
+  for (const name of ["mutateAsync", "oe", "re"]) {
+    const fn = readOwn(rec, name);
+    if (keys.includes(name) && typeof fn === "function") return bind(fn);
+  }
+  return null;
+}
+
+/** Copies the tile change of a `single_tile` mutation from `Ve` to `We`, the key of the newer front end. */
+function withTileChangeAlias(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (payload?.type === "single_tile" && payload.Ve && !payload.We) {
+    return { ...payload, We: payload.Ve };
+  }
+  return payload;
+}
+
 /** Dispatches a store mutation payload and waits for queue completion. */
 async function invokeMutation(
   queueObj: MutationQueueObj | FlowStoreService | null | undefined,
   payload: Record<string, unknown>,
   lcObj?: MutationQueueObj | null,
 ): Promise<unknown> {
+  payload = withTileChangeAlias(payload);
   const mq = queueObj as MutationQueueObj | null | undefined;
   const qKa = typeof mq?.ka === "function" ? mq.ka.bind(mq) : null;
   const hasPendingQueueItems = (): boolean => {
@@ -152,14 +187,15 @@ async function invokeMutation(
     if (!hasPendingQueueItems()) break;
     await delay(50);
   }
-  if (typeof lcObj?.oe === "function") {
-    const res = await lcObj.oe(payload);
+  const lcAsync = mutateAsyncOf(lcObj);
+  if (lcAsync) {
+    const res = await lcAsync(payload);
     await delay(0);
     return res;
   }
-  const qOe = mq?.oe;
-  if (typeof qOe === "function") {
-    const res = await qOe.call(mq, payload);
+  const qAsync = mutateAsyncOf(mq);
+  if (qAsync) {
+    const res = await qAsync(payload);
     await delay(0);
     return res;
   }
@@ -235,8 +271,8 @@ function resolveMutatorFrom(
 ): ((payload: Record<string, unknown>) => Promise<unknown>) | null {
   if (!svc || typeof svc !== "object") return null;
   const lcFallback = (obj: FlowStoreService): MutationQueueObj | null => {
-    if (typeof obj.lc?.oe === "function") return obj.lc;
-    if (typeof obj.ka === "object" && obj.ka && typeof obj.ka.oe === "function") {
+    if (mutateAsyncOf(obj.lc)) return obj.lc ?? null;
+    if (typeof obj.ka === "object" && obj.ka && mutateAsyncOf(obj.ka)) {
       return obj.ka;
     }
     return null;
@@ -244,9 +280,9 @@ function resolveMutatorFrom(
   const haInner = svc.ha?.ha as MutationQueueObj | null | undefined;
   if (haInner && typeof haInner.mutate === "function") {
     const haLc =
-      svc.ha && typeof svc.ha.lc?.oe === "function"
-        ? svc.ha.lc
-        : typeof svc.ka === "object" && svc.ka && typeof svc.ka.oe === "function"
+      svc.ha && mutateAsyncOf(svc.ha.lc)
+        ? (svc.ha.lc ?? null)
+        : typeof svc.ka === "object" && svc.ka && mutateAsyncOf(svc.ka)
           ? svc.ka
           : null;
     return (payload) => invokeMutation(haInner, payload, haLc);
@@ -255,7 +291,7 @@ function resolveMutatorFrom(
     return (payload) => invokeMutation(svc.ha, payload, lcFallback(svc));
   }
   const directLc = lcFallback(svc);
-  if (directLc && typeof directLc.oe === "function") {
+  if (directLc && mutateAsyncOf(directLc)) {
     return (payload) => invokeMutation(svc, payload, directLc);
   }
   if (typeof svc.mutate === "function") {
@@ -411,6 +447,7 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
             {
               type: "single_tile",
               Xc: id,
+              Uc: id,
               Ve: { type: "set_display_name", displayName },
             },
             ap.lc,
@@ -444,13 +481,19 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
         projectId,
         getTileMap: getUoMap,
         isReady: () => isStoreDataReady(runtimeState.lService),
-        mutate: (payload) => uoPg.call(uo, projectId, payload),
+        mutate: (payload) =>
+          uoPg.call(uo, projectId, withTileChangeAlias(payload)),
         rename: async (id, displayName) =>
-          await uoPg.call(uo, projectId, {
-            type: "single_tile",
-            Xc: id,
-            Ve: { type: "set_display_name", displayName },
-          }),
+          await uoPg.call(
+            uo,
+            projectId,
+            withTileChangeAlias({
+              type: "single_tile",
+              Xc: id,
+              Uc: id,
+              Ve: { type: "set_display_name", displayName },
+            }),
+          ),
       };
       return;
     }
@@ -465,17 +508,20 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
       mutate: (payload) => {
         const fn = resolveMutatorFrom(runtimeState.lService, projectId);
         if (!fn) throw new Error("store_mutate_missing");
-        return fn(payload);
+        return fn(withTileChangeAlias(payload));
       },
       rename: async (id, displayName) => {
         const svc = runtimeState.lService;
         const fn = resolveMutatorFrom(svc, projectId);
         if (fn) {
-          return await fn({
-            type: "single_tile",
-            Xc: id,
-            Ve: { type: "set_display_name", displayName },
-          });
+          return await fn(
+            withTileChangeAlias({
+              type: "single_tile",
+              Xc: id,
+              Uc: id,
+              Ve: { type: "set_display_name", displayName },
+            }),
+          );
         }
         if (svc && typeof svc.RK === "function") {
           return await svc.RK(id, displayName);

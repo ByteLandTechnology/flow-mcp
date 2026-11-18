@@ -133,14 +133,18 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       helper.mutate({
         type: "create_entity",
         A3: 1,
+        AW: 1,
         displayName: charName,
         tb: undefined,
+        ub: undefined,
         De: { resolve: resolveDe, reject: rejectDe },
+        ve: { resolve: resolveDe, reject: rejectDe },
       }),
     ).then(
       (v) => {
-        const resObj = v as { II?: unknown } | null;
-        if (resObj?.II && !resolvedTile) resolvedTile = resObj.II;
+        const resObj = v as { II?: unknown; MF?: unknown } | null;
+        const created = resObj?.MF ?? resObj?.II;
+        if (created && !resolvedTile) resolvedTile = created;
       },
       (e) => {
         if (!mutateErr) {
@@ -216,9 +220,11 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       await helper.mutate({
         type: "single_tile",
         Xc: charId,
+        Uc: charId,
         Ve: {
           type: "set_character_personality_notes",
           Mv: String(req.bio),
+          Bw: String(req.bio),
         },
       });
       appliedCreate.push("store_bio");
@@ -287,7 +293,8 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
         await helper.mutate({
           type: "single_tile",
           Xc: charId,
-          Ve: { type: "set_character_personality_notes", Mv: bioStr },
+          Uc: charId,
+          Ve: { type: "set_character_personality_notes", Mv: bioStr, Bw: bioStr },
         });
         applied.push("store_bio");
       }

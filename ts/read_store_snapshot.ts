@@ -123,7 +123,13 @@ export function readStoreSnapshot(): StoreSnapshotResult {
 
   for (const [id, rawTile] of tileMap.entries()) {
     const t = legacyTile(rawTile);
-    if (!t || t.trashed === true || t.isTrashed === true || t.yb === true) {
+    if (
+      !t ||
+      t.trashed === true ||
+      t.isTrashed === true ||
+      t.yb === true ||
+      t.Ab === true
+    ) {
       continue;
     }
     const tid = String(t.id ?? id);
