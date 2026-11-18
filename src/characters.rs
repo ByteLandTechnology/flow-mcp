@@ -20,6 +20,9 @@ use crate::project::{
     project_workspace_url,
 };
 use crate::queue::{ProgressCallback, SceneParams};
+use crate::voices::{
+    VoiceRequest, apply_voice_with_fallback, delete_portrait, list_all_voices, scene_voice,
+};
 
 /// Parameters for `flow_character`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -32,6 +35,12 @@ pub(crate) struct CharacterParams {
     pub(crate) bio: Option<String>,
     /// Flow voice name (for example `"Kore"`, `"Charon"`, or from `flow_voices`).
     pub(crate) voice: Option<String>,
+    /// Sample dialogue of a custom voice (120 characters at most); needs `voice` as the base voice.
+    pub(crate) voice_sample: Option<String>,
+    /// Customize performance text of a custom voice (style, age, pace, language); needs `voice` as the base voice.
+    pub(crate) voice_performance: Option<String>,
+    /// Name of the custom voice to save (defaults to the character name).
+    pub(crate) voice_name: Option<String>,
     /// Existing project image asset IDs to attach as character looks.
     pub(crate) asset_ids: Option<Vec<String>>,
     /// Local reference image paths to upload as character looks.
@@ -51,6 +60,14 @@ pub(crate) struct CharacterEditParams {
     pub(crate) bio: Option<String>,
     /// Updated Flow voice name.
     pub(crate) voice: Option<String>,
+    /// Sample dialogue of a custom voice (120 characters at most); needs `voice` as the base voice.
+    pub(crate) voice_sample: Option<String>,
+    /// Customize performance text of a custom voice (style, age, pace, language); needs `voice` as the base voice.
+    pub(crate) voice_performance: Option<String>,
+    /// Name of the custom voice to save (defaults to the character name).
+    pub(crate) voice_name: Option<String>,
+    /// Delete the current portrait before `asset_ids` attaches a new one.
+    pub(crate) replace_portrait: Option<bool>,
     /// Project image asset IDs to attach as character looks.
     pub(crate) asset_ids: Option<Vec<String>>,
     /// Local image paths to upload as character looks.
@@ -91,7 +108,7 @@ fn character_id_from_url(url: &str) -> Option<String> {
 }
 
 /// Opens `/project/<pid>/character/<cid>` using Angular Router first, then URL navigation.
-async fn open_character_editor(
+pub(crate) async fn open_character_editor(
     engine: &ChromeEngine,
     reference_url: &str,
     project_id: &str,
@@ -128,7 +145,7 @@ async fn open_character_editor(
 }
 
 /// Exits the character editor back to `/project/<id>` and clears stale Angular store handles.
-async fn exit_character_editor(engine: &ChromeEngine, project_id: Option<&str>) {
+pub(crate) async fn exit_character_editor(engine: &ChromeEngine, project_id: Option<&str>) {
     let before_finish = engine.current_url().await.unwrap_or_default();
     let in_character = before_finish.contains("/character/");
     let finish_res = engine
@@ -223,9 +240,15 @@ pub(crate) async fn list_voices(
         open_character_editor(engine, &initial_url, pid, &cid).await?;
     }
 
-    let voices_res = engine
-        .call_flow_async("characterVoiceOp", json!([{ "action": "list_voices" }]))
-        .await;
+    let full_list = list_all_voices(engine).await;
+    let voices_res = match full_list {
+        Some(voices) => Ok(json!({ "ok": true, "voices": voices })),
+        None => {
+            engine
+                .call_flow_async("characterVoiceOp", json!([{ "action": "list_voices" }]))
+                .await
+        }
+    };
 
     exit_character_editor(engine, project_id.as_deref()).await;
     if let Some(tmp_id) = temp_char_id {
@@ -280,34 +303,34 @@ async fn click_look_submit_if_present(
     Ok(None)
 }
 
+/// Voice, portrait, and look changes to apply on an open `/character/<id>` page.
+struct PageMediaRequest<'a> {
+    /// Character ID of the open editor.
+    char_id: &'a str,
+    /// Voice settings, including custom voice text.
+    voice: VoiceRequest<'a>,
+    /// Project image asset IDs to attach.
+    asset_ids: Option<&'a [String]>,
+    /// Optional look generation prompt.
+    look_prompt: Option<&'a str>,
+    /// Delete the current portrait before attaching `asset_ids`.
+    replace_portrait: bool,
+}
+
 /// Applies voice, reference assets, and optional look generation inside an open `/character/<id>` page.
 async fn apply_character_page_media(
     engine: &ChromeEngine,
-    char_id: &str,
-    voice: Option<&str>,
-    asset_ids: Option<&[String]>,
-    look_prompt: Option<&str>,
+    req: PageMediaRequest<'_>,
 ) -> Result<Option<(String, String, String)>> {
-    if let Some(voice_name) = voice {
-        let v_res = engine
-            .call_flow_async(
-                "characterVoiceOp",
-                json!([{
-                    "action": "set_voice",
-                    "character_id": char_id,
-                    "voice": voice_name,
-                }]),
-            )
-            .await?;
-        if v_res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-            anyhow::bail!(
-                "{}",
-                v_res
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("voice assignment failed")
-            );
-        }
+    let char_id = req.char_id;
+    let asset_ids = req.asset_ids;
+    let look_prompt = req.look_prompt;
+    if req.voice.is_set() {
+        apply_voice_with_fallback(engine, char_id, req.voice).await?;
+    }
+
+    if req.replace_portrait && asset_ids.is_some_and(|a| !a.is_empty()) {
+        delete_portrait(engine).await?;
     }
 
     let has_assets = asset_ids.is_some_and(|a| !a.is_empty());
@@ -425,10 +448,13 @@ pub(crate) async fn create_or_update_character_job(
                     Ok(v) if v.get("ok").and_then(|b| b.as_bool()) == Some(true) => {
                         apply_character_page_media(
                             engine,
-                            &cid,
-                            scene.voice.as_deref(),
-                            scene.asset_ids.as_deref(),
-                            look_prompt.as_deref(),
+                            PageMediaRequest {
+                                char_id: &cid,
+                                voice: scene_voice(scene, &char_name),
+                                asset_ids: scene.asset_ids.as_deref(),
+                                look_prompt: look_prompt.as_deref(),
+                                replace_portrait: false,
+                            },
                         )
                         .await
                     }
@@ -514,12 +540,19 @@ pub(crate) async fn create_or_update_character_job(
                     .unwrap_or("unknown")
             );
         }
+        let default_voice_name = scene
+            .new_name
+            .clone()
+            .unwrap_or_else(|| target.name.clone());
         let submitted_meta = match apply_character_page_media(
             engine,
-            &target.id,
-            scene.voice.as_deref(),
-            scene.asset_ids.as_deref(),
-            look_prompt.as_deref(),
+            PageMediaRequest {
+                char_id: &target.id,
+                voice: scene_voice(scene, &default_voice_name),
+                asset_ids: scene.asset_ids.as_deref(),
+                look_prompt: look_prompt.as_deref(),
+                replace_portrait: scene.replace_portrait.unwrap_or(false),
+            },
         )
         .await
         {

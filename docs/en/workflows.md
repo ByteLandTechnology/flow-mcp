@@ -77,6 +77,7 @@ For Flow Agent Mode batch images, call `flow_agent_images`. It uses a `480`-seco
 
 1. **Flow Character Entities (`flow_voices`, `flow_character`, `flow_character_edit`, `flow_characters`)**:
    - Call `flow_voices` to list available voices (for example `"Kore"` or `"Charon"`).
+   - Set `voice_sample` and `voice_performance` with a base `voice` to save a custom voice, and call `flow_voice_preview` to download its preview audio.
    - Call `flow_character` with a name, description, optional bio, voice, local `refs` paths, or `asset_ids`:
 
 ```json

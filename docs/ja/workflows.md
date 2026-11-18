@@ -77,6 +77,7 @@ Flow Agent モードのバッチ画像生成には `flow_agent_images` を呼び
 
 1. **Flow キャラクターエンティティ（`flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters`）**：
    - `flow_voices` を呼び出して利用可能なボイス（たとえば `"Kore"` や `"Charon"`）を一覧取得します。
+   - ベースの `voice` に `voice_sample` と `voice_performance` を加えてカスタムボイスを保存し、`flow_voice_preview` で試聴音声をダウンロードします。
    - 名前、説明、任意の紹介文、ボイス、ローカル `refs` パス、または `asset_ids` を渡して `flow_character` を呼び出します：
 
 ```json

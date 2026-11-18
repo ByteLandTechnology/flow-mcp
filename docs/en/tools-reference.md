@@ -125,7 +125,7 @@ List, create, open, rename, or delete Google Flow projects.
 
 ### `flow_voices`
 
-Open the character voice picker in Google Flow and list available voices.
+Open the character voice picker in Google Flow, scroll the full voice list, and list all voices. Saved custom voices have `"custom": true`.
 
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
@@ -141,9 +141,14 @@ Queue a character creation job on `JobQueue` and save metadata (`id`, `project_i
 | `description` | `string` | No | Visual look description. If you omit `bio`, `flow-mcp` uses this text as `bio`. |
 | `bio` | `string` | No | Introduction or personality notes. |
 | `voice` | `string` | No | Voice name (for example `"Kore"`, `"Charon"`, or a name from `flow_voices`). |
+| `voice_sample` | `string` | No | Sample dialogue of a custom voice, 120 characters at most. Needs `voice` as the base voice. |
+| `voice_performance` | `string` | No | Customize performance text of a custom voice (language, age, tone, pace). Needs `voice` as the base voice. |
+| `voice_name` | `string` | No | Name of the custom voice to save. The default is the character name. |
 | `asset_ids` | `string[]` | No | Existing project image asset IDs to attach as character looks. |
 | `refs` | `string[]` | No | Local reference image file paths to upload as looks. |
 | `prompt` | `string` | No | Prompt to generate a character look inside the editor. |
+
+When you set `voice_sample` or `voice_performance`, `flow-mcp` selects the base `voice`, fills the Sample dialogue and Customize performance fields, saves a custom voice, and adds it to the character. Google Flow generates the voice preview first, so this step can take 30 to 60 seconds.
 
 ### `flow_character_edit`
 
@@ -155,13 +160,28 @@ Queue an update job for `/character/<id>` and update SQLite character metadata. 
 | `new_name` | `string` | No | Updated display name. |
 | `bio` | `string` | No | Updated biography or notes. |
 | `voice` | `string` | No | Updated voice name. |
+| `voice_sample` | `string` | No | Sample dialogue of a custom voice, 120 characters at most. Needs `voice` as the base voice. |
+| `voice_performance` | `string` | No | Customize performance text of a custom voice (language, age, tone, pace). Needs `voice` as the base voice. |
+| `voice_name` | `string` | No | Name of the custom voice to save. The default is the character name. |
 | `asset_ids` | `string[]` | No | Project image asset IDs to attach as looks. |
 | `refs` | `string[]` | No | Local reference image paths to upload. |
 | `prompt` | `string` | No | Edit or look generation prompt inside the character editor. |
+| `replace_portrait` | `boolean` | No | Delete the current portrait before `asset_ids` attaches a new portrait. |
 
 ### `flow_characters`
 
 List characters in the active project. Merges live Flow tiles with stored SQLite `bio`, `voice`, and `ref_asset_ids` fields. Takes no parameters.
+
+### `flow_voice_preview`
+
+Open the character editor, play the voice preview (or audition `voice` with sample and performance text without saving it), and save the audio as `<home>/downloads/voice-<character id>-<saved or voice name>-<epoch ms>.<ext>`. Returns `file`, `mime_type`, `bytes`, and the voice text that the character page shows.
+
+| Parameter | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `character` | `string` | Yes | Character ID or name substring. |
+| `voice` | `string` | No | Base voice to audition. With this parameter, `flow-mcp` generates a preview in the voice dialog and saves no voice. |
+| `voice_sample` | `string` | No | Sample dialogue to audition with `voice`, 120 characters at most. |
+| `voice_performance` | `string` | No | Customize performance text to audition with `voice`. |
 
 ---
 

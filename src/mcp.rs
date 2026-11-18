@@ -31,6 +31,7 @@ use crate::project::{NewProjectParams, ProjectsParams, StatusParams};
 use crate::queue::{JobIdParams, WaitParams};
 use crate::scenes::{ScenesParams, VideoParams};
 use crate::service::{self, FlowService, ResourceReadError};
+use crate::voices::VoicePreviewParams;
 
 /// Inline wait limit (`45_000` ms) before slow tools return a pending task handle.
 const PATIENCE_MS: u64 = 45_000;
@@ -306,6 +307,17 @@ impl FlowMcpServer {
     #[tool(description = "List available Google Flow character voices.")]
     async fn flow_voices(&self, Parameters(req): Parameters<VoicesParams>) -> CallToolResult {
         Self::format_result(self.service.voices(req).await)
+    }
+
+    /// Plays a character voice preview and downloads the audio file.
+    #[tool(
+        description = "Play the voice preview of a Google Flow character and download the audio file. With `voice`, audition a base voice with sample and performance text without saving it."
+    )]
+    async fn flow_voice_preview(
+        &self,
+        Parameters(req): Parameters<VoicePreviewParams>,
+    ) -> CallToolResult {
+        Self::format_result(self.service.voice_preview(req).await)
     }
 }
 

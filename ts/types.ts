@@ -637,6 +637,20 @@ export interface CharacterMediaOpRequest {
   look_prompt?: string | null;
 }
 
+/** Request payload for `characterExtraOp`. */
+export interface CharacterExtraOpRequest {
+  /** Operation (`apply_voice`, `audition_voice`, `preview_voice`, `delete_portrait`, or `list_all_voices`). */
+  action?: string;
+  /** Base voice name to select in the voice dialog. */
+  voice?: string | null;
+  /** Sample dialogue text for a custom voice (120 characters at most). */
+  sample?: string | null;
+  /** Customize performance text for a custom voice. */
+  performance?: string | null;
+  /** Name of the custom voice to save. */
+  voice_name?: string | null;
+}
+
 /** Viewport click point computed in browser coordinates. */
 export interface ViewportPoint {
   /** Horizontal viewport pixel coordinate. */
@@ -685,6 +699,8 @@ export interface FlowMcpRuntime {
   characterVoiceOp: (req: CharacterVoiceOpRequest) => Promise<unknown>;
   /** Opens character uploads, attaches project references, and generates looks. */
   characterMediaOp: (req: CharacterMediaOpRequest) => Promise<unknown>;
+  /** Saves custom voices, lists all voices, previews the voice, and deletes the portrait. */
+  characterExtraOp: (req: CharacterExtraOpRequest) => Promise<unknown>;
 }
 
 declare global {

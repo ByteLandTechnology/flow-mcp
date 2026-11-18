@@ -25,6 +25,7 @@ use crate::media_files;
 use crate::project::{self, ProjectsParams};
 use crate::queue::{JobQueue, JobResult, JobRunner, JobView, SceneParams, WaitParams};
 use crate::scenes::{self, ScenesParams, VideoParams};
+use crate::voices::{self, VoicePreviewParams};
 
 /// Maximum downloaded file size served directly through MCP `resources/read` (`64 MiB`).
 const MAX_RESOURCE_READ_BYTES: u64 = 64 * 1024 * 1024;
@@ -209,6 +210,9 @@ impl FlowService {
             description: req.description,
             bio: req.bio,
             voice: req.voice,
+            voice_sample: req.voice_sample,
+            voice_performance: req.voice_performance,
+            voice_name: req.voice_name,
             asset_ids: req.asset_ids,
             refs: req.refs,
             character_edit: Some(false),
@@ -225,6 +229,10 @@ impl FlowService {
             new_name: req.new_name,
             bio: req.bio,
             voice: req.voice,
+            voice_sample: req.voice_sample,
+            voice_performance: req.voice_performance,
+            voice_name: req.voice_name,
+            replace_portrait: req.replace_portrait,
             asset_ids: req.asset_ids,
             refs: req.refs,
             character_edit: Some(true),
@@ -241,6 +249,11 @@ impl FlowService {
     /// Lists available Google Flow character voices.
     pub(crate) async fn voices(&self, req: VoicesParams) -> Result<Value> {
         characters::list_voices(&self.engine, &self.db, req.character.as_deref()).await
+    }
+
+    /// Plays a character voice preview and downloads the audio.
+    pub(crate) async fn voice_preview(&self, req: VoicePreviewParams) -> Result<Value> {
+        voices::preview_voice(&self.engine, &req).await
     }
 
     /// Trims a video immediately or queues a video extension job.

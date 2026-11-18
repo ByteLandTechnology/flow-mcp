@@ -83,7 +83,7 @@ cargo build --release
 | 领域 | 工具 | 用途 |
 | :--- | :--- | :--- |
 | 会话与项目 | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | 检查会话状态、使用 Chrome 登录以及管理项目 |
-| 角色与音色 | `flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters` | 列出 Flow 音色、创建或更新角色并保存 SQLite 资料 |
+| 角色与音色 | `flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters`、`flow_voice_preview` | 列出 Flow 音色、创建或更新角色与自定义音色、试听音色并保存 SQLite 资料 |
 | 生成与批处理 | `flow_generate`、`flow_agent_images`、`flow_edit` | 提交 Veo 视频或 Imagen 图像任务、运行 Agent 批量出图或编辑资产 |
 | 视频与场景 | `flow_video`、`flow_scenes` | 在不修改源文件的情况下裁剪视频、续写片段并管理场景时间线 |
 | 队列控制 | `flow_wait`、`flow_cancel`、`flow_retry` | 等待任务完成（`PATIENCE_MS = 45s`）、停止任务或重新运行失败任务 |

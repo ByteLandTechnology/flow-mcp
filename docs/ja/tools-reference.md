@@ -125,7 +125,7 @@ Google Flow プロジェクトを一覧表示、作成、開く、名前変更�
 
 ### `flow_voices`
 
-Google Flow でキャラクターボイスピッカーを開き、利用可能なボイスを一覧表示します。
+Google Flow でキャラクターボイスピッカーを開き、リスト全体をスクロールしてすべてのボイスを一覧表示します。保存済みのカスタムボイスには `"custom": true` が付きます。
 
 | パラメータ | 型 | 必須 | 説明 |
 | :--- | :--- | :--- | :--- |
@@ -141,9 +141,14 @@ Google Flow でキャラクターボイスピッカーを開き、利用可能�
 | `description` | `string` | いいえ | 外見説明。`bio` を省略すると、`flow-mcp` はこのテキストを `bio` として使用します。 |
 | `bio` | `string` | いいえ | 紹介文または性格メモ。 |
 | `voice` | `string` | いいえ | ボイス名（たとえば `"Kore"`、`"Charon"`、または `flow_voices` から取得した名前）。 |
+| `voice_sample` | `string` | いいえ | カスタムボイスの Sample dialogue(最大 120 文字)。ベースボイスとして `voice` が必要です。 |
+| `voice_performance` | `string` | いいえ | カスタムボイスの Customize performance テキスト(言語、年齢、口調、速さ)。ベースボイスとして `voice` が必要です。 |
+| `voice_name` | `string` | いいえ | 保存するカスタムボイス名。既定値はキャラクター名です。 |
 | `asset_ids` | `string[]` | いいえ | キャラクターの外見として添付する既存プロジェクト画像アセット ID。 |
 | `refs` | `string[]` | いいえ | 外見としてアップロードするローカル参照画像ファイルパス。 |
 | `prompt` | `string` | いいえ | エディタ内でキャラクター外見を生成するためのプロンプト。 |
+
+`voice_sample` または `voice_performance` を指定すると、`flow-mcp` はベースの `voice` を選び、Sample dialogue と Customize performance を入力してカスタムボイスとして保存し、キャラクターに追加します。Google Flow は先に試聴音声を生成するため、30〜60 秒かかることがあります。
 
 ### `flow_character_edit`
 
@@ -155,13 +160,28 @@ Google Flow でキャラクターボイスピッカーを開き、利用可能�
 | `new_name` | `string` | いいえ | 更新後の表示名。 |
 | `bio` | `string` | いいえ | 更新後の紹介文またはメモ。 |
 | `voice` | `string` | いいえ | 更新後のボイス名。 |
+| `voice_sample` | `string` | いいえ | カスタムボイスの Sample dialogue(最大 120 文字)。ベースボイスとして `voice` が必要です。 |
+| `voice_performance` | `string` | いいえ | カスタムボイスの Customize performance テキスト(言語、年齢、口調、速さ)。ベースボイスとして `voice` が必要です。 |
+| `voice_name` | `string` | いいえ | 保存するカスタムボイス名。既定値はキャラクター名です。 |
 | `asset_ids` | `string[]` | いいえ | 外見として添付するプロジェクト画像アセット ID。 |
 | `refs` | `string[]` | いいえ | アップロードするローカル参照画像パス。 |
 | `prompt` | `string` | いいえ | キャラクターエディタ内での編集または外見生成プロンプト。 |
+| `replace_portrait` | `boolean` | いいえ | `asset_ids` で新しいポートレートを添付する前に、現在のポートレートを削除します。 |
 
 ### `flow_characters`
 
 アクティブプロジェクト内のキャラクターを一覧表示します。ライブ Flow タイルと SQLite に保存された `bio`、`voice`、`ref_asset_ids` フィールドを統合します。パラメータは不要です。
+
+### `flow_voice_preview`
+
+キャラクターエディタを開いてボイスの試聴を再生し(または `voice` とテキストで保存せずに試聴し)、音声を `<home>/downloads/voice-<キャラクター ID>-<saved またはボイス名>-<ミリ秒時刻>.<拡張子>` に保存します。`file`、`mime_type`、`bytes`、およびキャラクターページに表示されるボイス文字列を返します。
+
+| パラメータ | 型 | 必須 | 説明 |
+| :--- | :--- | :--- | :--- |
+| `character` | `string` | はい | キャラクター ID または名前部分文字列。 |
+| `voice` | `string` | いいえ | 試聴するベースボイス。指定すると、`flow-mcp` はボイスダイアログで試聴を生成し、ボイスを保存しません。 |
+| `voice_sample` | `string` | いいえ | `voice` と一緒に試聴する Sample dialogue(最大 120 文字)。 |
+| `voice_performance` | `string` | いいえ | `voice` と一緒に試聴する Customize performance テキスト。 |
 
 ---
 

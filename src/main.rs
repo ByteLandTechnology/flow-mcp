@@ -26,6 +26,7 @@ mod queue;
 mod scenes;
 mod service;
 mod upload;
+mod voices;
 
 use anyhow::Result;
 use clap::Parser;

@@ -164,6 +164,18 @@ pub(crate) struct SceneParams {
     /// Flow voice name selected for a character.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) voice: Option<String>,
+    /// Sample dialogue of a custom character voice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) voice_sample: Option<String>,
+    /// Customize performance text of a custom character voice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) voice_performance: Option<String>,
+    /// Name of the custom character voice to save.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) voice_name: Option<String>,
+    /// Delete the current character portrait before attaching new asset IDs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) replace_portrait: Option<bool>,
 }
 
 /// Internal job record in [`JobQueue`].

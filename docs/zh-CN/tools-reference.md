@@ -125,7 +125,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ### `flow_voices`
 
-在 Google Flow 中打开角色音色选择器并列出可用音色。
+在 Google Flow 中打开角色音色选择器,滚动完整列表并列出全部音色。已保存的自定义音色带有 `"custom": true`。
 
 | 参数 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -141,9 +141,14 @@ flow-mcp [OPTIONS] <COMMAND>
 | `description` | `string` | 否 | 外观描述。如果省略 `bio`，`flow-mcp` 将此文本用作 `bio`。 |
 | `bio` | `string` | 否 | 简介或性格备注。 |
 | `voice` | `string` | 否 | 音色名称（例如 `"Kore"`、`"Charon"` 或来自 `flow_voices` 的名称）。 |
+| `voice_sample` | `string` | 否 | 自定义音色的 Sample dialogue,最多 120 个字符。需要用 `voice` 指定基础音色。 |
+| `voice_performance` | `string` | 否 | 自定义音色的 Customize performance 文本(语言、年龄、语气、语速)。需要用 `voice` 指定基础音色。 |
+| `voice_name` | `string` | 否 | 要保存的自定义音色名称,默认使用角色名称。 |
 | `asset_ids` | `string[]` | 否 | 作为角色外观附加的既有项目图像资产 ID。 |
 | `refs` | `string[]` | 否 | 作为外观上传的本地参考图像文件路径。 |
 | `prompt` | `string` | 否 | 在编辑器内生成角色外观的提示词。 |
+
+设置 `voice_sample` 或 `voice_performance` 时,`flow-mcp` 会选择基础 `voice`,填写 Sample dialogue 与 Customize performance,保存为自定义音色并添加到角色。Google Flow 会先生成试听,因此这一步可能需要 30 到 60 秒。
 
 ### `flow_character_edit`
 
@@ -155,13 +160,28 @@ flow-mcp [OPTIONS] <COMMAND>
 | `new_name` | `string` | 否 | 更新后的显示名称。 |
 | `bio` | `string` | 否 | 更新后的简介或备注。 |
 | `voice` | `string` | 否 | 更新后的音色名称。 |
+| `voice_sample` | `string` | 否 | 自定义音色的 Sample dialogue,最多 120 个字符。需要用 `voice` 指定基础音色。 |
+| `voice_performance` | `string` | 否 | 自定义音色的 Customize performance 文本(语言、年龄、语气、语速)。需要用 `voice` 指定基础音色。 |
+| `voice_name` | `string` | 否 | 要保存的自定义音色名称,默认使用角色名称。 |
 | `asset_ids` | `string[]` | 否 | 作为外观附加的项目图像资产 ID。 |
 | `refs` | `string[]` | 否 | 要上传的本地参考图像路径。 |
 | `prompt` | `string` | 否 | 角色编辑器内的编辑或外观生成提示词。 |
+| `replace_portrait` | `boolean` | 否 | 在 `asset_ids` 附加新肖像之前,先删除当前肖像。 |
 
 ### `flow_characters`
 
 列出活动项目中的角色。将实时 Flow 卡片与 SQLite 中存储的 `bio`、`voice` 与 `ref_asset_ids` 字段合并返回。不接受参数。
+
+### `flow_voice_preview`
+
+打开角色编辑器,播放音色试听(或用 `voice` 加文本试听而不保存),并把音频保存为 `<home>/downloads/voice-<角色 ID>-<saved 或音色名>-<毫秒时间戳>.<扩展名>`。返回 `file`、`mime_type`、`bytes` 以及角色页面显示的音色文本。
+
+| 参数 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `character` | `string` | 是 | 角色 ID 或名称子串。 |
+| `voice` | `string` | 否 | 要试听的基础音色。设置后,`flow-mcp` 在音色对话框中生成试听,不保存任何音色。 |
+| `voice_sample` | `string` | 否 | 与 `voice` 一起试听的 Sample dialogue,最多 120 个字符。 |
+| `voice_performance` | `string` | 否 | 与 `voice` 一起试听的 Customize performance 文本。 |
 
 ---
 

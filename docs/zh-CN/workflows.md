@@ -77,6 +77,7 @@
 
 1. **Flow 角色实体（`flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters`）**：
    - 调用 `flow_voices` 列出可用音色（例如 `"Kore"` 或 `"Charon"`）。
+   - 用基础 `voice` 加上 `voice_sample` 与 `voice_performance` 保存自定义音色，再调用 `flow_voice_preview` 下载试听音频。
    - 调用 `flow_character` 传入名称、描述、可选简介、音色、本地 `refs` 路径或 `asset_ids`：
 
 ```json

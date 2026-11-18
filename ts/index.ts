@@ -5,6 +5,7 @@
 
 import { assetOps } from "./asset_ops";
 import { attachIngredients } from "./attach_ingredients";
+import { characterExtraOp } from "./character_extra";
 import { characterMediaOp } from "./character_media";
 import { characterOp } from "./character_ops";
 import { characterVoiceOp } from "./character_voices";
@@ -44,5 +45,6 @@ if (!window.__flowMcp) {
     characterOp,
     characterVoiceOp,
     characterMediaOp,
+    characterExtraOp,
   };
 }
