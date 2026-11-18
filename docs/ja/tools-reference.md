@@ -89,6 +89,8 @@ Google Flow 認証状態、アクティブプロジェクト、`JobQueue`、SQLi
 
 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }` を返します。プロジェクトを自動的に開いたり作成したりしません。
 
+アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。
+
 ### `flow_login`
 
 Chrome 経由でサインインするか、Flow Cookie を管理します。

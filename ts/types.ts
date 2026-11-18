@@ -659,6 +659,26 @@ export interface ViewportPoint {
   y: number;
 }
 
+/** One check of the store probe. */
+export interface StoreProbeCheck {
+  /** Stable check name, for example `tile_map`. */
+  name: string;
+  /** True when the check passed. */
+  ok: boolean;
+  /** Short human-readable detail. */
+  detail: string;
+}
+
+/** Result of the non-mutating project store probe. */
+export interface StoreProbeResult {
+  /** Front-end build label, or null when the page publishes none. */
+  build: string | null;
+  /** True when every check passed. */
+  ok: boolean;
+  /** Individual checks in run order. */
+  checks: StoreProbeCheck[];
+}
+
 /** Public browser runtime API exposed at `window.__flowMcp`. */
 export interface FlowMcpRuntime {
   /** Probes Google Flow authentication shell status. */
@@ -703,6 +723,8 @@ export interface FlowMcpRuntime {
   characterExtraOp: (req: CharacterExtraOpRequest) => Promise<unknown>;
   /** Returns the front-end build label of the page, or null. */
   buildLabel: () => string | null;
+  /** Checks the bound project store shape without calling a mutation. */
+  probeStore: () => StoreProbeResult;
 }
 
 declare global {

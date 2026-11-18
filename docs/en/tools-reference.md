@@ -89,6 +89,8 @@ Check Google Flow authentication state, active project, `JobQueue`, SQLite index
 
 Returns `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`. Does not open or create projects.
 
+When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project.
+
 ### `flow_login`
 
 Sign in through Chrome or manage Flow cookies.

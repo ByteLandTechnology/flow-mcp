@@ -73,6 +73,9 @@ pub(crate) struct FlowStatus {
     pub(crate) page_ready: bool,
     /// Browser engine identifier (`"chrome-cdp"`).
     pub(crate) engine: String,
+    /// Front-end build label and project store checks of the active page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) frontend: Option<Value>,
     /// Error message when page startup or probing fails.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
@@ -222,6 +225,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
             collections_count: None,
             page_ready: false,
             engine: ENGINE_NAME.to_string(),
+            frontend: None,
             error: None,
         };
     }
@@ -254,6 +258,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
             collections_count: None,
             page_ready: false,
             engine: ENGINE_NAME.to_string(),
+            frontend: None,
             error,
         };
     }
@@ -334,6 +339,12 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
     }
 
+    let frontend = if in_project {
+        engine.call_flow_js("probeStore", json!([])).await.ok()
+    } else {
+        None
+    };
+
     FlowStatus {
         signed_in,
         in_project,
@@ -345,6 +356,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         collections_count,
         page_ready: true,
         engine: ENGINE_NAME.to_string(),
+        frontend,
         error: None,
     }
 }

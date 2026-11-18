@@ -89,6 +89,8 @@ flow-mcp [OPTIONS] <COMMAND>
 
 返回 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`。不会自动打开或创建项目。
 
+当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。
+
 ### `flow_login`
 
 通过 Chrome 登录或管理 Flow Cookie。
