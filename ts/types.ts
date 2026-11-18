@@ -701,6 +701,8 @@ export interface FlowMcpRuntime {
   characterMediaOp: (req: CharacterMediaOpRequest) => Promise<unknown>;
   /** Saves custom voices, lists all voices, previews the voice, and deletes the portrait. */
   characterExtraOp: (req: CharacterExtraOpRequest) => Promise<unknown>;
+  /** Returns the front-end build label of the page, or null. */
+  buildLabel: () => string | null;
 }
 
 declare global {

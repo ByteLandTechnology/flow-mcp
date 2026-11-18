@@ -15,6 +15,7 @@ import { discoverStore } from "./discover_store";
 import { fetchMedia } from "./fetch_media";
 import { openEditAsset } from "./open_edit_asset";
 import { uploadUiAction } from "./open_upload_trigger";
+import { readBuildLabel } from "./probe";
 import { projectNav } from "./project_nav";
 import { projectsOp } from "./projects_ops";
 import { readStoreSnapshot } from "./read_store_snapshot";
@@ -27,6 +28,7 @@ import { videoOp } from "./video_ops";
 if (!window.__flowMcp) {
   window.__flowMcp = {
     checkAuth,
+    buildLabel: readBuildLabel,
     discoverStore,
     readStoreSnapshot,
     projectNav,

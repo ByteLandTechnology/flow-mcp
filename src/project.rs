@@ -425,7 +425,18 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(350)).await;
     }
-    anyhow::bail!("Failed to find the Flow project store (lService). Open a Flow project first.")
+    anyhow::bail!(
+        "Failed to find the Flow project store (lService). Open a Flow project first.{}",
+        build_suffix(engine).await
+    )
+}
+
+/// Returns a message suffix with the front-end build label, or an empty string when the page has no label.
+async fn build_suffix(engine: &ChromeEngine) -> String {
+    match engine.build_label().await {
+        Some(label) => format!(" Flow front end build: {label}."),
+        None => String::new(),
+    }
 }
 
 /// Binds the Flow store if needed and returns a JSON snapshot of assets, collections, title, and credits.
@@ -455,7 +466,10 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
         };
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     }
-    anyhow::bail!("Failed to read Flow asset snapshot ({last_err})");
+    anyhow::bail!(
+        "Failed to read Flow asset snapshot ({last_err}){}",
+        build_suffix(engine).await
+    );
 }
 
 /// Navigates to the Flow home page, clicks "New project", and persists `title` when provided.

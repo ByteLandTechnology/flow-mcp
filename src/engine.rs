@@ -319,6 +319,12 @@ impl ChromeEngine {
         cdp.call(method, params).await
     }
 
+    /// Returns the Flow front-end build label that the active page publishes, or `None` when it is unavailable.
+    pub(crate) async fn build_label(&self) -> Option<String> {
+        let value = self.call_flow_js("buildLabel", json!([])).await.ok()?;
+        value.as_str().map(str::to_string)
+    }
+
     /// Navigates the active page to `url` and waits until the document becomes interactive.
     pub(crate) async fn navigate(&self, url: &str) -> Result<()> {
         let cdp = self.active_cdp().await?;

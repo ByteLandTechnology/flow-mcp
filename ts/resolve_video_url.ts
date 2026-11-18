@@ -4,6 +4,7 @@
 // Resolve stream and download media URLs for a primary media ID via batchexecute RPC.
 
 import { fifeEnv as getFifeEnv } from "./dom";
+import { readBuildLabel } from "./probe";
 import { runtimeState } from "./state";
 import type { ResolvedMediaResult } from "./types";
 
@@ -25,7 +26,7 @@ export async function resolveVideoUrl(
   const wiz = window.WIZ_global_data || {};
   const at = typeof wiz.SNlM0e === "string" ? wiz.SNlM0e : "";
   const sid = typeof wiz.FdrFJe === "string" ? wiz.FdrFJe : "";
-  const bl = typeof wiz.cfb2h === "string" ? wiz.cfb2h : "";
+  const bl = readBuildLabel() ?? "";
   if (!cacheKey || !at) {
     return { ok: false, error: "missing_wiz_or_media_id" };
   }
