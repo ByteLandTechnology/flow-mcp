@@ -25,6 +25,7 @@ mod project;
 mod queue;
 mod scenes;
 mod service;
+mod upload;
 
 use anyhow::Result;
 use clap::Parser;

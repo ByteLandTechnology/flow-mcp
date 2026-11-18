@@ -313,6 +313,12 @@ impl ChromeEngine {
             .ok_or_else(|| anyhow::anyhow!("Chrome page target unavailable"))
     }
 
+    /// Sends one raw CDP command to the active page and returns its result.
+    pub(crate) async fn cdp_call(&self, method: &str, params: Value) -> Result<Value> {
+        let cdp = self.active_cdp().await?;
+        cdp.call(method, params).await
+    }
+
     /// Navigates the active page to `url` and waits until the document becomes interactive.
     pub(crate) async fn navigate(&self, url: &str) -> Result<()> {
         let cdp = self.active_cdp().await?;
@@ -465,10 +471,14 @@ impl ChromeEngine {
 
     /// Assigns local `files` to the `<input>` element matching `selector` through CDP `DOM.setFileInputFiles`.
     pub(crate) async fn upload_files(&self, selector: &str, files: &[String]) -> Result<()> {
-        let cdp = self.active_cdp().await?;
         let sel_json = serde_json::to_string(selector)?;
         let query_expr = format!("document.querySelector({})", sel_json);
+        self.upload_files_to(&query_expr, files).await
+    }
 
+    /// Assigns local `files` to the `<input>` element that the JavaScript expression `query_expr` returns.
+    pub(crate) async fn upload_files_to(&self, query_expr: &str, files: &[String]) -> Result<()> {
+        let cdp = self.active_cdp().await?;
         let mut object_id: Option<String> = None;
         for _ in 0..20 {
             let res = cdp
@@ -488,7 +498,7 @@ impl ChromeEngine {
         }
 
         let Some(object_id) = object_id else {
-            anyhow::bail!("File input element not found for selector: {}", selector);
+            anyhow::bail!("File input element not found for: {}", query_expr);
         };
 
         cdp.call(

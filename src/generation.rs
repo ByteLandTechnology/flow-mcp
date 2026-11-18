@@ -163,7 +163,18 @@ async fn apply_generation_controls(
     if let Some(frames) = &scene.frames
         && !frames.is_empty()
     {
-        if let Err(first_err) = engine.upload_files("input[type=\"file\"]", frames).await {
+        let mut uploaded = engine.upload_files("input[type=\"file\"]", frames).await;
+        if uploaded.is_err() {
+            // The 2026-11-15 front end opens a detached file input from the prompt box menu.
+            uploaded = crate::upload::upload_through_menu(
+                engine,
+                crate::upload::PROMPT_INGREDIENTS_MENU,
+                crate::upload::PROMPT_UPLOAD_ITEM,
+                frames,
+            )
+            .await;
+        }
+        if let Err(first_err) = uploaded {
             let opened_trigger = engine
                 .call_flow_js("uploadUiAction", json!(["open_trigger"]))
                 .await
@@ -531,6 +542,29 @@ pub(crate) async fn run_generation(
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
     ensure_project_workspace_root(engine).await?;
     ensure_flow_store(engine).await?;
+    // Upload local frames into the library first and attach them as assets, so that the
+    // uploaded tiles are not counted as generated outputs.
+    let uploaded_scene;
+    let scene = match scene.frames.as_deref() {
+        Some(frames) if !frames.is_empty() => {
+            validate_local_files(Some(frames), "Reference image").await?;
+            on_progress("uploading reference images".to_string());
+            match crate::upload::upload_to_library(engine, frames).await {
+                Ok(ids) => {
+                    let mut s = scene.clone();
+                    s.asset_ids.get_or_insert_with(Vec::new).extend(ids);
+                    s.frames = None;
+                    uploaded_scene = s;
+                    &uploaded_scene
+                }
+                Err(e) => {
+                    on_progress(format!("library upload failed, using prompt upload: {e:#}"));
+                    scene
+                }
+            }
+        }
+        _ => scene,
+    };
     on_progress("preparing Flow UI".to_string());
     let snap = list_assets_with_project(engine).await?;
     let before: HashSet<String> = snap.assets.into_iter().map(|a| a.id).collect();
