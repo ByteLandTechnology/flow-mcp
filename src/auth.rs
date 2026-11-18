@@ -3,7 +3,7 @@
 
 //! Google Sign-In, Chrome cookie synchronization, session status, and logout handling.
 //!
-//! Runs Chrome in headless mode during background operations and opens a
+//! Runs CDP Chrome during background operations and opens a
 //! visible Chrome window only during interactive Google Sign-In.
 
 use anyhow::Result;
@@ -164,7 +164,7 @@ async fn ensure_flow_session_url(engine: &ChromeEngine) {
     }
 }
 
-/// Promotes the interactive Chrome profile into headless CDP mode and verifies Google Flow sign-in.
+/// Promotes the interactive Chrome profile into background CDP mode and verifies Google Flow sign-in.
 async fn finalize_promoted_login(engine: &ChromeEngine, start_url: &str) -> Result<Option<Value>> {
     engine.promote_login_chrome(start_url).await?;
     for iter in 0..30 {
@@ -196,7 +196,7 @@ async fn start_clean_interactive_login(engine: &ChromeEngine) -> Result<()> {
     engine.launch_interactive_login(FLOW_SSO_URL).await
 }
 
-/// Signs in to Google Flow using standard Chrome and promotes the session into headless CDP Chrome.
+/// Signs in to Google Flow using standard Chrome and promotes the session into background CDP Chrome.
 async fn login_with_chrome(
     engine: &ChromeEngine,
     timeout_secs: u64,

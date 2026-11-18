@@ -84,7 +84,7 @@
   <circle data-anchor="1" cx="704" cy="181" r="2.6" fill="#10b981" fill-opacity="0.88"/>
   <rect x="732" y="96" width="204" height="174" rx="10" fill="#10b981" fill-opacity="0.1" stroke="#10b981" stroke-opacity="0.48" stroke-width="1.5"/>
   <rect data-capsule="1" x="774.0" y="106.0" width="120" height="24.0" rx="6.0" fill="#065f46" fill-opacity="0.90" stroke="none"/>
-  <text x="834.0" y="122.2" text-anchor="middle" class="h1" fill="#f8fafc">4. 无头运行</text>
+  <text x="834.0" y="122.2" text-anchor="middle" class="h1" fill="#f8fafc">4. 后台运行</text>
   <rect x="756" y="138" width="156" height="72" rx="7" fill="#10b981" fill-opacity="0.12" stroke="#10b981" stroke-opacity="0.65" stroke-width="1.4" stroke-dasharray="4 3"/>
   <line x1="756" y1="151" x2="912" y2="151" stroke="#10b981" stroke-opacity="0.45" stroke-width="1"/>
   <circle cx="764" cy="144.5" r="2" fill="#10b981" fill-opacity="0.65"/>

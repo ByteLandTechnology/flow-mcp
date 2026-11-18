@@ -16,7 +16,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- |
 | `serve` | 標準入出力で MCP ツールとリソースを提供します。`--http` を付けると Streamable HTTP で提供します。MCP クライアントはこのサブコマンドを使用します。 |
 | `login [--timeout <SECS>] [--force] [--json]` | Google サインイン用に可視 Chrome ウィンドウを開き、サインインの完了まで待機します。`--timeout` は最大待機秒数です（既定 `180`、`15..=3600`）。`--force` は保存済みの Cookie とセッションを先に消去します。 |
-| `status [--json]` | サインイン状態を表示します。保存済みのセッションがある場合は、ヘッドレス Chrome を起動します。 |
+| `status [--json]` | サインイン状態を表示します。保存済みのセッションがある場合は、バックグラウンドの Chrome を起動します。 |
 | `logout [--json]` | `<home>/chrome-profile` と `<home>/cookies.json` を削除します。 |
 | `doctor [--json]` | Chrome バイナリ、`<home>` とファイル権限、インスタンスロック、サインイン状態を確認します。 |
 
@@ -48,6 +48,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | `--chrome <PATH>` | `FLOW_MCP_CHROME` | Chrome または Chromium バイナリのパスを設定する | OS パスおよび Playwright キャッシュ |
 | `--cdp-port <PORT>` | `FLOW_MCP_CDP_PORT` | ローカル Chrome DevTools Protocol TCP ポートを固定する | エフェメラルポート。`1..=65535` |
 | `--pause <MIN[,MAX]>` | `FLOW_MCP_PAUSE` | キュー実行ジョブ間のランダムな休止秒数を設定する。値が 1 つの場合は固定の休止、`0` は休止なし | `25,70`。`0..=86400`、`MIN` は `MAX` 以下 |
+| `--headless` | `FLOW_MCP_HEADLESS` | バックグラウンドの Chrome をウィンドウ表示ではなく `--headless=new` で実行する。ディスプレイのないマシンで使う。Google Flow はヘッドレス Chrome の生成を不審なアクティビティとして拒否することがある | オフ：Chrome はウィンドウを表示する。ジョブ実行中はそのウィンドウを閉じたり操作したりしない |
 | `-h`, `--help` | — | ヘルプを表示して終了する | — |
 | `-V`, `--version` | — | バージョンを表示して終了する | — |
 

@@ -6,7 +6,7 @@
 
 `flow-mcp` 是一个面向 Google Flow（`Veo` 与 `Imagen`）的 Rust 单二进制 stdio 模型上下文协议（MCP）服务端。它通过 `rmcp` 在标准输入和输出上提供 MCP 工具与下载资源。
 
-`ChromeEngine` 管理位于 `<home>/chrome-profile`（Unix 权限 `0700`）的持久化 Chrome 或 Chromium 配置目录。后台执行时，它通过本地 Chrome DevTools Protocol（CDP）连接无头 Chrome（`--headless=new`）。在 `flow_login` 中进行 Google 登录时，它打开不带 CDP 标志的可见 Chrome 窗口。这让 Google 认证与设备绑定会话凭据（DBSC）正常完成。
+`ChromeEngine` 管理位于 `<home>/chrome-profile`（Unix 权限 `0700`）的持久化 Chrome 或 Chromium 配置目录。后台执行时，它通过本地 Chrome DevTools Protocol（CDP）连接带可见窗口的 Chrome，因为 Google Flow 可能拒绝无头 Chrome 的生成请求。`--headless` 选项改用无头 Chrome（`--headless=new`）。在 `flow_login` 中进行 Google 登录时，它打开不带 CDP 标志的可见 Chrome 窗口。这让 Google 认证与设备绑定会话凭据（DBSC）正常完成。
 
 单工作协程 `JobQueue` 按每次一个的方式串行执行生成、编辑、视频续写与角色任务，并在任务之间随机暂停。它将媒体文件按自然文件名下载到 `<home>/downloads`，并在 SQLite 中建立索引。
 

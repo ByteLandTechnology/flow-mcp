@@ -75,7 +75,7 @@ Refer to [Tools Reference](tools-reference.md#http-transport) for the HTTP optio
 
 ## 3. Sign in for the first time
 
-`flow-mcp` runs headless CDP Chrome by default. When you need to sign in to Google, it opens a standard visible Chrome window without CDP flags.
+`flow-mcp` runs CDP Chrome with a visible window by default. Do not close or use that window while jobs run. When you need to sign in to Google, it opens a standard visible Chrome window without CDP flags.
 
 ![Login and session handoff](../assets/en/login-session-flow.svg)
 
@@ -101,7 +101,7 @@ If `signed_in` is `true`, skip step 2.
 }
 ```
 
-Complete Google Sign-In in the visible Chrome window. After you sign in, `flow-mcp` closes the visible window and flushes `<home>/chrome-profile`. It then starts headless CDP Chrome on that profile and saves `<home>/cookies.json` (`0600` permissions on Unix).
+Complete Google Sign-In in the visible Chrome window. After you sign in, `flow-mcp` closes the visible window and flushes `<home>/chrome-profile`. It then starts background CDP Chrome on that profile and saves `<home>/cookies.json` (`0600` permissions on Unix).
 
 You can also sign in from a terminal with `flow-mcp login --home /path/to/.flow-mcp`. Stop your MCP client first, because two `flow-mcp` processes cannot use one Chrome profile at the same time. Run `flow-mcp status` to check the result.
 

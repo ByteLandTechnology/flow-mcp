@@ -11,7 +11,7 @@
 | MCP 适配器 | `src/mcp.rs` | 通过 `rmcp` stdio 提供 MCP 工具（`tools/call`）与 MCP 资源（`resources/list`、`resources/templates/list`、`resources/read`） |
 | 服务协调器 | `src/service.rs` | 在 SQLite、`JobQueue` 与 `ChromeEngine` 之间路由工具请求 |
 | 串行工作器 | `src/queue.rs` | 在 FIFO 队列上每次运行一个浏览器变更任务，并在任务之间随机暂停 |
-| 浏览器引擎 | `src/engine.rs`、`src/chrome.rs`、`src/cdp.rs` | 管理 `ManagedChrome`（无头 CDP）、`LoginChrome`（可见无 CDP）、WebSocket CDP RPC 与 `Network` 事件 |
+| 浏览器引擎 | `src/engine.rs`、`src/chrome.rs`、`src/cdp.rs` | 管理 `ManagedChrome`（CDP）、`LoginChrome`（可见无 CDP）、WebSocket CDP RPC 与 `Network` 事件 |
 | 浏览器运行时 | `ts/*.ts`（`build.rs`） | `esbuild` 将 26 个扁平 TypeScript 模块打包为 `OUT_DIR/flow_runtime.js`；`src/engine.rs` 单次嵌入并设置 `window.__flowMcp` |
 | 本地持久化 | `src/db.rs`、`src/cookies.rs`、`src/download.rs`、`src/platform.rs`、`src/instance.rs` | 管理 `flow-mcp.db`（`0600`）、`cookies.json`（`0600`）、`<home>/chrome-profile`（`0700`）与 `<home>/downloads` |
 
@@ -30,7 +30,7 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
    - 当 `wait=true`（默认，`timeout_secs=180`）时，`flow_login` 检查配置目录中的 Flow URL 与 Google Cookie，而不执行 CDP 探测。
    - 登录完成后，`ChromeEngine::promote_login_chrome` 停止 `LoginChrome`。随后 Chromium 将 Cookie 与 DBSC 密钥刷盘至 `<home>/chrome-profile`。
 2. **`ManagedChrome`（默认后台模式）**：
-   - 在 `<home>/chrome-profile` 上启动无头 Chrome（`--headless=new`），并建立本地 WebSocket CDP 连接（`--cdp-port`、`FLOW_MCP_CDP_PORT` 或随机端口 `0`）。
+   - 在 `<home>/chrome-profile` 上启动带可见窗口的 Chrome（使用 `--headless` 时为无头 Chrome），并建立本地 WebSocket CDP 连接（`--cdp-port`、`FLOW_MCP_CDP_PORT` 或随机端口 `0`）。
    - 在页面加载时执行内嵌的 `flow_runtime.js` IIFE 包，并将归一化后的 Cookie 原子写入 `<home>/cookies.json`（Unix 权限 `0600`）。
 3. **Cookie 归一化与原生配置优先级**：
    - 归一化仅保留 `google.com`、`labs.google`、`googleusercontent.com` 与 `gstatic.com` 域名，同时保留 `__Host-` 前缀与 `hostOnly` 标志。

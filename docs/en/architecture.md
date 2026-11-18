@@ -11,7 +11,7 @@
 | MCP Adapter | `src/mcp.rs` | Serves MCP tools (`tools/call`) and MCP resources (`resources/list`, `resources/templates/list`, `resources/read`) through `rmcp` stdio |
 | Service Coordinator | `src/service.rs` | Routes tool requests between SQLite, `JobQueue`, and `ChromeEngine` |
 | Serial Worker | `src/queue.rs` | Runs browser mutation jobs one at a time on a FIFO queue with random pauses |
-| Browser Engine | `src/engine.rs`, `src/chrome.rs`, `src/cdp.rs` | Manages `ManagedChrome` (headless CDP), `LoginChrome` (visible non-CDP), WebSocket CDP RPC, and `Network` events |
+| Browser Engine | `src/engine.rs`, `src/chrome.rs`, `src/cdp.rs` | Manages `ManagedChrome` (CDP), `LoginChrome` (visible non-CDP), WebSocket CDP RPC, and `Network` events |
 | Browser Runtime | `ts/*.ts` (`build.rs`) | `esbuild` bundles 26 flat TypeScript modules into `OUT_DIR/flow_runtime.js`; `src/engine.rs` embeds it once and sets `window.__flowMcp` |
 | Local Persistence | `src/db.rs`, `src/cookies.rs`, `src/download.rs`, `src/platform.rs`, `src/instance.rs` | Manages `flow-mcp.db` (`0600`), `cookies.json` (`0600`), `<home>/chrome-profile` (`0700`), and `<home>/downloads` |
 
@@ -30,7 +30,7 @@ Google authentication checks Device Bound Session Credentials (DBSC) and automat
    - When `wait=true` (default, `timeout_secs=180`), `flow_login` checks the profile directory for Flow URLs and Google cookies without CDP probes.
    - After sign-in finishes, `ChromeEngine::promote_login_chrome` stops `LoginChrome`. Chromium then flushes cookies and DBSC keys to `<home>/chrome-profile`.
 2. **`ManagedChrome` (default background mode)**:
-   - Starts headless Chrome (`--headless=new`) on `<home>/chrome-profile` with a local WebSocket CDP connection (`--cdp-port`, `FLOW_MCP_CDP_PORT`, or port `0`).
+   - Starts Chrome with a visible window on `<home>/chrome-profile` (or headless Chrome with `--headless`) with a local WebSocket CDP connection (`--cdp-port`, `FLOW_MCP_CDP_PORT`, or port `0`).
    - Evaluates the embedded `flow_runtime.js` IIFE bundle on page load. It writes normalized cookies atomically to `<home>/cookies.json` (`0600` permissions on Unix).
 3. **Cookie normalization and native profile priority**:
    - Normalization keeps only `google.com`, `labs.google`, `googleusercontent.com`, and `gstatic.com` domains. It also keeps `__Host-` prefixes and `hostOnly` flags.

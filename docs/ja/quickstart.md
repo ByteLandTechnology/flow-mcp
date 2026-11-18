@@ -75,7 +75,7 @@ HTTP オプションとセキュリティ規則は[ツールリファレンス](
 
 ## 3. 初回サインインの完了
 
-`flow-mcp` は既定でヘッドレス CDP Chrome を実行します。Google へサインインする必要がある場合、CDP フラグなしの標準的な可視 Chrome ウィンドウを開きます。
+`flow-mcp` は既定でウィンドウ表示の CDP Chrome を実行します。ジョブ実行中はそのウィンドウを閉じたり操作したりしないでください。Google へサインインする必要がある場合、CDP フラグなしの標準的な可視 Chrome ウィンドウを開きます。
 
 ![デュアルモード Chrome 認証とセッション引き継ぎ](../assets/ja/login-session-flow.svg)
 
@@ -101,7 +101,7 @@ MCP クライアントから次の手順を順番に実行します：
 }
 ```
 
-可視 Chrome ウィンドウ上で Google サインインを完了してください。サインイン後に `flow-mcp` は可視ウィンドウを閉じ、`<home>/chrome-profile` へ状態をフラッシュします。続いて同じプロファイルでヘッドレス CDP Chrome を起動し、`<home>/cookies.json`（Unix 権限 `0600`）を保存します。
+可視 Chrome ウィンドウ上で Google サインインを完了してください。サインイン後に `flow-mcp` は可視ウィンドウを閉じ、`<home>/chrome-profile` へ状態をフラッシュします。続いて同じプロファイルでバックグラウンドの CDP Chrome を起動し、`<home>/cookies.json`（Unix 権限 `0600`）を保存します。
 
 ターミナルから `flow-mcp login --home /path/to/.flow-mcp` を実行してサインインすることもできます。2 つの `flow-mcp` プロセスは同じ Chrome プロファイルを同時に使用できないため、先に MCP クライアントを停止してください。結果は `flow-mcp status` で確認できます。
 

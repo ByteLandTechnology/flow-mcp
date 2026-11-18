@@ -6,7 +6,7 @@
 
 `flow-mcp` is a single-binary Rust stdio Model Context Protocol (MCP) server for Google Flow (`Veo` and `Imagen`). It serves MCP tools and download resources through `rmcp` over standard input and output.
 
-`ChromeEngine` manages a persistent Chrome or Chromium profile in `<home>/chrome-profile` (`0700` permissions on Unix). During background work, it connects over local Chrome DevTools Protocol (CDP) to headless Chrome (`--headless=new`). During Google Sign-In in `flow_login`, it opens a visible Chrome window without CDP flags. This lets Google authentication and Device Bound Session Credentials (DBSC) finish normally.
+`ChromeEngine` manages a persistent Chrome or Chromium profile in `<home>/chrome-profile` (`0700` permissions on Unix). During background work, it connects over local Chrome DevTools Protocol (CDP) to Chrome with a visible window, because Google Flow can reject generations from headless Chrome. The `--headless` option selects headless Chrome (`--headless=new`). During Google Sign-In in `flow_login`, it opens a visible Chrome window without CDP flags. This lets Google authentication and Device Bound Session Credentials (DBSC) finish normally.
 
 A single-worker `JobQueue` runs generation, edit, video extend, and character jobs one at a time with random pauses. It downloads media files with natural names into `<home>/downloads` and indexes them in SQLite.
 

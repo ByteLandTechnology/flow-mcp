@@ -16,7 +16,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- |
 | `serve` | 通过标准输入输出提供 MCP 工具与资源；加上 `--http` 时改用 Streamable HTTP。MCP 客户端使用此子命令。 |
 | `login [--timeout <SECS>] [--force] [--json]` | 打开可见 Chrome 窗口进行 Google 登录，并等待登录完成。`--timeout` 设置最长等待秒数（默认 `180`，范围 `15..=3600`）。`--force` 会先清除已保存的 Cookie 与会话。 |
-| `status [--json]` | 显示登录状态。若存在已保存的会话，此子命令会启动无头 Chrome。 |
+| `status [--json]` | 显示登录状态。若存在已保存的会话，此子命令会启动后台 Chrome。 |
 | `logout [--json]` | 删除 `<home>/chrome-profile` 与 `<home>/cookies.json`。 |
 | `doctor [--json]` | 检查 Chrome 二进制文件、`<home>` 与文件权限、单实例锁以及登录状态。 |
 
@@ -48,6 +48,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | `--chrome <PATH>` | `FLOW_MCP_CHROME` | 设置 Chrome 或 Chromium 二进制路径 | 系统路径与 Playwright 缓存 |
 | `--cdp-port <PORT>` | `FLOW_MCP_CDP_PORT` | 固定本地 Chrome DevTools Protocol TCP 端口 | 临时端口；`1..=65535` |
 | `--pause <MIN[,MAX]>` | `FLOW_MCP_PAUSE` | 设置队列任务之间的随机暂停秒数。只写一个值表示固定暂停，`0` 表示不暂停。 | `25,70`；`0..=86400`，`MIN` 不大于 `MAX` |
+| `--headless` | `FLOW_MCP_HEADLESS` | 后台 Chrome 使用 `--headless=new` 运行，不显示窗口。用于没有显示器的机器。Google Flow 可能把无头 Chrome 的生成判为异常活动。 | 关闭：Chrome 显示窗口。任务运行期间不要关闭或操作该窗口。 |
 | `-h`, `--help` | — | 输出帮助并退出 | — |
 | `-V`, `--version` | — | 输出版本并退出 | — |
 

@@ -75,7 +75,7 @@ HTTP 选项与安全规则请参阅[工具参考](tools-reference.md#http-传输
 
 ## 3. 完成首次登录
 
-`flow-mcp` 默认运行无头 CDP Chrome。当你需要登录 Google 时，它会打开不带 CDP 标志的标准可见 Chrome 窗口。
+`flow-mcp` 默认运行带可见窗口的 CDP Chrome。任务运行期间不要关闭或操作该窗口。当你需要登录 Google 时，它会打开不带 CDP 标志的标准可见 Chrome 窗口。
 
 ![双模式 Chrome 登录与会话交接](../assets/zh-CN/login-session-flow.svg)
 
@@ -101,7 +101,7 @@ HTTP 选项与安全规则请参阅[工具参考](tools-reference.md#http-传输
 }
 ```
 
-在可见 Chrome 窗口中完成 Google 登录。登录完成后，`flow-mcp` 会关闭可见窗口并将数据刷盘到 `<home>/chrome-profile`。随后它会在同一配置目录上启动无头 CDP Chrome 并保存 `<home>/cookies.json`（Unix 权限 `0600`）。
+在可见 Chrome 窗口中完成 Google 登录。登录完成后，`flow-mcp` 会关闭可见窗口并将数据刷盘到 `<home>/chrome-profile`。随后它会在同一配置目录上启动后台 CDP Chrome 并保存 `<home>/cookies.json`（Unix 权限 `0600`）。
 
 也可以在终端中运行 `flow-mcp login --home /path/to/.flow-mcp` 完成登录。请先停止 MCP 客户端，因为两个 `flow-mcp` 进程不能同时使用同一个 Chrome 配置目录。之后可运行 `flow-mcp status` 查看结果。
 

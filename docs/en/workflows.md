@@ -164,7 +164,7 @@ For Flow Agent Mode batch images, call `flow_agent_images`. It uses a `480`-seco
 
 ## 6. Headless server cookie sync and recovery
 
-When you run `flow-mcp` on a Linux server without a display:
+When you run `flow-mcp` on a Linux server without a display, start it with `--headless` (or `FLOW_MCP_HEADLESS=1`):
 
 1. Sign in once on a computer with Chrome using `flow_login` (`action="login"`).
 2. Copy `<home>/cookies.json` (`0600`) to the server, or import cookies directly in headless mode:

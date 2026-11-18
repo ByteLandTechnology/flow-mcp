@@ -17,7 +17,7 @@ use crate::platform::{create_private_dir_all, focus_process, interrupt_process};
 
 /// Owned Chrome child process backed by the persistent `0700` user-data directory.
 pub(crate) struct ManagedChrome {
-    /// Running headless Chrome process handle.
+    /// Running background Chrome process handle.
     child: tokio::process::Child,
     /// Persistent `0700` Chrome profile directory.
     profile_dir: PathBuf,
@@ -138,7 +138,7 @@ async fn stop_child_gracefully(child: &mut tokio::process::Child, wait_limit: Du
 }
 
 impl ManagedChrome {
-    /// Launches headless CDP-enabled Chrome on the persistent `0700` profile directory and waits for its CDP HTTP endpoint.
+    /// Launches CDP-enabled Chrome on the persistent `0700` profile directory (with a visible window unless `--headless` is set) and waits for its CDP HTTP endpoint.
     pub(crate) async fn launch(start_url: &str) -> Result<Self> {
         let chrome = resolve_chrome_binary()?;
         let profile_dir = chrome_profile_dir();
@@ -156,9 +156,11 @@ impl ManagedChrome {
         let mut cmd = tokio::process::Command::new(&chrome);
         apply_english_env(&mut cmd);
         cmd.arg(format!("--remote-debugging-port={}", launch_port))
-            .arg(format!("--user-data-dir={}", profile_dir.display()))
-            .arg("--headless=new")
-            .arg("--lang=en-US")
+            .arg(format!("--user-data-dir={}", profile_dir.display()));
+        if crate::config::headless_chrome() {
+            cmd.arg("--headless=new");
+        }
+        cmd.arg("--lang=en-US")
             .arg("--accept-lang=en-US,en")
             .arg("--no-first-run")
             .arg("--no-default-browser-check")

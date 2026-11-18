@@ -11,7 +11,7 @@
 | MCP アダプター | `src/mcp.rs` | `rmcp` stdio を通じて MCP ツール（`tools/call`）および MCP リソース（`resources/list`、`resources/templates/list`、`resources/read`）を提供 |
 | サービス統括 | `src/service.rs` | SQLite、`JobQueue`、`ChromeEngine` 間でツールリクエストをルーティング |
 | 直列ワーカー | `src/queue.rs` | ランダム休止を挟みながら FIFO キュー上でブラウザ変更ジョブを 1 件ずつ実行 |
-| ブラウザエンジン | `src/engine.rs`、`src/chrome.rs`、`src/cdp.rs` | `ManagedChrome`（ヘッドレス CDP）、`LoginChrome`（可視・非 CDP）、WebSocket CDP RPC、および `Network` イベントを管理 |
+| ブラウザエンジン | `src/engine.rs`、`src/chrome.rs`、`src/cdp.rs` | `ManagedChrome`（CDP）、`LoginChrome`（可視・非 CDP）、WebSocket CDP RPC、および `Network` イベントを管理 |
 | ブラウザランタイム | `ts/*.ts`（`build.rs`） | `esbuild` が 26 個のフラットな TypeScript モジュールを `OUT_DIR/flow_runtime.js` へバンドルし、`src/engine.rs` が単一埋め込みして `window.__flowMcp` を設定 |
 | ローカル永続化 | `src/db.rs`、`src/cookies.rs`、`src/download.rs`、`src/platform.rs`、`src/instance.rs` | `flow-mcp.db`（`0600`）、`cookies.json`（`0600`）、`<home>/chrome-profile`（`0700`）、および `<home>/downloads` を管理 |
 
@@ -30,7 +30,7 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
    - `wait=true`（既定、`timeout_secs=180`）の間、`flow_login` は CDP 干渉なしでプロファイルディレクトリの Flow URL と Google Cookie を確認します。
    - サインイン終了後、`ChromeEngine::promote_login_chrome` は `LoginChrome` を停止します。続いて Chromium が Cookie と DBSC 鍵を `<home>/chrome-profile` へフラッシュします。
 2. **`ManagedChrome`（既定のバックグラウンドモード）**：
-   - `<home>/chrome-profile` 上でローカル WebSocket CDP 接続（`--cdp-port`、`FLOW_MCP_CDP_PORT`、またはポート `0`）付きのヘッドレス Chrome（`--headless=new`）を起動します。
+   - `<home>/chrome-profile` 上でローカル WebSocket CDP 接続（`--cdp-port`、`FLOW_MCP_CDP_PORT`、またはポート `0`）付きのウィンドウ表示の Chrome（`--headless` 指定時はヘッドレス Chrome）を起動します。
    - ページ読み込み時に埋め込み済み `flow_runtime.js` IIFE バンドルを実行し、正規化済み Cookie を `<home>/cookies.json`（Unix 権限 `0600`）へ原子的に書き込みます。
 3. **Cookie 正規化とネイティブプロファイル優先**：
    - 正規化では `google.com`、`labs.google`、`googleusercontent.com`、`gstatic.com` ドメインのみを保持し、`__Host-` プレフィックスと `hostOnly` フラグも維持します。

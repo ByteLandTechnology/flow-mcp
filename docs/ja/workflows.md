@@ -164,7 +164,7 @@ Flow Agent モードのバッチ画像生成には `flow_agent_images` を呼び
 
 ## 6. ヘッドレスサーバーでの Cookie 同期と復旧
 
-ディスプレイのない Linux サーバーで `flow-mcp` を実行する場合：
+ディスプレイのない Linux サーバーで `flow-mcp` を実行する場合は、`--headless`（または `FLOW_MCP_HEADLESS=1`）を付けて起動します：
 
 1. Chrome があるコンピュータ上で `flow_login`（`action="login"`）を一度実行してサインインします。
 2. `<home>/cookies.json`（`0600`）をサーバーへコピーするか、ヘッドレスモードで Cookie を直接インポートします：

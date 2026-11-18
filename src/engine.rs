@@ -71,9 +71,9 @@ pub(crate) async fn validate_local_files(paths: Option<&[String]>, label: &str) 
     Ok(())
 }
 
-/// Active headless Chrome process paired with its CDP connection.
+/// Active background Chrome process paired with its CDP connection.
 struct ActiveChrome {
-    /// Owned headless Chrome process handle.
+    /// Owned background Chrome process handle.
     managed: ManagedChrome,
     /// Open page CDP connection.
     cdp: Arc<CdpConnection>,
@@ -93,7 +93,7 @@ pub(crate) struct LoginPollStatus {
 
 /// Manages one Chrome process and page CDP session per MCP server instance.
 pub(crate) struct ChromeEngine {
-    /// Active headless Chrome process and page CDP connection.
+    /// Active background Chrome process and page CDP connection.
     inner: Mutex<Option<ActiveChrome>>,
     /// Active visible Chrome process during interactive sign-in.
     login_chrome: Mutex<Option<LoginChrome>>,
@@ -191,7 +191,7 @@ impl ChromeEngine {
         }))
     }
 
-    /// Stops interactive Chrome to flush `<home>/chrome-profile` and starts headless CDP Chrome on it.
+    /// Stops interactive Chrome to flush `<home>/chrome-profile` and starts background CDP Chrome on it.
     pub(crate) async fn promote_login_chrome(&self, start_url: &str) -> Result<()> {
         let _ensure = self.ensure_lock.lock().await;
         let stale = {
@@ -262,7 +262,7 @@ impl ChromeEngine {
             .map(|a| a.managed.http_endpoint.clone())
     }
 
-    /// Ensures a live headless Chrome CDP page exists and seeds cookies from `cookies.json` only when the profile lacks Google auth cookies.
+    /// Ensures a live background Chrome CDP page exists and seeds cookies from `cookies.json` only when the profile lacks Google auth cookies.
     pub(crate) async fn ensure_page(&self) -> Result<()> {
         let _ensure = self.ensure_lock.lock().await;
         let stale = {
@@ -303,7 +303,7 @@ impl ChromeEngine {
         Ok(())
     }
 
-    /// Returns the active page CDP connection, launching headless Chrome if necessary.
+    /// Returns the active page CDP connection, launching background Chrome if necessary.
     async fn active_cdp(&self) -> Result<Arc<CdpConnection>> {
         self.ensure_page().await?;
         let inner = self.inner.lock().await;

@@ -29,6 +29,8 @@ pub(crate) struct Settings {
     pub(crate) cdp_port: Option<u16>,
     /// Inclusive pause bounds between queue jobs in milliseconds, from `--pause` or `FLOW_MCP_PAUSE`.
     pub(crate) pause_ms: (u64, u64),
+    /// True when `--headless` or `FLOW_MCP_HEADLESS` selects headless background Chrome.
+    pub(crate) headless: bool,
 }
 
 impl Default for Settings {
@@ -39,6 +41,7 @@ impl Default for Settings {
             chrome: None,
             cdp_port: None,
             pause_ms: (DEFAULT_PAUSE_MIN_MS, DEFAULT_PAUSE_MAX_MS),
+            headless: false,
         }
     }
 }
@@ -109,4 +112,9 @@ pub(crate) fn configured_cdp_port() -> Option<u16> {
 /// Returns the inclusive pause bounds between queue jobs in milliseconds.
 pub(crate) fn pause_bounds_ms() -> (u64, u64) {
     settings().pause_ms
+}
+
+/// Returns true when `--headless` or `FLOW_MCP_HEADLESS` selects headless background Chrome. The default is a visible window.
+pub(crate) fn headless_chrome() -> bool {
+    settings().headless
 }

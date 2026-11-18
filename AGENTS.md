@@ -16,7 +16,7 @@ The command `cargo xtask ci` checks most of these rules.
 - `flow-mcp` serves 23 MCP tools and download resources via `rmcp`: over standard input and output by default, or over Streamable HTTP with `serve --http`.
 - Require a bearer token for HTTP on an address that is not a loopback address. Without a token, keep the loopback `Host` header check of `rmcp`.
 - `ChromeEngine` launches Chrome or Chromium on demand with a persistent `0700` user-data directory at `<home>/chrome-profile` and connects over local Chrome DevTools Protocol (CDP).
-- `ChromeEngine` runs headless CDP Chrome (`--headless=new`) during background operations and opens standard visible Chrome without CDP flags during interactive Google Sign-In in `flow_login`.
+- `ChromeEngine` runs CDP Chrome with a visible window during background operations, or headless CDP Chrome (`--headless=new`) when `--headless` or `FLOW_MCP_HEADLESS` is set, and opens standard visible Chrome without CDP flags during interactive Google Sign-In in `flow_login`.
 - Pin Google Flow and `ChromeEngine` sessions to the English interface (`hl=en` and `en-US`).
 - Run generation, edit, video extend, and character jobs one at a time through `JobQueue`.
 - Write `cookies.json`, `flow-mcp.db`, and `flow-mcp.lock` with `0600` permissions, and create `<home>/chrome-profile` with `0700` permissions on Unix.

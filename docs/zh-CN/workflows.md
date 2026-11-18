@@ -164,7 +164,7 @@
 
 ## 6. 无头服务器 Cookie 同步与恢复
 
-在没有显示器的 Linux 服务器上运行 `flow-mcp` 时：
+在没有显示器的 Linux 服务器上运行 `flow-mcp` 时，请使用 `--headless`（或 `FLOW_MCP_HEADLESS=1`）启动：
 
 1. 在装有 Chrome 的电脑上运行一次 `flow_login`（`action="login"`）完成登录。
 2. 将 `<home>/cookies.json`（`0600`）复制到服务器，或在无头模式下直接导入 Cookie：

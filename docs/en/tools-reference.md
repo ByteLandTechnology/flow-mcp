@@ -16,7 +16,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- |
 | `serve` | Serve the MCP tools and resources over standard input and output. With `--http`, serve them over Streamable HTTP. MCP clients use this subcommand. |
 | `login [--timeout <SECS>] [--force] [--json]` | Open a visible Chrome window for Google Sign-In and wait until sign-in completes. `--timeout` sets the maximum wait in seconds (`180` default, `15..=3600`). `--force` clears the saved cookies and session first. |
-| `status [--json]` | Show the sign-in status. If a saved session exists, this subcommand starts headless Chrome. |
+| `status [--json]` | Show the sign-in status. If a saved session exists, this subcommand starts background Chrome. |
 | `logout [--json]` | Delete `<home>/chrome-profile` and `<home>/cookies.json`. |
 | `doctor [--json]` | Check the Chrome binary, `<home>` and file permissions, the instance lock, and the sign-in status. |
 
@@ -48,6 +48,7 @@ You can write these options before or after the subcommand. A flag has priority 
 | `--chrome <PATH>` | `FLOW_MCP_CHROME` | Set the Chrome or Chromium binary path | OS paths and Playwright cache |
 | `--cdp-port <PORT>` | `FLOW_MCP_CDP_PORT` | Set a fixed local Chrome DevTools Protocol TCP port | Ephemeral port; `1..=65535` |
 | `--pause <MIN[,MAX]>` | `FLOW_MCP_PAUSE` | Set the random pause in seconds between queued jobs. One value sets a fixed pause. `0` disables the pause. | `25,70`; `0..=86400`, `MIN` not greater than `MAX` |
+| `--headless` | `FLOW_MCP_HEADLESS` | Run background Chrome with `--headless=new` instead of a visible window. Use it on a computer without a display. Google Flow can reject generations from headless Chrome as unusual activity. | Off: Chrome shows a window. Do not close or use that window while jobs run. |
 | `-h`, `--help` | — | Print help and exit | — |
 | `-V`, `--version` | — | Print the version and exit | — |
 

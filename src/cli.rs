@@ -67,6 +67,15 @@ pub(crate) struct Cli {
     )]
     pause: (u64, u64),
 
+    /// Run background Chrome in headless mode (Google Flow can reject generations from headless Chrome)
+    #[arg(
+        long,
+        env = "FLOW_MCP_HEADLESS",
+        global = true,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    headless: bool,
+
     /// Subcommand to run.
     #[command(subcommand)]
     command: Command,
@@ -102,7 +111,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show the Google Flow sign-in status (starts headless Chrome)
+    /// Show the Google Flow sign-in status (starts background Chrome)
     Status {
         /// Write the result as JSON
         #[arg(long)]
@@ -376,7 +385,7 @@ fn check_instance_lock() -> (Value, bool) {
     }
 }
 
-/// Checks the Google Flow sign-in status in headless Chrome when this process holds the `<home>` lock.
+/// Checks the Google Flow sign-in status in background Chrome when this process holds the `<home>` lock.
 async fn check_sign_in(locked: bool) -> Value {
     if !locked {
         return check(
@@ -442,6 +451,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         chrome: cli.chrome,
         cdp_port: cli.cdp_port,
         pause_ms: cli.pause,
+        headless: cli.headless,
     });
     match cli.command {
         Command::Serve { http, http_token } => {
