@@ -38,36 +38,6 @@ const HOOK_JS: &str = r#"(() => {
 /// Script that removes the click hook.
 const UNHOOK_JS: &str = "window.__fmUploadRestore && window.__fmUploadRestore(), true";
 
-/// Returns a script that gives the center point of the menu button with `aria-label` equal to `label`.
-fn button_point_js(label: &str) -> Result<String> {
-    let label = serde_json::to_string(label)?;
-    Ok(format!(
-        r#"(() => {{
-  const el = Array.from(document.querySelectorAll("button"))
-    .find((b) => b.getAttribute("aria-label") === {label} && b.offsetParent !== null);
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  return {{ x: r.x + r.width / 2, y: r.y + r.height / 2 }};
-}})()"#
-    ))
-}
-
-/// Returns a script that gives the center point of the visible menu item or button whose text is `upload <item>`.
-fn item_point_js(item: &str) -> Result<String> {
-    let item = serde_json::to_string(&item.to_lowercase())?;
-    Ok(format!(
-        r#"(() => {{
-  const want = "upload " + {item};
-  const el = Array.from(document.querySelectorAll('[role="menuitem"], button')).find((e) =>
-    e.offsetParent !== null &&
-    (e.innerText || "").trim().replace(/\s+/g, " ").toLowerCase() === want);
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  return {{ x: r.x + r.width / 2, y: r.y + r.height / 2 }};
-}})()"#
-    ))
-}
-
 /// Evaluates `expr` on the page and returns its JSON value.
 async fn eval_value(engine: &ChromeEngine, expr: &str) -> Result<Value> {
     let res = engine
@@ -79,16 +49,18 @@ async fn eval_value(engine: &ChromeEngine, expr: &str) -> Result<Value> {
     Ok(res.pointer("/result/value").cloned().unwrap_or(Value::Null))
 }
 
-/// Polls `expr` until it returns a point, then sends a trusted click to it.
-async fn click_when_visible(engine: &ChromeEngine, expr: &str, what: &str) -> Result<()> {
+/// Polls until the control that `by` and `name` select is visible, then sends a trusted click to it.
+async fn click_when_visible(engine: &ChromeEngine, by: &str, name: &str) -> Result<()> {
     for _ in 0..20 {
-        let point = eval_value(engine, expr).await?;
+        let point = engine
+            .call_flow_js("locatePoint", json!([{ "by": by, "name": name }]))
+            .await?;
         if engine.click_point(&point).await? {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    anyhow::bail!("{} is not visible", what)
+    anyhow::bail!("{} is not visible", name)
 }
 
 /// Clicks `menu` and its `upload <item>` entry, and assigns `files` to the file input that the page opens.
@@ -98,9 +70,9 @@ async fn upload_steps(
     item: &str,
     files: &[String],
 ) -> Result<()> {
-    click_when_visible(engine, &button_point_js(menu)?, menu).await?;
+    click_when_visible(engine, "aria-label", menu).await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    click_when_visible(engine, &item_point_js(item)?, item).await?;
+    click_when_visible(engine, "text", &format!("upload {item}")).await?;
     let mut opened = false;
     for _ in 0..30 {
         let v = eval_value(engine, "!!window.__fmUploadInput").await?;

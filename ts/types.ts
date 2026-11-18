@@ -659,6 +659,22 @@ export interface ViewportPoint {
   y: number;
 }
 
+/** Viewport coordinates of a control center. */
+export interface ViewportPoint {
+  /** Horizontal viewport coordinate in CSS pixels. */
+  x: number;
+  /** Vertical viewport coordinate in CSS pixels. */
+  y: number;
+}
+
+/** Selects a visible control by its accessible name. */
+export interface LocatePointRequest {
+  /** `aria-label` matches a button label exactly. `text` matches the whole visible text of a menu item or button, ignoring case and spacing. */
+  by: "aria-label" | "text";
+  /** Label or text to match. */
+  name: string;
+}
+
 /** One check of the store probe. */
 export interface StoreProbeCheck {
   /** Stable check name, for example `tile_map`. */
@@ -725,6 +741,8 @@ export interface FlowMcpRuntime {
   buildLabel: () => string | null;
   /** Checks the bound project store shape without calling a mutation. */
   probeStore: () => StoreProbeResult;
+  /** Returns the click point of a visible control by accessible name, or null. */
+  locatePoint: (req: LocatePointRequest) => ViewportPoint | null;
 }
 
 declare global {
