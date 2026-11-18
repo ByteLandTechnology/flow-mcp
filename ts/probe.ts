@@ -37,7 +37,8 @@ function tileLayout(tiles: Iterable<unknown>): StoreProbeCheck {
     return check("tile_layout", true, "no media tiles to inspect");
   }
   const detail = `current=${current} legacy=${legacy} unknown=${other}`;
-  return check("tile_layout", other === 0, detail);
+  // A tile without media yet is normal. Fail only when no tile has a known media container.
+  return check("tile_layout", current + legacy > 0, detail);
 }
 
 /** Reports whether the bound project store has the shape that the runtime expects. It never calls a mutation. */
@@ -72,5 +73,32 @@ export function probeStore(): StoreProbeResult {
     build: readBuildLabel(),
     ok: checks.every((c) => c.ok),
     checks,
+  };
+}
+
+/**
+ * Check names that a destructive operation needs.
+ * The view registry only matters while the runtime discovers the store.
+ * The tile layout fails in a project that has only failed generations, and a trash mutation does not read the media container.
+ */
+const DESTRUCTIVE_CHECKS = new Set(["store_bound", "tile_map", "mutator"]);
+
+/** Returns an `unsupported_front_end` error when the store shape is unknown, or null when a destructive operation may run. */
+export function destructiveGate(): {
+  ok: false;
+  error: string;
+  build: string | null;
+  failed_checks: StoreProbeCheck[];
+} | null {
+  const probe = probeStore();
+  const failed = probe.checks.filter(
+    (c) => DESTRUCTIVE_CHECKS.has(c.name) && !c.ok,
+  );
+  if (failed.length === 0) return null;
+  return {
+    ok: false,
+    error: "unsupported_front_end",
+    build: probe.build,
+    failed_checks: failed,
   };
 }

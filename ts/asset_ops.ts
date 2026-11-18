@@ -3,6 +3,7 @@
 
 // Unified asset and collection rename and trash mutations via bound runtime state.
 
+import { destructiveGate, readBuildLabel } from "./probe";
 import { runtimeState } from "./state";
 import type { AssetRenameExtra, FlowTile } from "./types";
 
@@ -55,8 +56,34 @@ export async function assetOps(
     return { ok: false, error: "store_mutate_missing" };
   }
 
+  const gate = destructiveGate();
+  if (gate) return gate;
+
   const mutate = (payload: Record<string, unknown>): Promise<unknown> =>
     helper.mutate(payload);
+  /** Tries each mutation shape in order and reports every rejection when all fail. */
+  const tryShapes = async (
+    shapes: { method: string; payload: Record<string, unknown> }[],
+  ): Promise<unknown> => {
+    const attempts: { method: string; error: string }[] = [];
+    for (const shape of shapes) {
+      try {
+        await mutate(shape.payload);
+        return { ok: true, method: shape.method };
+      } catch (e) {
+        attempts.push({
+          method: shape.method,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    return {
+      ok: false,
+      error: "mutation_rejected_all_shapes",
+      build: readBuildLabel(),
+      attempts,
+    };
+  };
   const tile = tileMap.get(id);
   if (!tile) {
     let inSceneClip = false;
@@ -79,8 +106,12 @@ export async function assetOps(
       }
     }
     if (inSceneClip) {
-      await mutate({ type: "batch_delete_tiles", rg: [id], fg: [id] });
-      return { ok: true, method: "batch_delete_tiles:scene_clip" };
+      return tryShapes([
+        {
+          method: "batch_delete_tiles:scene_clip",
+          payload: { type: "batch_delete_tiles", rg: [id], fg: [id] },
+        },
+      ]);
     }
     return { ok: false, error: "asset_not_found" };
   }
@@ -93,47 +124,48 @@ export async function assetOps(
         members.push(t);
       }
     }
-    await mutate({
-      type: "batch_move_and_delete_collection",
-      Cb: members,
-      Db: members,
-      rj: undefined,
-      rWa: id,
-    });
-    return { ok: true, method: "batch_move_and_delete_collection" };
+    return tryShapes([
+      {
+        method: "batch_move_and_delete_collection",
+        payload: {
+          type: "batch_move_and_delete_collection",
+          Cb: members,
+          Db: members,
+          rj: undefined,
+          rWa: id,
+        },
+      },
+    ]);
   }
 
-  // The 2026-11-15 front end trashes tiles in a batch with `Bv` entries.
-  try {
-    await mutate({
-      type: "batch_set_tiles_trashed",
-      jc: new Date(),
-      Bv: [{ Oa: tile, Ab: true, um: { mode: "root" } }],
-    });
-    return { ok: true, method: "batch_set_tiles_trashed:Bv" };
-  } catch {
-    // Use the older mutation shapes below.
-  }
-  try {
-    await mutate({
-      type: "single_tile",
-      Xc: String(tile.id ?? id),
-      Uc: String(tile.id ?? id),
-      Ve: {
-        type: "set_trashed",
-        yb: true,
+  const tileId = String(tile.id ?? id);
+  return tryShapes([
+    {
+      // The 2026-11-15 front end trashes tiles in a batch with `Bv` entries.
+      method: "batch_set_tiles_trashed:Bv",
+      payload: {
+        type: "batch_set_tiles_trashed",
         jc: new Date(),
-        fm: new Date(),
+        Bv: [{ Oa: tile, Ab: true, um: { mode: "root" } }],
       },
-    });
-    return { ok: true, method: "single_tile:set_trashed" };
-  } catch {
-    await mutate({
-      type: "batch_set_tiles_trashed",
-      jc: new Date(),
-      uu: [{ Oa: tile, yb: true }],
-      nv: [{ Na: tile, yb: true }],
-    });
-    return { ok: true, method: "batch_set_tiles_trashed" };
-  }
+    },
+    {
+      method: "single_tile:set_trashed",
+      payload: {
+        type: "single_tile",
+        Xc: tileId,
+        Uc: tileId,
+        Ve: { type: "set_trashed", yb: true, jc: new Date(), fm: new Date() },
+      },
+    },
+    {
+      method: "batch_set_tiles_trashed",
+      payload: {
+        type: "batch_set_tiles_trashed",
+        jc: new Date(),
+        uu: [{ Oa: tile, yb: true }],
+        nv: [{ Na: tile, yb: true }],
+      },
+    },
+  ]);
 }

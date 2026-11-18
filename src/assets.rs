@@ -415,17 +415,43 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
     }))
 }
 
+/// Builds a trash error message from a failed `assetOps` result, with the build label and each rejected attempt.
+fn trash_error_message(res: &Value) -> String {
+    let mut msg = res
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown trash error")
+        .to_string();
+    if let Some(build) = res.get("build").and_then(|v| v.as_str()) {
+        msg.push_str(&format!(" (Flow front end build: {build})"));
+    }
+    if let Some(attempts) = res.get("attempts").and_then(|v| v.as_array()) {
+        let parts: Vec<String> = attempts
+            .iter()
+            .map(|a| {
+                let field = |k: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or("?");
+                format!("{}: {}", field("method"), field("error"))
+            })
+            .collect();
+        msg.push_str(&format!("; attempts: {}", parts.join("; ")));
+    }
+    if let Some(checks) = res.get("failed_checks").and_then(|v| v.as_array()) {
+        let names: Vec<&str> = checks
+            .iter()
+            .filter_map(|c| c.get("name").and_then(|v| v.as_str()))
+            .collect();
+        msg.push_str(&format!("; failed checks: {}", names.join(", ")));
+    }
+    msg
+}
+
 /// Moves a tile or collection into Google Flow trash and returns the store response.
 pub(crate) async fn invoke_trash_tile(engine: &ChromeEngine, id: &str) -> Result<Value> {
     let res = engine
         .call_flow_async("assetOps", json!(["trash", id, Value::Null]))
         .await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        let err = res
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown trash error");
-        anyhow::bail!("{}", err);
+        anyhow::bail!("{}", trash_error_message(&res));
     }
     Ok(res)
 }
