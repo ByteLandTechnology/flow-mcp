@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.3.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.2.1...v1.3.0) (2026-11-18)
+
+
+### Features
+
+* **flow:** add custom voices, voice preview, and portrait replacement ([4d4930c](https://github.com/ByteLandTechnology/flow-mcp/commit/4d4930c9a08ce052c6ed9ad8434d9de665172c9e))
+* **flow:** add the front end build label to store errors ([7171fda](https://github.com/ByteLandTechnology/flow-mcp/commit/7171fda290ce8ffd8060ff2027c2053589d92738))
+* **flow:** report the store probe in flow_status ([cddfc08](https://github.com/ByteLandTechnology/flow-mcp/commit/cddfc08afd26a433b5461049035956162c9eadf9))
+* **flow:** report trash attempts and block unknown front ends ([1bfce0e](https://github.com/ByteLandTechnology/flow-mcp/commit/1bfce0e270cba9f014a7d01272ed60c08b7d4dcc))
+* **flow:** trash tiles through the tile menu of the page ([3eb773f](https://github.com/ByteLandTechnology/flow-mcp/commit/3eb773f1cf0580908b97669c1299257f226f7dbc))
+* run background Chrome with a visible window by default ([9ad8c53](https://github.com/ByteLandTechnology/flow-mcp/commit/9ad8c53cf615f689b14f9484472bfbdf50059339))
+
+
+### Bug Fixes
+
+* **flow:** read tile media by shape on the 2026-11-16 front end ([ca19d22](https://github.com/ByteLandTechnology/flow-mcp/commit/ca19d22dd8e2573e60aba70cb8e4b700fb058caa))
+* **flow:** send store mutations to the 2026-11-15 front end ([ca8bb74](https://github.com/ByteLandTechnology/flow-mcp/commit/ca8bb7471cbe2810af2a49584ced39746ee48026))
+* **flow:** upload reference frames on the 2026-11-15 front end ([158db6b](https://github.com/ByteLandTechnology/flow-mcp/commit/158db6b11071b4ecb7359d03a2245d82f2dcd833))
+
 ## [1.2.1](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.2.0...v1.2.1) (2026-11-17)
 
 
