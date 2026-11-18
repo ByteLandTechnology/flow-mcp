@@ -3,6 +3,7 @@
 
 // Read the Google Flow front-end build label and check the bound project store shape.
 
+import { legacyTile, pickTileUrl } from "./dom";
 import { runtimeState } from "./state";
 import type { FlowTile, StoreProbeCheck, StoreProbeResult } from "./types";
 
@@ -19,26 +20,25 @@ function check(name: string, ok: boolean, detail: string): StoreProbeCheck {
   return { name, ok, detail };
 }
 
-/** Classifies the media container layout of up to 40 tiles in `tiles`. */
+/** Counts the image and video tiles in up to 200 tiles of `tiles` whose media the runtime can read. */
 function tileLayout(tiles: Iterable<unknown>): StoreProbeCheck {
-  let legacy = 0;
-  let current = 0;
-  let other = 0;
+  let readable = 0;
+  let unreadable = 0;
   let seen = 0;
   for (const raw of tiles) {
-    if (++seen > 40) break;
+    if (++seen > 200) break;
     if (!raw || typeof raw !== "object") continue;
-    const t = raw as FlowTile;
-    if (t.Eb) current++;
-    else if (t.Fb) legacy++;
-    else if (t.type === "media" || t.type === "workflow") other++;
+    const kind = String((raw as FlowTile).type ?? "").toUpperCase();
+    if (kind !== "IMAGE" && kind !== "VIDEO") continue;
+    const t = legacyTile(raw as FlowTile);
+    if (t.Fb && (t.Fb.Zc !== undefined || pickTileUrl(t))) readable++;
+    else unreadable++;
   }
-  if (current + legacy + other === 0) {
+  if (readable + unreadable === 0) {
     return check("tile_layout", true, "no media tiles to inspect");
   }
-  const detail = `current=${current} legacy=${legacy} unknown=${other}`;
-  // A tile without media yet is normal. Fail only when no tile has a known media container.
-  return check("tile_layout", current + legacy > 0, detail);
+  // One tile without media is normal. Fail only when the runtime can read the media of no tile.
+  return check("tile_layout", readable > 0, `readable=${readable} unreadable=${unreadable}`);
 }
 
 /** Reports whether the bound project store has the shape that the runtime expects. It never calls a mutation. */
@@ -79,9 +79,9 @@ export function probeStore(): StoreProbeResult {
 /**
  * Check names that a destructive operation needs.
  * The view registry only matters while the runtime discovers the store.
- * The tile layout fails in a project that has only failed generations, and a trash mutation does not read the media container.
+ * The tile layout fails when the runtime can read the media of no image or video tile, which shows that the field names of the front end changed.
  */
-const DESTRUCTIVE_CHECKS = new Set(["store_bound", "tile_map", "mutator"]);
+const DESTRUCTIVE_CHECKS = new Set(["store_bound", "tile_map", "mutator", "tile_layout"]);
 
 /** Returns an `unsupported_front_end` error when the store shape is unknown, or null when a destructive operation may run. */
 export function destructiveGate(): {

@@ -21,6 +21,7 @@ import {
   settingsOpen,
 } from "./composer";
 import {
+  characterLooksOf,
   delay,
   elText,
   fifeBase,
@@ -93,8 +94,9 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         matched?.Fb?.id ||
         matched?.Fb?.mediaId ||
         null;
-      if (matched?.oi instanceof Map) {
-        for (const entry of matched.oi.values()) {
+      const looks = characterLooksOf(matched);
+      if (looks) {
+        for (const entry of looks.values()) {
           if (!entry) continue;
           if (!charPrimaryMediaId && entry.primaryMediaId) {
             charPrimaryMediaId = entry.primaryMediaId;

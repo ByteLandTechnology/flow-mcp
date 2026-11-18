@@ -3,7 +3,7 @@
 
 // Shared DOM, event, input, and FIFE URL helpers for Flow browser modules.
 
-import type { FifeEnv, FlowMediaPayload, FlowTile } from "./types";
+import type { CharacterLookEntry, FifeEnv, FlowMediaPayload, FlowTile } from "./types";
 
 /** Short edge in pixels for each video resolution code of the Flow front end (4 = 360p, 1 = 720p, 2 = 1080p, 3 = 4K). */
 const VIDEO_SHORT_EDGE: Readonly<Record<number, number>> = { 1: 720, 2: 1080, 3: 2160, 4: 360 };
@@ -28,24 +28,116 @@ function hasDimensions(d: { width?: number; height?: number } | undefined): bool
   return Boolean(d && typeof d.width === "number" && d.width > 0 && typeof d.height === "number" && d.height > 0);
 }
 
-/** Copies the media field names of the Flow front end from 2026-11-15 on to the old names (`od` to `Zc`, `xc` to `tc`, `Bf` to `nf`, `xf` to `Lf`), and calculates video dimensions when `xc` is empty. */
+/** Media status values of the Flow front end. */
+const MEDIA_STATUSES = new Set(["success", "pending", "scheduled", "failed", "canceled"]);
+
+/** Returns the own enumerable values of `o` with their keys. */
+function ownEntries(o: object): Array<[string, unknown]> {
+  return Object.entries(o as Record<string, unknown>);
+}
+
+/** Returns the first field of `m` that holds only a numeric width and height. The key name changes with each front-end build. */
+function findDimensions(m: object): { width?: number; height?: number } | undefined {
+  for (const [, v] of ownEntries(m)) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const d = v as { width?: unknown; height?: unknown };
+    if (Object.keys(d).length === 2 && typeof d.width === "number" && typeof d.height === "number") {
+      return d as { width: number; height: number };
+    }
+  }
+  return undefined;
+}
+
+/** Returns the first field of `m` that holds a media status value. The key name changes with each front-end build. */
+function findStatus(m: object): string | undefined {
+  for (const [, v] of ownEntries(m)) {
+    if (typeof v === "string" && MEDIA_STATUSES.has(v.toLowerCase())) return v;
+  }
+  return undefined;
+}
+
+/** Copies the media fields of a current Flow front end to the old names (`Zc` status, `tc` dimensions, `nf` error, `Lf` duration, `hc` date). It finds the status and the dimensions by shape, and calculates video dimensions when the page gives none. */
 export function legacyMedia<T extends FlowMediaPayload | null | undefined>(m: T): T {
   if (!m || typeof m !== "object") return m;
-  if (m.od === undefined && m.xc === undefined && m.xf === undefined) return m;
-  const dims = hasDimensions(m.xc) ? m.xc : (videoDimensions(m.resolution, m.aspectRatio) ?? m.xc);
+  if (m.Zc !== undefined && m.tc !== undefined) return m;
+  const raw = m as Record<string, unknown>;
+  const found = m.tc ?? m.xc ?? findDimensions(m);
+  const dims = hasDimensions(found) ? found : (videoDimensions(m.resolution, m.aspectRatio) ?? found);
+  // `Cf` is the duration of a video on the 2026-11-16 front end. Read it only on a video payload.
+  const duration =
+    typeof m.xf === "number"
+      ? m.xf
+      : m.resolution !== undefined && typeof raw.Cf === "number"
+        ? raw.Cf
+        : undefined;
+  const created = [m.hc, m.kc, raw.lc].find((v) => v instanceof Date) as Date | undefined;
   return {
     ...m,
-    Zc: m.Zc ?? m.od,
-    tc: m.tc ?? dims,
+    Zc: m.Zc ?? m.od ?? findStatus(m),
+    tc: dims,
     nf: m.nf ?? m.Bf,
-    Lf: m.Lf ?? (typeof m.xf === "number" ? m.xf : undefined),
+    Lf: m.Lf ?? duration,
+    hc: m.hc ?? created,
   };
 }
 
-/** Returns `t` with `Fb` set from `Eb` and `hc` set from `kc` when the tile uses the field names of the Flow front end from 2026-11-15 on. */
+/** Returns the field of tile `t` that holds its media payload: an object with a string `id` and a string `workflowId`. The key name changes with each front-end build. */
+function findMediaContainer(t: object): FlowMediaPayload | undefined {
+  for (const [, v] of ownEntries(t)) {
+    if (!v || typeof v !== "object" || Array.isArray(v) || v instanceof Map || v instanceof Date) continue;
+    const c = v as { id?: unknown; workflowId?: unknown };
+    if (typeof c.id === "string" && typeof c.workflowId === "string") return v as FlowMediaPayload;
+  }
+  return undefined;
+}
+
+/** Returns `t` with `Fb` set to its media payload under the old field names and `hc` set to its date. It finds the media payload by shape, because the key name changes with each front-end build. */
 export function legacyTile<T extends FlowTile | null | undefined>(t: T): T {
-  if (!t || typeof t !== "object" || t.Fb || !t.Eb) return t;
-  return { ...t, Fb: legacyMedia(t.Eb), hc: t.hc ?? (t.kc instanceof Date ? t.kc : undefined) };
+  if (!t || typeof t !== "object") return t;
+  const raw = t as Record<string, unknown>;
+  const legacy: unknown = raw.Fb;
+  if (legacy && typeof legacy === "object" && (legacy as FlowMediaPayload).Zc !== undefined) return t;
+  const media =
+    legacy && typeof legacy === "object"
+      ? (legacy as FlowMediaPayload)
+      : raw.Eb && typeof raw.Eb === "object"
+        ? (raw.Eb as FlowMediaPayload)
+        : findMediaContainer(t);
+  // A tile without media and without the key `Fb` needs no change.
+  if (!media && legacy === undefined) return t;
+  const created = [t.hc, t.kc, raw.lc].find((v) => v instanceof Date) as Date | undefined;
+  // A current front end can use the key `Fb` for a boolean. Do not let it pass as a media payload.
+  return { ...t, Fb: legacyMedia(media), hc: t.hc ?? created };
+}
+
+/** Returns the ID of the collection that holds tile `t`, or null. It accepts the old `Fc` field, or any other string field that names a collection tile, because the key name changes with each front-end build. */
+export function collectionIdOf(
+  t: FlowTile | null | undefined,
+  isCollectionId: (id: string) => boolean,
+): string | null {
+  if (!t || typeof t !== "object") return null;
+  if (t.Fc) return String(t.Fc);
+  for (const [k, v] of ownEntries(t)) {
+    if (k === "id" || typeof v !== "string" || v === "") continue;
+    if (isCollectionId(v)) return v;
+  }
+  return null;
+}
+
+/** Returns the look map of character tile `t`, or null. It accepts the old `oi` field, or any other `Map` field whose entries hold a `primaryMediaId` or a `history`, because the key name changes with each front-end build. */
+export function characterLooksOf(
+  t: FlowTile | null | undefined,
+): Map<unknown, CharacterLookEntry> | null {
+  if (!t || typeof t !== "object") return null;
+  if (t.oi instanceof Map) return t.oi;
+  for (const [, v] of ownEntries(t)) {
+    if (!(v instanceof Map) || v.size === 0) continue;
+    const first: unknown = v.values().next().value;
+    if (first && typeof first === "object" && ("primaryMediaId" in first || "history" in first)) {
+      return v as Map<unknown, CharacterLookEntry>;
+    }
+  }
+  return null;
 }
 
 /** Waits for `ms` milliseconds before resolving. */

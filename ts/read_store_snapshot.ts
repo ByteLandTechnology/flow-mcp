@@ -3,7 +3,13 @@
 
 // Read all project tiles, scene clips, and collections from the bound store map.
 
-import { fifeEnv as getFifeEnv, legacyMedia, legacyTile } from "./dom";
+import {
+  characterLooksOf,
+  collectionIdOf,
+  fifeEnv as getFifeEnv,
+  legacyMedia,
+  legacyTile,
+} from "./dom";
 import { clearStore, runtimeState } from "./state";
 import type {
   FlowMediaPayload,
@@ -121,6 +127,14 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     }
   };
 
+  const collectionIds = new Set<string>();
+  for (const [id, rawTile] of tileMap.entries()) {
+    if (String(rawTile?.type ?? "").toUpperCase() === "COLLECTION") {
+      collectionIds.add(String(rawTile.id ?? id));
+    }
+  }
+  const isCollectionId = (v: string): boolean => collectionIds.has(v);
+
   for (const [id, rawTile] of tileMap.entries()) {
     const t = legacyTile(rawTile);
     if (
@@ -138,7 +152,7 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     if (t.isPending === true && (ttype === "COLLECTION" || ttype === "SCENE")) {
       continue;
     }
-    const cid = t.Fc ? String(t.Fc) : null;
+    const cid = collectionIdOf(t, isCollectionId);
 
     if (ttype === "COLLECTION") {
       cols.set(tid, tname);
@@ -167,8 +181,9 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     let charLookPrimaryMediaId: string | number | null = null;
     if (kind === "character") {
       charFallbackUrl = asHttpOrDataUrl(t.ue);
-      if (t.oi instanceof Map) {
-        for (const entry of t.oi.values()) {
+      const looks = characterLooksOf(t);
+      if (looks) {
+        for (const entry of looks.values()) {
           if (!entry) continue;
           if (!charLookPrimaryMediaId && entry.primaryMediaId) {
             charLookPrimaryMediaId = entry.primaryMediaId;
@@ -374,7 +389,7 @@ export function readStoreSnapshot(): StoreSnapshotResult {
   }
 
   for (const st of sceneTiles) {
-    const sceneCid = st.Fc ? String(st.Fc) : null;
+    const sceneCid = collectionIdOf(st, isCollectionId);
     const yfEntries: Array<[string, FlowMediaPayload[]]> =
       st.Yf instanceof Map
         ? Array.from(st.Yf.entries())

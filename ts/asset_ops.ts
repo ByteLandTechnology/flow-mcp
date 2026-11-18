@@ -3,6 +3,7 @@
 
 // Unified asset and collection rename and trash mutations via bound runtime state.
 
+import { collectionIdOf } from "./dom";
 import { destructiveGate, readBuildLabel } from "./probe";
 import { runtimeState } from "./state";
 import type { AssetRenameExtra, FlowTile } from "./types";
@@ -120,7 +121,7 @@ export async function assetOps(
   if (tileType === "COLLECTION") {
     const members: FlowTile[] = [];
     for (const t of tileMap.values()) {
-      if (t && String(t.Fc || "") === id) {
+      if (t && collectionIdOf(t, (v) => v === id) === id) {
         members.push(t);
       }
     }

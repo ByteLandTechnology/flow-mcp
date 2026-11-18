@@ -12,6 +12,7 @@ import {
   type PickerMatchTarget,
 } from "./angular";
 import {
+  characterLooksOf,
   clickButtonByRegex,
   delay,
   dismissOverlay,
@@ -336,8 +337,9 @@ export async function characterMediaOp(
     if (req?.character_id) {
       const tileMapNow = getMap();
       const t = tileMapNow instanceof Map ? tileMapNow.get(String(req.character_id)) : null;
-      if (t?.oi instanceof Map) {
-        for (const entry of t.oi.values()) {
+      const looks = characterLooksOf(t);
+      if (looks) {
+        for (const entry of looks.values()) {
           if (entry?.nf === "UPLOAD_FAILED" || entry?.media?.nf === "UPLOAD_FAILED") {
             return { ok: false, error: "character_upload_failed" };
           }
