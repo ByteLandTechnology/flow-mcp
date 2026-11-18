@@ -669,10 +669,18 @@ export interface ViewportPoint {
 
 /** Selects a visible control by its accessible name. */
 export interface LocatePointRequest {
-  /** `aria-label` matches a button label exactly. `text` matches the whole visible text of a menu item or button, ignoring case and spacing. */
-  by: "aria-label" | "text";
+  /** `aria-label` matches a button label exactly. `text` matches the whole visible text of a menu item or button, ignoring case and spacing. `menuitem` matches a menu item whose text is the name, with or without an icon word before it. */
+  by: "aria-label" | "text" | "menuitem";
   /** Label or text to match. */
   name: string;
+}
+
+/** Request for `tileDomOp`. */
+export interface TileDomOpRequest {
+  /** `locate`, `state`, or `dismiss`. */
+  action: string;
+  /** Store tile ID for `locate` and `state`. */
+  id?: string;
 }
 
 /** One check of the store probe. */
@@ -743,6 +751,8 @@ export interface FlowMcpRuntime {
   probeStore: () => StoreProbeResult;
   /** Returns the click point of a visible control by accessible name, or null. */
   locatePoint: (req: LocatePointRequest) => ViewportPoint | null;
+  /** Locates a project tile in the page, reads its trash state, or closes an open menu. */
+  tileDomOp: (req: TileDomOpRequest) => Promise<unknown>;
 }
 
 declare global {

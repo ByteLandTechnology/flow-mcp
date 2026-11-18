@@ -15,6 +15,7 @@ import { discoverStore } from "./discover_store";
 import { fetchMedia } from "./fetch_media";
 import { openEditAsset } from "./open_edit_asset";
 import { uploadUiAction } from "./open_upload_trigger";
+import { tileDomOp } from "./tile_dom";
 import { locatePoint } from "./locate";
 import { probeStore, readBuildLabel } from "./probe";
 import { projectNav } from "./project_nav";
@@ -32,6 +33,7 @@ if (!window.__flowMcp) {
     buildLabel: readBuildLabel,
     probeStore,
     locatePoint,
+    tileDomOp,
     discoverStore,
     readStoreSnapshot,
     projectNav,

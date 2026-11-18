@@ -20,14 +20,22 @@ function findControl(req: LocatePointRequest): Element | null {
     );
   }
   const want = req.name.trim().toLowerCase();
+  const textOf = (e: HTMLElement): string =>
+    (e.innerText || "").trim().replace(/\s+/g, " ").toLowerCase();
+  if (req.by === "menuitem") {
+    return (
+      Array.from(
+        document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+      ).find((e) => {
+        const text = textOf(e);
+        return isRendered(e) && (text === want || text.endsWith(` ${want}`));
+      }) ?? null
+    );
+  }
   return (
     Array.from(
       document.querySelectorAll<HTMLElement>('[role="menuitem"], button'),
-    ).find(
-      (e) =>
-        isRendered(e) &&
-        (e.innerText || "").trim().replace(/\s+/g, " ").toLowerCase() === want,
-    ) ?? null
+    ).find((e) => isRendered(e) && textOf(e) === want) ?? null
   );
 }
 

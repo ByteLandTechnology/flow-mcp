@@ -445,13 +445,120 @@ fn trash_error_message(res: &Value) -> String {
     msg
 }
 
-/// Moves a tile or collection into Google Flow trash and returns the store response.
-pub(crate) async fn invoke_trash_tile(engine: &ChromeEngine, id: &str) -> Result<Value> {
+/// Menu item text that moves a tile to trash.
+const TRASH_MENU_ITEM: &str = "Move to trash";
+
+/// Returns the store state of tile `id`: `present`, `trashed`, or `gone`. Returns `None` when the store is not readable.
+async fn tile_state(engine: &ChromeEngine, id: &str) -> Option<String> {
     let res = engine
+        .call_flow_async("tileDomOp", json!([{ "action": "state", "id": id }]))
+        .await
+        .ok()?;
+    res.get("state")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Returns true when the store shows tile `id` as trashed or removed within `tries` polls of 250 ms.
+async fn wait_trashed(engine: &ChromeEngine, id: &str, tries: u32) -> bool {
+    for _ in 0..tries {
+        let state = tile_state(engine, id).await;
+        if matches!(state.as_deref(), Some("trashed" | "gone")) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
+}
+
+/// Moves a media tile to trash through its "More options" menu, and returns true when the store confirms it.
+///
+/// Returns false when the page does not show the tile, the menu, or the menu item, so that the caller can use the store mutation.
+async fn trash_through_menu(engine: &ChromeEngine, id: &str) -> Result<bool> {
+    let loc = engine
+        .call_flow_async("tileDomOp", json!([{ "action": "locate", "id": id }]))
+        .await?;
+    if loc.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(false);
+    }
+    let (Some(tile), Some(menu)) = (loc.get("tile"), loc.get("menu")) else {
+        return Ok(false);
+    };
+    if let (Some(x), Some(y)) = (
+        tile.get("x").and_then(|v| v.as_f64()),
+        tile.get("y").and_then(|v| v.as_f64()),
+    ) {
+        engine.mouse_move(x, y).await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    if !engine.click_point(menu).await? {
+        return Ok(false);
+    }
+    let mut clicked = false;
+    for _ in 0..15 {
+        let point = engine
+            .call_flow_js(
+                "locatePoint",
+                json!([{ "by": "menuitem", "name": TRASH_MENU_ITEM }]),
+            )
+            .await?;
+        if engine.click_point(&point).await? {
+            clicked = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    if !clicked {
+        let _ = engine
+            .call_flow_async("tileDomOp", json!([{ "action": "dismiss" }]))
+            .await;
+        return Ok(false);
+    }
+    if wait_trashed(engine, id, 40).await {
+        return Ok(true);
+    }
+    // The page can show a dialog after the click. Close it before the caller sends the store mutation.
+    let _ = engine
+        .call_flow_async("tileDomOp", json!([{ "action": "dismiss" }]))
+        .await;
+    Ok(false)
+}
+
+/// Moves a tile or collection into Google Flow trash and returns the method and whether the store confirms it.
+///
+/// Uses the tile menu of the page first. If the page does not show the tile or its menu, sends the store mutation.
+/// `confirmed` is null when the tile map did not show the item as present before the operation, for example for a scene clip.
+pub(crate) async fn invoke_trash_tile(engine: &ChromeEngine, id: &str) -> Result<Value> {
+    let confirmable = tile_state(engine, id).await.as_deref() == Some("present");
+    let menu_error = if confirmable {
+        match trash_through_menu(engine, id).await {
+            Ok(true) => {
+                return Ok(
+                    json!({ "ok": true, "method": "menu:move_to_trash", "confirmed": true }),
+                );
+            }
+            Ok(false) => None,
+            Err(err) => Some(format!("{err:#}")),
+        }
+    } else {
+        None
+    };
+    let mut res = engine
         .call_flow_async("assetOps", json!(["trash", id, Value::Null]))
         .await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!("{}", trash_error_message(&res));
+    }
+    let confirmed = if confirmable {
+        Value::Bool(wait_trashed(engine, id, 20).await)
+    } else {
+        Value::Null
+    };
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("confirmed".to_string(), confirmed);
+        if let Some(err) = menu_error {
+            obj.insert("menu_error".to_string(), Value::String(err));
+        }
     }
     Ok(res)
 }
@@ -519,5 +626,6 @@ pub(crate) async fn trash_asset(
     Ok(json!({
         "trashed": trashed_payload,
         "method": res.get("method").cloned().unwrap_or(Value::Null),
+        "confirmed": res.get("confirmed").cloned().unwrap_or(Value::Null),
     }))
 }

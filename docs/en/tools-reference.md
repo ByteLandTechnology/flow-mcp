@@ -359,3 +359,5 @@ Move a matching asset, character, scene, or collection to trash in Google Flow.
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | Yes | Case-insensitive asset or collection ID, name, or prompt substring. |
+
+`flow-mcp` first clicks **Move to trash** in the tile menu of the page. If the page does not show the tile or its menu, `flow-mcp` sends the store mutation. The result has `method` and `confirmed`. `confirmed` is `true` when the project store shows the item as trashed or removed. `confirmed` is `null` when the tile map of the store did not contain the item before the operation, for example a scene clip.
