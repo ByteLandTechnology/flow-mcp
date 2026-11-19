@@ -314,7 +314,7 @@ Rename assets, characters, scenes, or collections in batches and confirm through
 | :--- | :--- | :--- | :--- |
 | `items` | `object[]` | Yes | Non-empty array of `{"id": "...", "name": "..."}` entries. |
 
-For an image or video tile that the page shows, `flow-mcp` first uses the **Rename** item of the tile menu and types the new name into the rename control of the page. In all other cases it sends the store mutation. Each entry of `items` in the result has `method`: `menu:rename` or `mutation`.
+For an image or video tile that the page shows, `flow-mcp` first uses the **Rename** item of the tile menu and types the new name into the rename control of the page. In all other cases it sends the store mutation. Each entry of `items` in the result has `method`: `menu:rename` or `mutation`. For collections, the tool confirms the result in a new read of the project store.
 
 ### `flow_collections`
 
@@ -329,9 +329,11 @@ List, create, rename, populate, remove items from, or delete project collections
 | `collection` | `string` | No | Target collection ID or name for `"add"` or `"delete"` (`"add"` creates missing collections). |
 | `ids` | `string[]` | No | Exact asset or character IDs to move into (`"add"`) or out of (`"remove"`) a collection. |
 
-`flow-mcp` uses the controls of the page first and the store mutation second. It reads the project store after each operation and returns an error if the store does not show the result. `"create"` uses the **Create collection** button of the sidebar. `"rename"` uses the title of the collection page. `"delete"` moves the assets out of the collection first and keeps them, then uses the menu of the collection tile; it returns an error if the collection holds another collection. The result of these actions has `method`. To find a tile, `flow-mcp` opens the page of its collection and then opens the previous view again.
+Open a Google Flow project first. The tool uses the project store for all collection operations. Use the collection ID if a name matches more than one collection.
 
-For `"remove"`, `flow-mcp` first uses the **Move out of collection** item of the tile menu. For each tile that the page does not show, it sends the store mutation. For `"add"`, it sends the store mutation, reads the project store, and returns an error if a tile is not in the target collection.
+The tool checks the result of each write in a new read of the same project. The supported Flow build creates a collection with a default name, then the tool sets the requested name. If the tool cannot verify a write, it returns `outcome_unknown` with the operation and IDs. It returns `unsupported_front_end` when the Flow build has an unverified write format.
+
+`"delete"` returns `collection_delete_unavailable` before it moves any member. The current Flow build sends separate requests to move members and delete the collection.
 
 ### `flow_download`
 
@@ -367,4 +369,4 @@ Move a matching asset, character, scene, or collection to trash in Google Flow.
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | Yes | Case-insensitive asset or collection ID, name, or prompt substring. |
 
-`flow-mcp` first clicks **Move to trash** in the tile menu of the page. If the page does not show the tile or its menu, `flow-mcp` sends the store mutation. The result has `method` and `confirmed`. `confirmed` is `true` when the project store shows the item as trashed or removed. `confirmed` is `null` when the tile map of the store did not contain the item before the operation, for example a scene clip.
+`flow-mcp` first clicks **Move to trash** in the tile menu of the page. If the page does not show the tile or its menu, `flow-mcp` sends the store mutation. The result has `method` and `confirmed`. `confirmed` is `true` when the project store shows the item as trashed or removed. `confirmed` is `null` when the tile map of the store did not contain the item before the operation, for example a scene clip. For collections, the tool uses the same deletion check as `flow_collections` and returns `collection_delete_unavailable`.

@@ -314,7 +314,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `items` | `object[]` | 是 | 非空的 `{"id": "...", "name": "..."}` 对象数组。 |
 
-对于页面上显示的图像或视频 tile，`flow-mcp` 先使用 tile 菜单的 **Rename** 项，并在页面的重命名控件中输入新名称。其他情况下发送 store mutation。结果中 `items` 的每一项都带有 `method`：`menu:rename` 或 `mutation`。
+对于页面上显示的图像或视频 tile，`flow-mcp` 先使用 tile 菜单的 **Rename** 项，并在页面的重命名控件中输入新名称。其他情况下发送 store mutation。结果中 `items` 的每一项都带有 `method`：`menu:rename` 或 `mutation`。 集合重命名通过重新读取项目 store 来核验。
 
 ### `flow_collections`
 
@@ -329,9 +329,11 @@ flow-mcp [OPTIONS] <COMMAND>
 | `collection` | `string` | 否 | 用于 `"add"` 或 `"delete"` 的目标集合 ID 或名称（`"add"` 会创建缺失集合）。 |
 | `ids` | `string[]` | 否 | 要移入（`"add"`）或移出（`"remove"`）集合的精确资产或角色 ID。 |
 
-`flow-mcp` 优先使用页面上的控件，其次才发送 store mutation。每次操作后都会读取项目 store，如果 store 没有显示结果则返回错误。`"create"` 使用侧边栏的 **Create collection** 按钮。`"rename"` 使用集合页面的标题。`"delete"` 先把资产移出集合并保留它们，再使用集合 tile 的菜单；如果集合里还有其他集合，则返回错误。这些操作的结果带有 `method`。查找 tile 时，`flow-mcp` 会打开它所在集合的页面，之后再回到原来的视图。
+请先打开一个 Google Flow 项目。所有集合操作均通过项目 store 完成。如果有多个同名集合，请使用集合 ID。
 
-对于 `"remove"`，`flow-mcp` 先使用 tile 菜单的 **Move out of collection** 项。页面上没有显示的 tile 则发送 store mutation。对于 `"add"`，`flow-mcp` 发送 store mutation，再读取项目 store；如果有 tile 不在目标集合中，则返回错误。
+工具会重新读取同一项目，核验每次写入的结果。受支持的 Flow 构建先用默认名称创建集合，工具再设置请求的名称。无法核验写入时，工具返回 `outcome_unknown`，并附上操作和相关 ID。写入格式未经验证的构建会返回 `unsupported_front_end`。
+
+当前 Flow 构建使用两次请求分别移出成员和删除集合。`"delete"` 会在移动任何成员前返回 `collection_delete_unavailable`。
 
 ### `flow_download`
 
@@ -367,4 +369,4 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | 是 | 匹配资产或集合 ID、名称或提示词的忽略大小写子串。 |
 
-`flow-mcp` 先在页面的 tile 菜单里点击 **Move to trash**。如果页面没有显示该 tile 或其菜单，则改为发送 store mutation。返回结果包含 `method` 和 `confirmed`。当项目 store 显示该项已进回收站或已移除时，`confirmed` 为 `true`。如果操作前 store 的 tile map 中没有该项（例如场景片段），`confirmed` 为 `null`。
+`flow-mcp` 先在页面的 tile 菜单里点击 **Move to trash**。如果页面没有显示该 tile 或其菜单，则改为发送 store mutation。返回结果包含 `method` 和 `confirmed`。当项目 store 显示该项已进回收站或已移除时，`confirmed` 为 `true`。如果操作前 store 的 tile map 中没有该项（例如场景片段），`confirmed` 为 `null`。 对于集合，该工具使用与 `flow_collections` 相同的删除检查，返回 `collection_delete_unavailable`。

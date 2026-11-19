@@ -7,6 +7,7 @@ import {
   characterLooksOf,
   collectionIdOf,
   fifeEnv as getFifeEnv,
+  isTrashedTile,
   legacyMedia,
   legacyTile,
 } from "./dom";
@@ -73,6 +74,39 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     return { ok: false, error: "project_mismatch" };
   }
 
+  const { assets, collections } = readStoreTiles(tileMap);
+  const titleEl = document.querySelector(
+    'input[aria-label="Editable text"], .editable-text-input, [data-testid="project-title"]',
+  );
+  const rawTitle = titleEl
+    ? ((titleEl as HTMLInputElement).value || titleEl.textContent || "").trim()
+    : "";
+  const docTitle = (document.title || "")
+    .replace(/\s*[-–|]\s*(?:Google\s*)?Flow\s*$/i, "")
+    .trim();
+  const projectTitle = rawTitle || docTitle || null;
+
+  let credits: number | null = null;
+  const creditNodes = document.querySelectorAll(
+    'header, nav, [class*="credit"], [aria-label*="credit" i]',
+  );
+  for (const node of creditNodes) {
+    const txt = node.textContent || "";
+    const credMatch = txt.match(/(\d[\d,]*)\s*(?:credits|AI credits)/i);
+    if (credMatch) {
+      credits = parseInt(credMatch[1].replace(/,/g, ""), 10);
+      break;
+    }
+  }
+
+  return { ok: true, projectId, projectTitle, credits, assets, collections };
+}
+
+/** Reads asset and collection details from the tile map. */
+export function readStoreTiles(tileMap: Map<string, FlowTile>): {
+  assets: SnapshotAssetItem[];
+  collections: SnapshotCollectionItem[];
+} {
   const cols = new Map<string, string>();
   const counts = new Map<string, number>();
   const topLevelIds = new Set<string>();
@@ -137,13 +171,7 @@ export function readStoreSnapshot(): StoreSnapshotResult {
 
   for (const [id, rawTile] of tileMap.entries()) {
     const t = legacyTile(rawTile);
-    if (
-      !t ||
-      t.trashed === true ||
-      t.isTrashed === true ||
-      t.yb === true ||
-      t.Ab === true
-    ) {
+    if (!t || isTrashedTile(t)) {
       continue;
     }
     const tid = String(t.id ?? id);
@@ -550,29 +578,5 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     });
   }
 
-  const titleEl = document.querySelector(
-    'input[aria-label="Editable text"], .editable-text-input, [data-testid="project-title"]',
-  );
-  const rawTitle = titleEl
-    ? ((titleEl as HTMLInputElement).value || titleEl.textContent || "").trim()
-    : "";
-  const docTitle = (document.title || "")
-    .replace(/\s*[-–|]\s*(?:Google\s*)?Flow\s*$/i, "")
-    .trim();
-  const projectTitle = rawTitle || docTitle || null;
-
-  let credits: number | null = null;
-  const creditNodes = document.querySelectorAll(
-    'header, nav, [class*="credit"], [aria-label*="credit" i]',
-  );
-  for (const node of creditNodes) {
-    const txt = node.textContent || "";
-    const credMatch = txt.match(/(\d[\d,]*)\s*(?:credits|AI credits)/i);
-    if (credMatch) {
-      credits = parseInt(credMatch[1].replace(/,/g, ""), 10);
-      break;
-    }
-  }
-
-  return { ok: true, projectId, projectTitle, credits, assets, collections };
+  return { assets, collections };
 }

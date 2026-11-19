@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Duration, Instant};
 
+use crate::collections::{CollectionSession, FlowCollection, find_collection};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
@@ -313,28 +314,47 @@ pub(crate) async fn list_assets(
     Ok(filtered)
 }
 
-/// Checks whether a snapshot reflects `name` on asset or collection `id`.
+/// Checks whether the asset snapshot shows the requested name.
 fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
-    ["assets", "collections"].iter().any(|key| {
-        snap.get(*key)
-            .and_then(|v| v.as_array())
-            .is_some_and(|arr| {
-                arr.iter().any(|item| {
-                    item.get("id").and_then(|v| v.as_str()) == Some(id)
-                        && item.get("name").and_then(|v| v.as_str()) == Some(name)
-                })
+    snap.get("assets")
+        .and_then(Value::as_array)
+        .is_some_and(|assets| {
+            assets.iter().any(|item| {
+                item.get("id").and_then(Value::as_str) == Some(id)
+                    && item.get("name").and_then(Value::as_str) == Some(name)
             })
-    })
+        })
 }
 
-/// Renames items through the rename control of the page, or through `lService` when the page does not show the tile, and confirms by store state or RPC status.
+/// Renames collections through the collection store and other tiles through the page or store.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
-    ensure_flow_store(engine).await?;
+    let collections = CollectionSession::open(engine).await?;
     let total = items.len();
     let mut renamed = Vec::new();
     let mut failed = Vec::new();
+    let mut asset_store_ready = false;
 
     'items: for (idx, entry) in items.into_iter().enumerate() {
+        match collections.is_collection(&entry.id).await {
+            Ok(false) => {}
+            Ok(true) => {
+                match collections.rename(&entry.id, &entry.name).await {
+                    Ok(result) => renamed.push(json!({
+                        "id": entry.id, "name": entry.name, "method": result["method"]
+                    })),
+                    Err(err) => failed.push(rename_error(&entry, &err)),
+                }
+                continue 'items;
+            }
+            Err(err) => {
+                failed.push(rename_error(&entry, &err));
+                continue 'items;
+            }
+        }
+        if !asset_store_ready {
+            ensure_flow_store(engine).await?;
+            asset_store_ready = true;
+        }
         // Use the rename control of the page first. The page then builds its own mutation.
         if tile_state(engine, &entry.id).await.is_present()
             && matches!(
@@ -429,6 +449,11 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
     }))
 }
 
+/// Returns the error for a rename entry.
+fn rename_error(entry: &RenameEntry, err: &anyhow::Error) -> Value {
+    json!({ "id": entry.id, "name": entry.name, "error": format!("{err:#}") })
+}
+
 /// Builds a trash error message from a failed `assetOps` result, with the build label and each rejected attempt.
 fn trash_error_message(res: &Value) -> String {
     let mut msg = res
@@ -459,11 +484,11 @@ fn trash_error_message(res: &Value) -> String {
     msg
 }
 
-/// Moves a tile or collection into Google Flow trash and returns the method and whether the store confirms it.
+/// Moves an asset into Google Flow trash and returns the method and whether the store confirms it.
 ///
 /// Uses the tile menu of the page first. If the page does not show the tile or its menu, sends the store mutation.
 /// `confirmed` is null when the tile map did not show the item as present before the operation, for example for a scene clip.
-pub(crate) async fn invoke_trash_tile(engine: &ChromeEngine, id: &str) -> Result<Value> {
+async fn invoke_trash_tile(engine: &ChromeEngine, id: &str) -> Result<Value> {
     let confirmable = tile_state(engine, id).await.is_present();
     let menu_error = if confirmable {
         match trash_through_menu(engine, id).await {
@@ -504,62 +529,33 @@ pub(crate) async fn trash_asset(
     db: &FlowDb,
     match_str: &str,
 ) -> Result<Value> {
-    let snap = read_snapshot(engine).await?;
-    let assets: Vec<FlowAsset> = serde_json::from_value(
-        snap.get("assets")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    )?;
-
-    let mut target_id: Option<String> = None;
-    let mut trashed_payload: Option<Value> = None;
-    let mut is_character = false;
-
-    if let Some(asset) = match_asset(&assets, match_str, true) {
-        target_id = Some(asset.id.clone());
-        is_character = asset.kind == "character";
-        trashed_payload = Some(serde_json::to_value(asset)?);
-    } else if let Some(cols) = snap.get("collections").and_then(|v| v.as_array()) {
-        let raw = match_str.trim();
-        let lower = raw.to_lowercase();
-        let col = cols
-            .iter()
-            .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(raw))
-            .or_else(|| {
-                cols.iter().find(|c| {
-                    c.get("name")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|n| n.eq_ignore_ascii_case(raw))
-                })
-            })
-            .or_else(|| {
-                cols.iter().find(|c| {
-                    c.get("name")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|n| n.to_lowercase().contains(&lower))
-                })
-            });
-        if let Some(c) = col {
-            target_id = c.get("id").and_then(|v| v.as_str()).map(str::to_string);
-            trashed_payload = Some(c.clone());
-        }
+    let collections = CollectionSession::open(engine).await?;
+    let query = match_str.trim();
+    if collections.is_collection(query).await? {
+        return collections.delete(query).await;
     }
 
-    let id = target_id.with_context(|| {
-        format!(
-            "No asset or collection matches '{}' for flow_trash",
-            match_str
-        )
-    })?;
-    let res = invoke_trash_tile(engine, &id)
+    let mut tiles = collections.run(json!({ "action": "assets" })).await?;
+    let assets: Vec<FlowAsset> = serde_json::from_value(tiles["assets"].take())?;
+    let Some(asset) = match_asset(&assets, query, true) else {
+        let summaries: Vec<FlowCollection> = serde_json::from_value(tiles["collections"].take())?;
+        let collection = find_collection(&summaries, query, true)?
+            .with_context(|| format!("No asset or collection matches '{query}' for flow_trash"))?;
+        return collections.delete(&collection.id).await;
+    };
+
+    let id = &asset.id;
+    let is_character = asset.kind == "character";
+    ensure_flow_store(engine).await?;
+    let res = invoke_trash_tile(engine, id)
         .await
-        .with_context(|| format!("Failed to trash '{}'", id))?;
+        .with_context(|| format!("Failed to trash '{id}'"))?;
     if is_character {
-        let _ = db.delete_character(&id).await;
+        let _ = db.delete_character(id).await;
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     Ok(json!({
-        "trashed": trashed_payload,
+        "trashed": asset,
         "method": res.get("method").cloned().unwrap_or(Value::Null),
         "confirmed": res.get("confirmed").cloned().unwrap_or(Value::Null),
     }))

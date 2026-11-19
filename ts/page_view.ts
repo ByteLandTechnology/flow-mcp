@@ -62,52 +62,25 @@ function isRendered(el: Element): boolean {
   return el.getClientRects().length > 0;
 }
 
-/** Returns the text input of a page control: `tile` is the "Rename tile" overlay, `item` is the name input of a new sidebar collection, and `title` is the title of a collection page whose text is `current`. */
-function textControl(control: string, current: string): HTMLInputElement | null {
-  if (control === "tile") {
-    const host = Array.from(document.querySelectorAll('[aria-label="Rename tile"]')).find(isRendered);
-    const input = host?.querySelector("input");
-    return input instanceof HTMLInputElement ? input : null;
-  }
-  if (control === "item") {
-    const input = Array.from(
-      document.querySelectorAll<HTMLInputElement>('input[aria-label="Rename item"]'),
-    ).find(isRendered);
-    return input ?? null;
-  }
-  if (control === "title") {
-    const inputs = Array.from(
-      document.querySelectorAll<HTMLInputElement>('input[aria-label="Editable text"]'),
-    ).filter(isRendered);
-    // The project title uses the same label. Select the input that has the focus, or the one that shows the collection name.
-    const active = inputs.find((e) => e === document.activeElement && e.classList.contains("editing"));
-    if (active) return active;
-    const named = inputs.filter((e) => e.value === current);
-    return named.length === 1 ? named[0] : null;
-  }
-  return null;
+/** Returns the text input of the asset rename control. */
+function renameControl(): HTMLInputElement | null {
+  const host = Array.from(document.querySelectorAll('[aria-label="Rename tile"]')).find(isRendered);
+  const input = host?.querySelector("input");
+  return input instanceof HTMLInputElement ? input : null;
 }
 
-/** Returns the viewport center of the text input of `control`. */
-export function textPoint(control: string, current: string): Record<string, unknown> {
-  const el = textControl(control, current);
-  if (!el) return { ok: false, error: "text_control_not_found" };
-  const r = el.getBoundingClientRect();
-  return { ok: true, point: { x: r.x + r.width / 2, y: r.y + r.height / 2 } };
-}
-
-/** Selects the text of the focused text input of `control`, so that typed text replaces it. It does not move the focus. */
-export function selectText(control: string, current: string): Record<string, unknown> {
-  const el = textControl(control, current);
+/** Selects the text of the focused rename control. */
+export function selectText(): Record<string, unknown> {
+  const el = renameControl();
   if (!el) return { ok: false, error: "text_control_not_found" };
   const focused = document.activeElement === el;
   if (focused) el.select();
   return { ok: true, focused, value: el.value };
 }
 
-/** Returns the text of the text input of `control`. */
-export function readText(control: string, current: string): Record<string, unknown> {
-  const el = textControl(control, current);
+/** Returns the text in the rename control. */
+export function readText(): Record<string, unknown> {
+  const el = renameControl();
   if (!el) return { ok: false, error: "text_control_not_found" };
   return { ok: true, value: el.value };
 }

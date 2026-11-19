@@ -22,15 +22,6 @@ const TRASH_MENU_ITEM: &str = "Move to trash";
 /// Menu item text that opens the rename control of a tile.
 const RENAME_MENU_ITEM: &str = "Rename";
 
-/// Menu item text that moves a tile out of its collection.
-const MOVE_OUT_MENU_ITEM: &str = "Move out of collection";
-
-/// Accessible name of the sidebar button that creates a collection.
-const CREATE_COLLECTION_LABEL: &str = "Create collection";
-
-/// Text of the menu item and of the dialog button that delete a collection with its contents.
-const DELETE_COLLECTION_ITEM: &str = "Move all contents to trash";
-
 /// Number of queue jobs that use the page now.
 static PAGE_JOBS: AtomicUsize = AtomicUsize::new(0);
 
@@ -196,15 +187,6 @@ async fn enter_view(engine: &ChromeEngine, collection: Option<&str>) -> SavedVie
     Some(previous)
 }
 
-/// Returns true when the page shows the main grid (`collection` is `None`) or the page of that collection.
-async fn view_is(engine: &ChromeEngine, collection: Option<&str>) -> bool {
-    let Ok(view) = page_op(engine, json!({ "action": "view" })).await else {
-        return false;
-    };
-    view.get("grid").and_then(|v| v.as_bool()) == Some(true)
-        && view.get("collection").and_then(|v| v.as_str()) == collection
-}
-
 /// Opens the view that shows tile `id`: the page of its collection, or the main grid.
 async fn enter_tile_view(engine: &ChromeEngine, id: &str) -> SavedView {
     let state = tile_state(engine, id).await;
@@ -237,20 +219,6 @@ async fn trash_in_view(engine: &ChromeEngine, id: &str) -> Result<bool> {
     Ok(false)
 }
 
-/// Moves a media tile out of its collection through its menu, and returns true when the store shows no collection for it.
-///
-/// Returns false when the page does not show the tile, the menu, or the menu item, so that the caller can use the store mutation.
-async fn move_out_in_view(engine: &ChromeEngine, id: &str) -> Result<bool> {
-    if !click_tile_menu_item(engine, id, MOVE_OUT_MENU_ITEM).await? {
-        return Ok(false);
-    }
-    let moved = wait_tile_state(engine, id, 40, |s| s.is_present() && s.collection.is_none()).await;
-    if !moved {
-        dismiss_overlay(engine).await;
-    }
-    Ok(moved)
-}
-
 /// Sends one trusted key press of the Enter key to the focused control.
 async fn press_enter(engine: &ChromeEngine) -> Result<()> {
     for kind in ["keyDown", "keyUp"] {
@@ -271,19 +239,11 @@ async fn press_enter(engine: &ChromeEngine) -> Result<()> {
     Ok(())
 }
 
-/// Types `name` into the focused text control `control` of the page and submits it with the Enter key.
-///
-/// `current` is the text that the `title` control shows before the input. Returns false when the control does not get the focus, or when it does not hold `name` after the text input. It closes the control in that case.
-async fn type_into_control(
-    engine: &ChromeEngine,
-    control: &str,
-    current: &str,
-    name: &str,
-) -> Result<bool> {
-    let req = |action: &str| json!({ "action": action, "control": control, "name": current });
+/// Types `name` into the focused rename control and submits it with the Enter key.
+async fn type_rename(engine: &ChromeEngine, name: &str) -> Result<bool> {
     let mut selected = false;
     for _ in 0..15 {
-        let res = page_op(engine, req("text_select")).await?;
+        let res = page_op(engine, json!({ "action": "text_select" })).await?;
         if is_ok(&res) && res.get("focused").and_then(|v| v.as_bool()) == Some(true) {
             selected = true;
             break;
@@ -298,7 +258,7 @@ async fn type_into_control(
         .cdp_call("Input.insertText", json!({ "text": name }))
         .await?;
     tokio::time::sleep(Duration::from_millis(150)).await;
-    let typed = page_op(engine, req("text_value")).await?;
+    let typed = page_op(engine, json!({ "action": "text_value" })).await?;
     if typed.get("value").and_then(|v| v.as_str()) != Some(name) {
         // The control does not hold the new name. Do not submit a wrong name.
         dismiss_overlay(engine).await;
@@ -313,7 +273,7 @@ async fn rename_in_view(engine: &ChromeEngine, id: &str, name: &str) -> Result<b
     if !click_tile_menu_item(engine, id, RENAME_MENU_ITEM).await? {
         return Ok(false);
     }
-    if !type_into_control(engine, "tile", "", name).await? {
+    if !type_rename(engine, name).await? {
         return Ok(false);
     }
     let renamed = wait_tile_state(engine, id, 40, |s| s.name == name).await;
@@ -336,19 +296,6 @@ pub(crate) async fn trash_through_menu(engine: &ChromeEngine, id: &str) -> Resul
     res
 }
 
-/// Moves a media tile out of its collection through its menu, and returns true when the store shows no collection for it.
-///
-/// Opens the page of the collection first, and restores the view after the operation. Returns false when the page does not show the tile, the menu, or the menu item, so that the caller can use the store mutation.
-pub(crate) async fn move_out_through_menu(engine: &ChromeEngine, id: &str) -> Result<bool> {
-    if !page_is_free() {
-        return Ok(false);
-    }
-    let saved = enter_tile_view(engine, id).await;
-    let res = move_out_in_view(engine, id).await;
-    restore_view(engine, saved).await;
-    res
-}
-
 /// Renames a media tile through the "Rename" item of its menu, and returns true when the store shows `name`.
 ///
 /// Opens the view that shows the tile first, and restores the view after the operation. Returns false when the page does not show the tile, the menu item, or the rename control, or when the control does not hold `name` after the text input. The caller can then use the store mutation.
@@ -364,137 +311,4 @@ pub(crate) async fn rename_through_menu(
     let res = rename_in_view(engine, id, name).await;
     restore_view(engine, saved).await;
     res
-}
-
-/// Clicks the "Create collection" button of the sidebar and types `name` into the name input of the new collection.
-///
-/// Returns `Ok(None)` when the page does not show the button, so that the caller can use the store mutation. Returns `Ok(Some(false))` when the click created a collection but the name input failed: the page can then hold a collection with the default name.
-pub(crate) async fn create_collection_through_page(
-    engine: &ChromeEngine,
-    name: &str,
-) -> Result<Option<bool>> {
-    if !page_is_free() {
-        return Ok(None);
-    }
-    // On a collection page the button can put the new collection in that collection. Use the main grid.
-    let saved = enter_view(engine, None).await;
-    let res = create_collection_in_view(engine, name).await;
-    restore_view(engine, saved).await;
-    res
-}
-
-/// Clicks the "Create collection" button while the page shows the main grid, and types `name` into the name input.
-async fn create_collection_in_view(engine: &ChromeEngine, name: &str) -> Result<Option<bool>> {
-    if !view_is(engine, None).await {
-        return Ok(None);
-    }
-    let point = engine
-        .call_flow_js(
-            "locatePoint",
-            json!([{ "by": "aria-label", "name": CREATE_COLLECTION_LABEL }]),
-        )
-        .await?;
-    if !engine.click_point(&point).await? {
-        return Ok(None);
-    }
-    Ok(Some(type_into_control(engine, "item", "", name).await?))
-}
-
-/// Opens the page of collection `id` and types `name` into its title, which shows `current`.
-///
-/// Returns false when the page cannot open the collection page or does not show the title control, so that the caller can use the store mutation. The caller reads the store to confirm the new name.
-pub(crate) async fn rename_collection_through_page(
-    engine: &ChromeEngine,
-    id: &str,
-    current: &str,
-    name: &str,
-) -> Result<bool> {
-    if !page_is_free() {
-        return Ok(false);
-    }
-    let saved = enter_view(engine, Some(id)).await;
-    // The project title uses the same control as the collection title. Type only on the page of this collection.
-    let res = if view_is(engine, Some(id)).await {
-        rename_collection_in_view(engine, current, name).await
-    } else {
-        Ok(false)
-    };
-    restore_view(engine, saved).await;
-    res
-}
-
-/// Clicks the title of the open collection page, which shows `current`, and types `name` into it.
-async fn rename_collection_in_view(
-    engine: &ChromeEngine,
-    current: &str,
-    name: &str,
-) -> Result<bool> {
-    let res = page_op(
-        engine,
-        json!({ "action": "text_point", "control": "title", "name": current }),
-    )
-    .await?;
-    let Some(point) = res.get("point").filter(|_| is_ok(&res)) else {
-        return Ok(false);
-    };
-    if !engine.click_point(point).await? {
-        return Ok(false);
-    }
-    let typed = type_into_control(engine, "title", current, name).await?;
-    // Give the page time to send the rename before the view changes back.
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    Ok(typed)
-}
-
-/// Deletes the empty collection `name` through the menu of its folder tile in the main grid and the dialog that follows.
-///
-/// The menu item moves all contents of the collection to trash, so call this only for an empty collection with a unique name. The function also stops when the folder tile shows an item count that is not zero. Returns false when the page does not show the folder tile, the menu item, or the dialog button, so that the caller can use the store mutation. The caller reads the store to confirm the deletion.
-pub(crate) async fn delete_empty_collection_through_menu(
-    engine: &ChromeEngine,
-    id: &str,
-    name: &str,
-) -> Result<bool> {
-    if !page_is_free() {
-        return Ok(false);
-    }
-    let saved = enter_view(engine, None).await;
-    let res = if view_is(engine, None).await {
-        delete_collection_in_view(engine, name).await
-    } else {
-        Ok(false)
-    };
-    // Do not open the page of the collection that this operation deleted.
-    let deleted_view = matches!(res, Ok(true)) && saved.as_deref() == Some(id);
-    if !deleted_view {
-        restore_view(engine, saved).await;
-    }
-    res
-}
-
-/// Deletes the collection `name` through its folder tile in the main grid, which the page shows now.
-async fn delete_collection_in_view(engine: &ChromeEngine, name: &str) -> Result<bool> {
-    let loc = page_op(engine, json!({ "action": "collection_tile", "name": name })).await?;
-    // The menu item moves all contents to trash. Continue only when the folder tile itself shows no items.
-    if loc.get("count").and_then(|v| v.as_u64()) != Some(0) {
-        return Ok(false);
-    }
-    if !click_menu_item_at(engine, &loc, DELETE_COLLECTION_ITEM).await? {
-        return Ok(false);
-    }
-    // The dialog has a button with the same text as the menu item, without the icon word.
-    for _ in 0..20 {
-        let point = engine
-            .call_flow_js(
-                "locatePoint",
-                json!([{ "by": "text", "name": DELETE_COLLECTION_ITEM }]),
-            )
-            .await?;
-        if engine.click_point(&point).await? {
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            return Ok(true);
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    dismiss_overlay(engine).await;
-    Ok(false)
 }

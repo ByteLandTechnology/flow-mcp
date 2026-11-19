@@ -3,8 +3,8 @@
 
 // Locate project tiles in the page, read their state from the bound store, and dispatch page view and text control actions.
 
-import { collectionIdOf, delay, dismissOverlay, legacyTile } from "./dom";
-import { openView, readText, readView, selectText, textPoint } from "./page_view";
+import { collectionIdOf, delay, dismissOverlay, isTrashedTile, legacyTile } from "./dom";
+import { openView, readText, readView, selectText } from "./page_view";
 import { runtimeState } from "./state";
 import type { FlowTile, TileDomOpRequest, ViewportPoint } from "./types";
 
@@ -121,68 +121,32 @@ async function locateTile(id: string): Promise<Record<string, unknown>> {
   return locateContainer(() => findContainers(mediaIds));
 }
 
-/** Returns the text lines of a grid tile, without empty lines. */
-function tileLines(el: HTMLElement): string[] {
-  return (el.innerText || "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
-}
-
-/** Finds the folder tile of the collection `name` in the main grid and returns its item count. The first text line of a folder tile is the name. A folder tile with items also shows an icon word and the item count, and an empty one shows no count. */
-async function locateCollectionTile(name: string): Promise<Record<string, unknown>> {
-  const want = name.trim();
-  if (!want) return { ok: false, error: "collection_name_empty" };
-  const find = (): HTMLElement[] =>
-    Array.from(document.querySelectorAll<HTMLElement>("flow-grid-tile-container")).filter(
-      (el) => tileLines(el)[0] === want,
-    );
-  const loc = await locateContainer(find);
-  if (loc.ok !== true) return loc;
-  // Read the item count from the tile again, after the last scroll.
-  const tiles = find();
-  if (tiles.length !== 1) return { ok: false, error: "tile_ambiguous" };
-  const counts = tileLines(tiles[0])
-    .slice(1)
-    .flatMap((line) => line.split(/\s+/))
-    .filter((word) => /^\d+$/.test(word))
-    .map(Number);
-  if (counts.length > 1) return { ok: false, error: "collection_count_unknown" };
-  return { ...loc, count: counts[0] ?? 0 };
-}
-
 /** Returns `present`, `trashed`, or `gone` for the store tile `id`, with its name and its collection ID while it is present. */
 function tileState(id: string): Record<string, unknown> {
   const tileMap = runtimeState.store?.getTileMap?.();
   if (!(tileMap instanceof Map)) return { ok: false, error: "store_not_bound" };
   const t = tileMap.get(id);
   if (!t) return { ok: true, state: "gone" };
-  const trashed =
-    t.trashed === true || t.isTrashed === true || t.yb === true || t.Ab === true;
   const isCollectionId = (v: string): boolean =>
     String(tileMap.get(v)?.type || "").toUpperCase() === "COLLECTION";
   return {
     ok: true,
-    state: trashed ? "trashed" : "present",
+    state: isTrashedTile(t) ? "trashed" : "present",
     name: String(t.displayName ?? ""),
     collection: collectionIdOf(t, isCollectionId),
   };
 }
 
-/** Runs one page action. `locate` and `collection_tile` find a tile in the page, `state` reads the store state of a tile, `view` and `open_view` read and change the page view, `text_point`, `text_select`, and `text_value` use a text control, and `dismiss` closes an open menu. */
+/** Finds an asset tile, changes the grid view, or uses the asset rename control. */
 export async function tileDomOp(req: TileDomOpRequest): Promise<unknown> {
   const action = String(req?.action || "");
   const id = String(req?.id || "");
-  const control = String(req?.control || "");
-  const name = String(req?.name || "");
   if (action === "locate") return locateTile(id);
-  if (action === "collection_tile") return locateCollectionTile(name);
   if (action === "state") return tileState(id);
   if (action === "view") return readView();
   if (action === "open_view") return openView(id);
-  if (action === "text_point") return textPoint(control, name);
-  if (action === "text_select") return selectText(control, name);
-  if (action === "text_value") return readText(control, name);
+  if (action === "text_select") return selectText();
+  if (action === "text_value") return readText();
   if (action === "dismiss") {
     await dismissOverlay();
     return { ok: true };

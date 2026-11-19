@@ -174,6 +174,8 @@ export interface FlowTile extends FlowMediaPayload {
   isPending?: boolean;
   /** Parent collection identifier. */
   Fc?: string | number;
+  /** Parent collection identifier in the current project store. */
+  Cc?: string;
   /** Soft-trash flag variants. */
   trashed?: boolean;
   /** Secondary trash flag. */
@@ -677,14 +679,10 @@ export interface LocatePointRequest {
 
 /** Request for `tileDomOp`. */
 export interface TileDomOpRequest {
-  /** `locate`, `collection_tile`, `state`, `view`, `open_view`, `text_point`, `text_select`, `text_value`, or `dismiss`. */
+  /** `locate`, `state`, `view`, `open_view`, `text_select`, `text_value`, or `dismiss`. */
   action: string;
   /** Store tile ID for `locate` and `state`, or the collection ID for `open_view` (empty for the main grid). */
   id?: string;
-  /** Text control for the text actions: `tile`, `item`, or `title`. */
-  control?: string;
-  /** Collection name for `collection_tile`, or the current text of the `title` control. */
-  name?: string;
 }
 
 /** One check of the store probe. */
@@ -719,10 +717,18 @@ export interface FlowMcpRuntime {
   projectNav: (action: string) => Promise<unknown>;
   /** Lists, renames, or deletes Google Flow projects on home or workspace pages. */
   projectsOp: (req: ProjectsOpRequest) => Promise<unknown>;
-  /** Renames or moves tiles and collections to trash. */
+  /** Renames or moves asset tiles to trash. */
   assetOps: (action: string, id: string, extra: AssetRenameExtra | null) => Promise<unknown>;
-  /** Creates collections and moves asset tiles across collections. */
-  collectionOps: (action: string, arg1: string | null, arg2: string[] | null) => Promise<unknown>;
+  /** Reports the collection store status for one project. */
+  collectionStoreStatus: (projectId: string) => unknown;
+  /** Finds the active project store in the Angular view registry. */
+  bindCollectionStore: (maps: unknown[], projectId: string) => unknown;
+  /** Reads or changes tiles in the pinned project store. */
+  collectionOps: (
+    projectId: string,
+    session: string,
+    request: import("./collection_ops").CollectionRequest,
+  ) => Promise<unknown>;
   /** Fetches a media URL with page credentials and returns Base64 payload metadata. */
   fetchMedia: (u: string, expectedKind: string) => Promise<FetchedMediaPayload>;
   /** Resolves stream and download URLs for a primary media identifier via `as29s`. */

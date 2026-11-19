@@ -1,14 +1,13 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-// Unified asset and collection rename and trash mutations via bound runtime state.
+// Asset rename and trash mutations through the bound store.
 
-import { collectionIdOf } from "./dom";
 import { destructiveGate, readBuildLabel } from "./probe";
 import { runtimeState } from "./state";
-import type { AssetRenameExtra, FlowTile } from "./types";
+import type { AssetRenameExtra } from "./types";
 
-/** Renames or moves an asset, character, scene, or collection tile to trash. */
+/** Renames or moves an asset, character, or scene tile to trash. */
 export async function assetOps(
   action: string,
   id: string,
@@ -20,6 +19,13 @@ export async function assetOps(
     return action === "rename"
       ? { ok: false, err: "store_not_bound" }
       : { ok: false, error: "store_not_bound" };
+  }
+
+  const tile = tileMap.get(id);
+  if (String(tile?.type || "").toUpperCase() === "COLLECTION") {
+    return action === "rename"
+      ? { ok: false, err: "collection_path_required" }
+      : { ok: false, error: "collection_path_required" };
   }
 
   if (action === "rename") {
@@ -85,7 +91,6 @@ export async function assetOps(
       attempts,
     };
   };
-  const tile = tileMap.get(id);
   if (!tile) {
     let inSceneClip = false;
     for (const st of tileMap.values()) {
@@ -115,28 +120,6 @@ export async function assetOps(
       ]);
     }
     return { ok: false, error: "asset_not_found" };
-  }
-
-  const tileType = String(tile.type || "").toUpperCase();
-  if (tileType === "COLLECTION") {
-    const members: FlowTile[] = [];
-    for (const t of tileMap.values()) {
-      if (t && collectionIdOf(t, (v) => v === id) === id) {
-        members.push(t);
-      }
-    }
-    return tryShapes([
-      {
-        method: "batch_move_and_delete_collection",
-        payload: {
-          type: "batch_move_and_delete_collection",
-          Cb: members,
-          Db: members,
-          rj: undefined,
-          rWa: id,
-        },
-      },
-    ]);
   }
 
   const tileId = String(tile.id ?? id);

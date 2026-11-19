@@ -3,13 +3,13 @@
 
 //! Chrome DevTools Protocol (CDP) browser engine backed by a persistent Chrome profile.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, MutexGuard, broadcast};
 
 use crate::auth::is_signed_in_flow_url;
 use crate::cdp::{CdpConnection, find_or_create_page_target};
@@ -99,6 +99,8 @@ pub(crate) struct ChromeEngine {
     login_chrome: Mutex<Option<LoginChrome>>,
     /// Serializes Chrome process launches, shutdowns, and session promotions.
     ensure_lock: Mutex<()>,
+    /// Serializes collection operations on the browser page.
+    collection_lock: Mutex<()>,
     /// True while a visible interactive sign-in window is open.
     visible: AtomicBool,
     /// Broadcast channel for captured CDP `Network` responses.
@@ -115,6 +117,7 @@ impl ChromeEngine {
             inner: Mutex::new(None),
             login_chrome: Mutex::new(None),
             ensure_lock: Mutex::new(()),
+            collection_lock: Mutex::new(()),
             visible: AtomicBool::new(false),
             network_tx,
             user_agent: Mutex::new(None),
@@ -317,6 +320,32 @@ impl ChromeEngine {
     pub(crate) async fn cdp_call(&self, method: &str, params: Value) -> Result<Value> {
         let cdp = self.active_cdp().await?;
         cdp.call(method, params).await
+    }
+
+    /// Locks the collection path until the current operation ends.
+    pub(crate) async fn lock_collections(&self) -> MutexGuard<'_, ()> {
+        self.collection_lock.lock().await
+    }
+
+    /// Passes live Map objects to the collection binder in the same JavaScript context.
+    pub(crate) async fn bind_collection_store(&self, project_id: &str) -> Result<Value> {
+        let cdp = self.active_cdp().await?;
+        let project_id = project_id.to_owned();
+        tokio::spawn(async move {
+            let group = format!("flow-collections-{}", uuid::Uuid::new_v4());
+            let result = bind_from_maps(&cdp, &group, &project_id).await;
+            let released = cdp
+                .call(
+                    "Runtime.releaseObjectGroup",
+                    json!({ "objectGroup": group }),
+                )
+                .await;
+            let value = result?;
+            released?;
+            Ok(value)
+        })
+        .await
+        .context("The collection store search did not finish")?
     }
 
     /// Returns the Flow front-end build label that the active page publishes, or `None` when it is unavailable.
@@ -704,7 +733,11 @@ async fn eval_runtime(
             timeout,
         )
         .await?;
+    runtime_value(&res)
+}
 
+/// Returns the JavaScript value or exception from a CDP runtime response.
+fn runtime_value(res: &Value) -> Result<Value> {
     if let Some(details) = res.get("exceptionDetails") {
         let msg = details
             .pointer("/exception/description")
@@ -716,4 +749,40 @@ async fn eval_runtime(
     }
 
     Ok(res.pointer("/result/value").cloned().unwrap_or(Value::Null))
+}
+
+/// Queries the Map prototype and runs the collection binder on the result array.
+async fn bind_from_maps(cdp: &CdpConnection, group: &str, project_id: &str) -> Result<Value> {
+    let prototype = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": "Map.prototype", "objectGroup": group }),
+        )
+        .await?;
+    let prototype_id = prototype
+        .pointer("/result/objectId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Chrome did not return the Map prototype"))?;
+    let maps = cdp
+        .call(
+            "Runtime.queryObjects",
+            json!({ "prototypeObjectId": prototype_id, "objectGroup": group }),
+        )
+        .await?;
+    let maps_id = maps
+        .pointer("/objects/objectId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Chrome did not return the Map objects"))?;
+    let result = cdp
+        .call(
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": maps_id,
+                "functionDeclaration": "function (project) { return window.__flowMcp?.bindCollectionStore(this, project); }",
+                "arguments": [{ "value": project_id }],
+                "returnByValue": true,
+            }),
+        )
+        .await?;
+    runtime_value(&result)
 }

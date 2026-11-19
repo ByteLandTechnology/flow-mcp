@@ -147,7 +147,7 @@ For Flow Agent Mode batch images, call `flow_agent_images`. It uses a `480`-seco
 - **Filter and organize tiles**:
   - Search with `flow_assets` (`query`, `kind`, `collection`: collection ID, name substring, `"all"`, `"none"`, or `"uncollected"`, plus `limit`).
   - Rename items in batches with `flow_rename`: `{"items": [{"id": "asset_1", "name": "Shot 01 - Tram"}]}`.
-  - Manage collections with `flow_collections` (`action`: `"list"`, `"create"`, `"rename"`, `"add"`, `"remove"`, `"delete"`).
+  - Use `flow_collections` to list, create, or rename collections and move assets between them. The tool blocks collection deletion on the current Flow build.
 - **Download and read files over MCP**:
   - Download a project file on demand with `flow_download` (`{"match": "Shot 01"}`).
   - Manage records in `<home>/flow-mcp.db` with `flow_downloads` (`"list"`, `"get"`, `"delete"`, `"prune"`, or `"clear"` with `older_than_days`).

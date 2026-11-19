@@ -147,7 +147,7 @@ Flow Agent モードのバッチ画像生成には `flow_agent_images` を呼び
 - **タイルの絞り込みと整理**：
   - `flow_assets` で検索します（`query`、`kind`、`collection`：コレクション ID、名前部分文字列、`"all"`、`"none"`、または `"uncollected"`、および `limit`）。
   - `flow_rename` で項目を一括リネームします：`{"items": [{"id": "asset_1", "name": "Shot 01 - Tram"}]}`。
-  - `flow_collections` でコレクションを管理します（`action`：`"list"`、`"create"`、`"rename"`、`"add"`、`"remove"`、`"delete"`）。
+  - `flow_collections` でコレクションを一覧表示、作成、名前変更し、アセットを移動できます。現在の Flow ビルドでは、ツールはコレクションの削除を拒否します。
 - **MCP 経由でのダウンロードとファイル読取**：
   - `flow_download`（`{"match": "Shot 01"}`）で必要なときにプロジェクトファイルをダウンロードします。
   - `flow_downloads` で `<home>/flow-mcp.db` 内の記録を管理します（`"list"`、`"get"`、`"delete"`、`"prune"`、または `older_than_days` 付きの `"clear"`）。

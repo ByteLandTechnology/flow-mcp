@@ -147,7 +147,7 @@
 - **筛选与整理项目卡片**：
   - 使用 `flow_assets` 搜索（`query`、`kind`、`collection`：集合 ID、名称子串、`"all"`、`"none"` 或 `"uncollected"`，以及 `limit`）。
   - 使用 `flow_rename` 批量重命名项目：`{"items": [{"id": "asset_1", "name": "Shot 01 - Tram"}]}`。
-  - 使用 `flow_collections` 管理集合（`action`：`"list"`、`"create"`、`"rename"`、`"add"`、`"remove"`、`"delete"`）。
+  - 使用 `flow_collections` 列出、创建或重命名集合，以及在集合之间移动资产。当前 Flow 构建下，该工具会拒绝删除集合。
 - **通过 MCP 下载并读取文件**：
   - 使用 `flow_download` 按需下载项目文件（`{"match": "Shot 01"}`）。
   - 使用 `flow_downloads` 管理 `<home>/flow-mcp.db` 中的记录（`"list"`、`"get"`、`"delete"`、`"prune"` 或带 `older_than_days` 的 `"clear"`）。

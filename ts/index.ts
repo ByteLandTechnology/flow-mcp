@@ -11,6 +11,7 @@ import { characterOp } from "./character_ops";
 import { characterVoiceOp } from "./character_voices";
 import { checkAuth } from "./check_auth";
 import { collectionOps } from "./collection_ops";
+import { bindCollectionStore, collectionStoreStatus } from "./collection_store";
 import { discoverStore } from "./discover_store";
 import { fetchMedia } from "./fetch_media";
 import { openEditAsset } from "./open_edit_asset";
@@ -40,6 +41,8 @@ if (!window.__flowMcp) {
     projectsOp,
     assetOps,
     collectionOps,
+    bindCollectionStore,
+    collectionStoreStatus,
     fetchMedia,
     resolveVideoUrl,
     setupGeneration,

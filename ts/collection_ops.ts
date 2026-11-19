@@ -1,167 +1,275 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-// Unified collection creation and tile assignment mutations via bound runtime state.
+// Read and change collections in the active project without page controls.
 
-import { collectionIdOf, delay } from "./dom";
-import { runtimeState } from "./state";
-import type { FlowTile } from "./types";
+import {
+  collectionStore,
+  readCollectionStore,
+  refreshCollectionStore,
+  submitCollectionMutation,
+  supportsCollectionWrites,
+} from "./collection_store";
+import type { CollectionStore } from "./collection_store";
+import { delay, isTrashedTile } from "./dom";
+import { readBuildLabel } from "./probe";
+import { readStoreTiles } from "./read_store_snapshot";
+import type { FlowTile, SnapshotCollectionItem } from "./types";
 
-/** Creates a collection or moves tile IDs between collections in the active project store. */
-export async function collectionOps(
-  action: string,
-  arg1: string | null,
-  arg2: string[] | null,
-): Promise<unknown> {
-  const helper = runtimeState.store;
-  const getMap = (): Map<string, FlowTile> | null | undefined => helper?.getTileMap?.();
+/** Operation and arguments from the collection tool. */
+export type CollectionRequest =
+  | { action: "list" | "assets" }
+  | { action: "inspect"; id: string }
+  | { action: "check_assets"; ids: string[] }
+  | { action: "create"; id: string; name: string }
+  | { action: "rename"; id: string; name: string }
+  | { action: "move"; target: string | null; ids: string[] }
+  | { action: "delete"; id: string };
 
-  if (action === "move") {
-    const targetId = arg1;
-    const assetIds = Array.isArray(arg2) ? arg2 : [];
-    const tileMap = getMap();
-    if (!(tileMap instanceof Map)) {
-      return { ok: false, moved: 0, missing: assetIds, error: "store_not_bound" };
-    }
-    const objs: FlowTile[] = [];
-    const missing: string[] = [];
-    for (const id of assetIds) {
-      const obj = tileMap.get(id);
-      if (obj) objs.push(obj);
-      else missing.push(id);
-    }
-    if (!objs.length) {
-      return { ok: false, moved: 0, missing, error: "no_matching_assets" };
-    }
-    if (!helper?.mutate) {
-      return { ok: false, moved: 0, missing: assetIds, error: "store_mutate_missing" };
-    }
-    // Each front-end build renames the keys. Target: `rj`/`Gj`, then `Nj` (2026-11-16), then `Sj` (2026-11-19).
-    // Tiles: `Cb`/`Db`, then `Bb`. The front end ignores the keys that it does not know.
-    await helper.mutate({
-      type: "batch_move_to_collection",
-      Sj: targetId || undefined,
-      Bb: objs,
-      Nj: targetId || undefined,
-      rj: targetId || undefined,
-      Gj: targetId || undefined,
-      Cb: objs,
-      Db: objs,
-    });
-    // The mutation resolves even when the front end ignores it. Read the store to see that each tile moved.
-    const want = targetId || null;
-    const isCollectionId = (v: string): boolean =>
-      String(getMap()?.get(v)?.type || "").toUpperCase() === "COLLECTION";
-    let verified = 0;
-    for (let i = 0; i < 30; i++) {
-      const m = getMap();
-      verified = objs.filter((o) => {
-        const cur = m instanceof Map ? m.get(String(o.id)) : null;
-        return (collectionIdOf(cur, isCollectionId) || null) === want;
-      }).length;
-      if (verified === objs.length) break;
-      await delay(100);
-    }
-    return {
-      ok: true,
-      moved: objs.length,
-      verified,
-      missing,
-      method: "batch_move_to_collection",
-    };
+/** Time limit for one submission and its confirmation. */
+const MUTATION_TIMEOUT_MS = 10_000;
+/** True until the previous collection submission settles. */
+let mutationPending = false;
+/** Projects that need a new query result after a mutation. */
+const projectsToRefresh = new Set<string>();
+
+/** Returns a tile that is present, ready, and out of the trash. */
+function available(tile: FlowTile | undefined): tile is FlowTile {
+  return Boolean(tile && !tile.isPending && !isTrashedTile(tile));
+}
+
+/** Returns the tile when a collection operation can move it. */
+function movable(tile: FlowTile | undefined): tile is FlowTile {
+  if (!available(tile)) return false;
+  switch (tile.type) {
+    case "IMAGE":
+    case "VIDEO":
+      return Boolean(tile.workflowId);
+    case "SCENE":
+    case "CHARACTER":
+    case "TEXT_TILE":
+      return true;
+    default:
+      return false;
   }
+}
 
-  if (action !== "create") {
-    throw new Error(`unknown_collection_action:${String(action)}`);
-  }
-  if (!helper?.mutate) {
-    throw new Error("store_create_collection_missing");
-  }
-
-  const colName = String(arg1 ?? "");
-  const beforeMap = getMap();
-  const beforeIds = new Set<string>();
-  if (beforeMap instanceof Map) {
-    for (const [k, v] of beforeMap.entries()) {
-      if (String(v?.type || "").toUpperCase() === "COLLECTION") {
-        beforeIds.add(String(v?.id ?? k));
-      }
+/** Lists the active collections and counts the asset tiles in each collection. */
+function summarize(tiles: Map<string, FlowTile>): SnapshotCollectionItem[] {
+  const collections = new Map<string, SnapshotCollectionItem>();
+  for (const [id, tile] of tiles) {
+    if (available(tile) && tile.type === "COLLECTION") {
+      collections.set(id, { id, name: tile.displayName ?? "", count: 0 });
     }
   }
+  for (const tile of tiles.values()) {
+    if (isTrashedTile(tile) || tile.type === "COLLECTION" ||
+        (tile.type === "SCENE" && tile.isPending) || tile.Cc === undefined) continue;
+    const parent = collections.get(tile.Cc);
+    if (parent) parent.count++;
+  }
+  return [...collections.values()];
+}
 
-  const fallbackUuid = (): string =>
-    "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      const v = c === "x" ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
-  const genId =
-    typeof crypto?.randomUUID === "function"
-      ? crypto.randomUUID().toLowerCase()
-      : fallbackUuid();
-  const rawRes = await helper.mutate({
-    type: "create_collection",
-    id: genId,
-    Fc: undefined,
-    wc: undefined,
-    displayName: colName,
+/** Sends one mutation and confirms it from a new server result. */
+async function mutateAndVerify(
+  store: CollectionStore,
+  payload: Record<string, unknown>,
+  verified: (tiles: Map<string, FlowTile>) => boolean,
+): Promise<Map<string, FlowTile> | null> {
+  mutationPending = true;
+  projectsToRefresh.add(store.projectId);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolve(null);
+    }, MUTATION_TIMEOUT_MS);
   });
-  const rawObj = rawRes as
-    | { O2?: string | { id?: unknown }; M4?: string | { id?: unknown }; id?: unknown }
-    | null
-    | undefined;
-  const created = rawObj?.M4 ?? rawObj?.O2;
-  let createdId =
-    typeof created === "string"
-      ? created
-      : created?.id
-        ? String(created.id)
-        : String(rawObj?.id || genId);
-
-  let targetTile: FlowTile | null = null;
-  for (let i = 0; i < 50; i++) {
-    const m = getMap();
-    if (m instanceof Map) {
-      const t = createdId ? m.get(createdId) : null;
-      if (t && !t.isPending) {
-        targetTile = t;
-        break;
-      }
-      for (const [k, v] of m.entries()) {
-        if (String(v?.type || "").toUpperCase() === "COLLECTION" && !v?.isPending) {
-          const cid = String(v?.id ?? k);
-          if (!beforeIds.has(cid)) {
-            createdId = cid;
-            targetTile = v;
-            break;
-          }
+  const work = (async () => {
+    try {
+      await submitCollectionMutation(store, payload);
+      for (let attempt = 0; attempt < 3 && !timedOut; attempt++) {
+        const tiles = await refreshCollectionStore(store);
+        if (!tiles || timedOut) return null;
+        if (verified(tiles)) {
+          projectsToRefresh.delete(store.projectId);
+          return tiles;
         }
+        await delay(250);
       }
-      if (targetTile) break;
+      return null;
+    } catch {
+      return null;
+    } finally {
+      mutationPending = false;
     }
-    await delay(100);
+  })();
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
+}
 
-  if (!createdId) {
-    throw new Error("created_collection_id_not_found");
+/** Refreshes the project before the next operation after an unknown result. */
+async function refreshAfterUnknown(store: CollectionStore): Promise<Map<string, FlowTile> | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), MUTATION_TIMEOUT_MS);
+  });
+  try {
+    const tiles = await Promise.race([refreshCollectionStore(store), timeout]);
+    if (tiles) projectsToRefresh.delete(store.projectId);
+    return tiles;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
 
-  if (!targetTile || targetTile.displayName !== colName) {
-    if (helper?.rename) {
-      await helper.rename(createdId, colName);
-    } else {
-      await helper.mutate({
-        type: "single_tile",
-        Xc: createdId,
-        Uc: createdId,
-        Ve: { type: "set_display_name", displayName: colName },
+/** Reports a submission whose result the store did not confirm. */
+function outcomeUnknown(
+  store: CollectionStore,
+  stage: string,
+  ids: string[],
+  collectionId?: string | null,
+): unknown {
+  return {
+    ok: false, error: "outcome_unknown", project_id: store.projectId,
+    stage, ids, collection_id: collectionId,
+  };
+}
+
+/** Renames a collection by exact ID and confirms its name. */
+async function rename(
+  store: CollectionStore,
+  id: string,
+  name: string,
+): Promise<Map<string, FlowTile> | null> {
+  if (!readCollectionStore(store)) return null;
+  return mutateAndVerify(
+    store,
+    { type: "single_tile", Uc: id, df: { type: "set_display_name", displayName: name } },
+    (tiles) => {
+      const tile = tiles.get(id);
+      return available(tile) && tile.type === "COLLECTION" && tile.displayName === name;
+    },
+  );
+}
+
+/** Creates a collection with the request ID and sets its display name. */
+async function create(store: CollectionStore, id: string, name: string): Promise<unknown> {
+  // This build sets the server-side name to "Untitled collection" on creation.
+  const created = await mutateAndVerify(store, { type: "create_collection", id }, (tiles) => {
+    const tile = tiles.get(id);
+    return available(tile) && tile.type === "COLLECTION" && !tile.Cc;
+  });
+  if (!created) return outcomeUnknown(store, "create_collection", [id]);
+
+  const named = created.get(id)?.displayName === name ? created : await rename(store, id, name);
+  if (!named) return outcomeUnknown(store, "name_created_collection", [id]);
+  return { ok: true, created: true, id, method: "mutation", collections: summarize(named) };
+}
+
+/** Moves the requested tiles and confirms that each one is present in the target. */
+async function move(
+  store: CollectionStore,
+  tiles: Map<string, FlowTile>,
+  ids: string[],
+  target: string | null,
+): Promise<unknown> {
+  const destination = target === null ? undefined : tiles.get(target);
+  if (target !== null && (!available(destination) || destination.type !== "COLLECTION")) {
+    return { ok: false, error: "collection_not_found" };
+  }
+  const found: FlowTile[] = [];
+  const missing: string[] = [];
+  for (const id of new Set(ids)) {
+    const tile = tiles.get(id);
+    if (movable(tile)) found.push(tile);
+    else missing.push(id);
+  }
+  if (!found.length) return { ok: false, error: "no_matching_assets", missing };
+
+  const moving = found.filter((tile) => (tile.Cc || null) !== target);
+  const after = moving.length === 0 ? tiles : await mutateAndVerify(
+    store,
+    { type: "batch_move_to_collection", Sj: target ?? undefined, Bb: moving },
+    (fresh) => {
+      if (target !== null) {
+        const collection = fresh.get(target);
+        if (!available(collection) || collection.type !== "COLLECTION") return false;
+      }
+      return found.every((asset) => {
+        const tile = typeof asset.id === "string" ? fresh.get(asset.id) : undefined;
+        return available(tile) && tile.type === asset.type && (tile.Cc || null) === target;
       });
-    }
-    for (let i = 0; i < 20; i++) {
-      await delay(100);
-      const t = getMap()?.get(createdId);
-      if (t && !t.isPending && t.displayName === colName) break;
-    }
+    },
+  );
+  if (!after) {
+    return outcomeUnknown(store, "batch_move_to_collection", found.map((tile) => String(tile.id)), target);
   }
-  return createdId;
+  const collection = target === null ? undefined : summarize(after).find((item) => item.id === target);
+  return {
+    ok: true,
+    ...(target === null ? { removed: found.length } : { moved: found.length, collection }),
+    missing,
+    confirmed: true,
+    method: "batch_move_to_collection",
+  };
+}
+
+/** Runs a read or a verified mutation for the pinned project and document. */
+export async function collectionOps(
+  projectId: string,
+  session: string,
+  request: CollectionRequest,
+): Promise<unknown> {
+  const store = collectionStore(projectId, session);
+  let tiles = store && readCollectionStore(store);
+  if (!store || !tiles) return { ok: false, error: "collection_project_changed" };
+  if (projectsToRefresh.has(projectId) && request.action !== "delete") {
+    if (mutationPending) return { ok: false, error: "collection_mutation_pending" };
+    tiles = await refreshAfterUnknown(store);
+    if (!tiles) return { ok: false, error: "collection_refresh_failed", project_id: projectId };
+  }
+  switch (request.action) {
+    case "list":
+      return { ok: true, collections: summarize(tiles) };
+    case "assets":
+      return { ok: true, assets: readStoreTiles(tiles).assets, collections: summarize(tiles) };
+    case "inspect":
+      return { ok: true, collection: tiles.get(request.id)?.type === "COLLECTION" };
+    case "check_assets":
+      return request.ids.some((id) => movable(tiles.get(id)))
+        ? { ok: true }
+        : { ok: false, error: "no_matching_assets", missing: request.ids };
+    case "delete":
+      // The known dispatcher moves members and deletes the collection in separate requests.
+      return { ok: false, error: "collection_delete_unavailable", id: request.id, build: readBuildLabel() };
+  }
+  if (!supportsCollectionWrites(store)) {
+    return { ok: false, error: "unsupported_front_end", build: readBuildLabel() };
+  }
+  if (mutationPending) return { ok: false, error: "collection_mutation_pending" };
+
+  switch (request.action) {
+    case "create":
+      return create(store, request.id, request.name);
+    case "rename": {
+      const tile = tiles.get(request.id);
+      if (!available(tile) || tile.type !== "COLLECTION") {
+        return { ok: false, error: "collection_not_found", id: request.id };
+      }
+      const after = tile.displayName === request.name ? tiles : await rename(store, request.id, request.name);
+      return after
+        ? { ok: true, method: "mutation", collections: summarize(after) }
+        : outcomeUnknown(store, "rename_collection", [request.id]);
+    }
+    case "move":
+      return move(store, tiles, request.ids, request.target);
+  }
 }

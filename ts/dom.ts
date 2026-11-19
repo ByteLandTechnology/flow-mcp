@@ -116,12 +116,18 @@ export function collectionIdOf(
   isCollectionId: (id: string) => boolean,
 ): string | null {
   if (!t || typeof t !== "object") return null;
+  if (typeof t.Cc === "string" && isCollectionId(t.Cc)) return t.Cc;
   if (t.Fc) return String(t.Fc);
   for (const [k, v] of ownEntries(t)) {
     if (k === "id" || typeof v !== "string" || v === "") continue;
     if (isCollectionId(v)) return v;
   }
   return null;
+}
+
+/** Returns true when the project store marks the tile as trashed. */
+export function isTrashedTile(t: FlowTile): boolean {
+  return t.trashed === true || t.isTrashed === true || t.yb === true || t.Ab === true;
 }
 
 /** Returns the look map of character tile `t`, or null. It accepts the old `oi` field, or any other `Map` field whose entries hold a `primaryMediaId` or a `history`, because the key name changes with each front-end build. */
