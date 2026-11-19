@@ -121,23 +121,34 @@ async function locateTile(id: string): Promise<Record<string, unknown>> {
   return locateContainer(() => findContainers(mediaIds));
 }
 
-/** Finds the folder tile of the collection `name` in the main grid and returns its item count. The text of a folder tile is the name, an icon word, and the item count. */
+/** Returns the text lines of a grid tile, without empty lines. */
+function tileLines(el: HTMLElement): string[] {
+  return (el.innerText || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+/** Finds the folder tile of the collection `name` in the main grid and returns its item count. The first text line of a folder tile is the name. A folder tile with items also shows an icon word and the item count, and an empty one shows no count. */
 async function locateCollectionTile(name: string): Promise<Record<string, unknown>> {
-  const want = name.trim().replace(/\s+/g, " ");
+  const want = name.trim();
   if (!want) return { ok: false, error: "collection_name_empty" };
   const find = (): HTMLElement[] =>
-    Array.from(document.querySelectorAll<HTMLElement>("flow-grid-tile-container")).filter((el) => {
-      const text = (el.innerText || "").trim().replace(/\s+/g, " ");
-      return text.startsWith(`${want} `) && /^\S+ \d+$/.test(text.slice(want.length + 1));
-    });
+    Array.from(document.querySelectorAll<HTMLElement>("flow-grid-tile-container")).filter(
+      (el) => tileLines(el)[0] === want,
+    );
   const loc = await locateContainer(find);
   if (loc.ok !== true) return loc;
   // Read the item count from the tile again, after the last scroll.
   const tiles = find();
   if (tiles.length !== 1) return { ok: false, error: "tile_ambiguous" };
-  const text = (tiles[0].innerText || "").trim().replace(/\s+/g, " ");
-  const count = Number(/(\d+)$/.exec(text)?.[1]);
-  return Number.isFinite(count) ? { ...loc, count } : { ok: false, error: "collection_count_unknown" };
+  const counts = tileLines(tiles[0])
+    .slice(1)
+    .flatMap((line) => line.split(/\s+/))
+    .filter((word) => /^\d+$/.test(word))
+    .map(Number);
+  if (counts.length > 1) return { ok: false, error: "collection_count_unknown" };
+  return { ...loc, count: counts[0] ?? 0 };
 }
 
 /** Returns `present`, `trashed`, or `gone` for the store tile `id`, with its name and its collection ID while it is present. */
