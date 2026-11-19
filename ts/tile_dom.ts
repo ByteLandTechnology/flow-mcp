@@ -56,6 +56,31 @@ function centerOf(el: Element): ViewportPoint {
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 }
 
+/** Returns true when `el` scrolls its content on the vertical axis. */
+function scrollsVertically(el: HTMLElement): boolean {
+  if (el.scrollHeight <= el.clientHeight + 10) return false;
+  const overflow = getComputedStyle(el).overflowY;
+  return overflow === "auto" || overflow === "scroll";
+}
+
+/** Returns the element that scrolls the tile grid: the nearest scrolling ancestor of a rendered tile, or the largest scrolling element of the page. */
+function findScroller(): HTMLElement | null {
+  const tile = document.querySelector<HTMLElement>("flow-grid-tile-container");
+  for (let el = tile?.parentElement ?? null; el; el = el.parentElement) {
+    if (scrollsVertically(el)) return el;
+  }
+  let best: HTMLElement | null = null;
+  let bestArea = 0;
+  for (const el of Array.from(document.querySelectorAll<HTMLElement>("*"))) {
+    const area = el.clientWidth * el.clientHeight;
+    if (area > bestArea && scrollsVertically(el)) {
+      best = el;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
 /** Scrolls the virtual grid until the tile of `id` renders, and returns the tile and its "More options" button points. */
 async function locateTile(id: string): Promise<Record<string, unknown>> {
   const tileMap = runtimeState.store?.getTileMap?.();
@@ -67,9 +92,7 @@ async function locateTile(id: string): Promise<Record<string, unknown>> {
     return { ok: false, error: "tile_media_ambiguous" };
   }
   let container = findContainer(mediaIds);
-  const scroller = document.querySelector<HTMLElement>(
-    "cdk-virtual-scroll-viewport",
-  );
+  const scroller = findScroller();
   if (!container && scroller) {
     scroller.scrollTop = 0;
     await delay(250);
