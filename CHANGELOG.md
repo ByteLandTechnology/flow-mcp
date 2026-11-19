@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.4.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.3.0...v1.4.0) (2026-11-19)
+
+
+### Features
+
+* check front end compatibility by operation ([571e1c8](https://github.com/ByteLandTechnology/flow-mcp/commit/571e1c82849a5f1a1edf3cc8691f3bf32bfb99d5))
+* create, rename, and delete collections through the page ([4959a71](https://github.com/ByteLandTechnology/flow-mcp/commit/4959a71c245f682f4d0baf6f78c865f0d83b7490))
+* rename tiles and move them out of collections through the menu ([dc985fb](https://github.com/ByteLandTechnology/flow-mcp/commit/dc985fb7ebef5cf1838eb60c31fa8ba767bcf3a8))
+* use the project store for collections ([de64069](https://github.com/ByteLandTechnology/flow-mcp/commit/de64069613a3a4ebdaf42b223d72bf32f7433198))
+
+
+### Bug Fixes
+
+* **flow:** find the folder tile of an empty collection ([ffe11e4](https://github.com/ByteLandTechnology/flow-mcp/commit/ffe11e4f3aa51737d2946977676b73c9d3d7cd98))
+* **flow:** scroll the real grid scroller to find a tile ([39bb8d7](https://github.com/ByteLandTechnology/flow-mcp/commit/39bb8d7463030d43b849ffc54166a240bdfaa29d))
+* **flow:** send the mutation keys of the 2026-11-19 front end ([b23d9a8](https://github.com/ByteLandTechnology/flow-mcp/commit/b23d9a82d4968a2e7187ebec81d0cdfc5c7c6d5f))
+* **flow:** skip objects that only inherit from Map ([def893e](https://github.com/ByteLandTechnology/flow-mcp/commit/def893e2e7f9520f395de9a235c5573693944720))
+
 ## [1.3.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.2.1...v1.3.0) (2026-11-18)
 
 
