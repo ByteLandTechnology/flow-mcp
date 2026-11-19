@@ -121,6 +121,15 @@ async fn move_collection_tiles(
 
     let rpc_ok = wait_flow_mutation_rpc(&mut rx, Duration::from_millis(500)).await;
     let moved = res.get("moved").and_then(|v| v.as_u64()).unwrap_or(0);
+    let verified = res.get("verified").and_then(|v| v.as_u64()).unwrap_or(0);
+    if moved > 0 && verified < moved {
+        anyhow::bail!(
+            "Failed to {}: the store shows {} of {} assets in the target after the mutation; the front end may have renamed the payload fields",
+            op_label,
+            verified,
+            moved
+        );
+    }
     let missing = res.get("missing").cloned().unwrap_or_else(|| json!([]));
     let method = res.get("method").cloned().unwrap_or(Value::Null);
     Ok((moved, missing, rpc_ok, method))
@@ -157,7 +166,7 @@ async fn move_to_collection(
         .await
         .ok()
         .and_then(|items| items.into_iter().find(|c| c.id == col.id));
-    let confirmed = rpc_ok || refreshed_col.is_some();
+    let confirmed = rpc_ok;
     let updated_col = refreshed_col.unwrap_or(col);
     Ok(json!({
         "moved": moved,

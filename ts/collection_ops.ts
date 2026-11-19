@@ -3,7 +3,7 @@
 
 // Unified collection creation and tile assignment mutations via bound runtime state.
 
-import { delay } from "./dom";
+import { collectionIdOf, delay } from "./dom";
 import { runtimeState } from "./state";
 import type { FlowTile } from "./types";
 
@@ -36,16 +36,36 @@ export async function collectionOps(
     if (!helper?.mutate) {
       return { ok: false, moved: 0, missing: assetIds, error: "store_mutate_missing" };
     }
+    // Each front-end build renames the keys. Target: `rj`/`Gj`, then `Nj` (2026-11-16), then `Sj` (2026-11-19).
+    // Tiles: `Cb`/`Db`, then `Bb`. The front end ignores the keys that it does not know.
     await helper.mutate({
       type: "batch_move_to_collection",
+      Sj: targetId || undefined,
+      Bb: objs,
+      Nj: targetId || undefined,
       rj: targetId || undefined,
       Gj: targetId || undefined,
       Cb: objs,
       Db: objs,
     });
+    // The mutation resolves even when the front end ignores it. Read the store to see that each tile moved.
+    const want = targetId || null;
+    const isCollectionId = (v: string): boolean =>
+      String(getMap()?.get(v)?.type || "").toUpperCase() === "COLLECTION";
+    let verified = 0;
+    for (let i = 0; i < 30; i++) {
+      const m = getMap();
+      verified = objs.filter((o) => {
+        const cur = m instanceof Map ? m.get(String(o.id)) : null;
+        return (collectionIdOf(cur, isCollectionId) || null) === want;
+      }).length;
+      if (verified === objs.length) break;
+      await delay(100);
+    }
     return {
       ok: true,
       moved: objs.length,
+      verified,
       missing,
       method: "batch_move_to_collection",
     };

@@ -155,12 +155,13 @@ function mutateAsyncOf(
   return null;
 }
 
-/** Copies the tile change of a `single_tile` mutation from `Ve` to `We`, the key of the newer front end. */
+/** Copies the tile change of a `single_tile` mutation from `Ve` to `We` and `df`, the keys of the newer front ends. */
 function withTileChangeAlias(
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (payload?.type === "single_tile" && payload.Ve && !payload.We) {
-    return { ...payload, We: payload.Ve };
+  // Each front-end build renames the tile-change key: `Ve`, then `We`, then `df` (2026-11-19).
+  if (payload?.type === "single_tile" && payload.Ve) {
+    return { ...payload, We: payload.We ?? payload.Ve, df: payload.df ?? payload.Ve };
   }
   return payload;
 }

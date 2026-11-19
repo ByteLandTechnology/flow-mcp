@@ -142,12 +142,13 @@ export async function assetOps(
   const tileId = String(tile.id ?? id);
   return tryShapes([
     {
-      // The 2026-11-15 front end trashes tiles in a batch with `Bv` entries.
+      // The 2026-11-15 front end trashes tiles in a batch with `Bv` entries. The 2026-11-19 front end uses `Kv` entries.
       method: "batch_set_tiles_trashed:Bv",
       payload: {
         type: "batch_set_tiles_trashed",
         jc: new Date(),
         Bv: [{ Oa: tile, Ab: true, um: { mode: "root" } }],
+        Kv: [{ Oa: tile, Ab: true, Dm: { mode: "root" } }],
       },
     },
     {
