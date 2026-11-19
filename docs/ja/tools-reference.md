@@ -314,6 +314,8 @@ Flow Angular `lService` スナップショットから読み取ったプロジ�
 | :--- | :--- | :--- | :--- |
 | `items` | `object[]` | はい | `{"id": "...", "name": "..."}` エントリの空でない配列。 |
 
+ページに表示されている画像または動画のタイルでは、`flow-mcp` はまずタイルメニューの **Rename** 項目を使い、ページのリネーム用コントロールに新しい名前を入力します。それ以外の場合は store mutation を送信します。結果の `items` の各エントリには `method`（`menu:rename` または `mutation`）が含まれます。
+
 ### `flow_collections`
 
 プロジェクトコレクションの一覧表示、作成、名前変更、追加、除外、または削除を行います。
@@ -326,6 +328,8 @@ Flow Angular `lService` スナップショットから読み取ったプロジ�
 | `to` | `string` | いいえ | `"rename"` 用の新しいコレクション名。 |
 | `collection` | `string` | いいえ | `"add"` または `"delete"` 用の対象コレクション ID または名前（`"add"` は存在しない場合に作成します）。 |
 | `ids` | `string[]` | いいえ | コレクションへ移動（`"add"`）または除外（`"remove"`）する正確なアセットまたはキャラクター ID。 |
+
+`"remove"` では、`flow-mcp` はまずタイルメニューの **Move out of collection** 項目を使います。ページに表示されていないタイルには store mutation を送信します。`"add"` では store mutation を送信してからプロジェクト store を読み取り、対象コレクションにないタイルがあればエラーを返します。
 
 ### `flow_download`
 

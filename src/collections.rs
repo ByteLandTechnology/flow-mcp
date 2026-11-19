@@ -12,6 +12,7 @@ use tokio::time::Duration;
 use crate::assets::{RenameEntry, invoke_trash_tile, rename_assets};
 use crate::engine::ChromeEngine;
 use crate::project::{ensure_flow_store, read_snapshot, wait_flow_mutation_rpc};
+use crate::tile_menu::{move_out_through_menu, tile_state};
 
 /// Collection summary in the active Flow project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,15 +178,42 @@ async fn move_to_collection(
     }))
 }
 
-/// Removes `ids` from their parent collections (`rj: undefined`).
+/// Removes `ids` from their parent collections.
+///
+/// Uses the "Move out of collection" item of the tile menu first. For each tile that the page does not show, sends the store mutation.
 async fn remove_from_collection(engine: &ChromeEngine, ids: Vec<String>) -> Result<Value> {
+    ensure_flow_store(engine).await?;
+    let mut by_menu: u64 = 0;
+    let mut rest = Vec::new();
+    for id in ids {
+        let state = tile_state(engine, &id).await;
+        if state.is_present() && state.collection.is_none() {
+            // No collection holds this tile.
+            by_menu += 1;
+            continue;
+        }
+        if state.is_present() && matches!(move_out_through_menu(engine, &id).await, Ok(true)) {
+            by_menu += 1;
+        } else {
+            rest.push(id);
+        }
+    }
+    if rest.is_empty() {
+        return Ok(json!({
+            "removed": by_menu,
+            "missing": [],
+            "confirmed": true,
+            "method": "menu:move_out_of_collection",
+        }));
+    }
     let (removed, missing, _rpc_ok, method) =
-        move_collection_tiles(engine, None, ids, "remove from collection").await?;
+        move_collection_tiles(engine, None, rest, "remove from collection").await?;
     Ok(json!({
-        "removed": removed,
+        "removed": by_menu + removed,
         "missing": missing,
         "confirmed": true,
         "method": method,
+        "removed_through_menu": by_menu,
     }))
 }
 

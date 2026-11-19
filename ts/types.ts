@@ -677,7 +677,7 @@ export interface LocatePointRequest {
 
 /** Request for `tileDomOp`. */
 export interface TileDomOpRequest {
-  /** `locate`, `state`, or `dismiss`. */
+  /** `locate`, `state`, `rename_select`, `rename_value`, or `dismiss`. */
   action: string;
   /** Store tile ID for `locate` and `state`. */
   id?: string;

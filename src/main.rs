@@ -25,6 +25,7 @@ mod project;
 mod queue;
 mod scenes;
 mod service;
+mod tile_menu;
 mod upload;
 mod voices;
 

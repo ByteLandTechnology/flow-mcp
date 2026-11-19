@@ -17,6 +17,7 @@ use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
 use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
+use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu, wait_trashed};
 
 /// Media asset or scene item inside a Google Flow project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,7 +327,7 @@ fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
     })
 }
 
-/// Renames items through `lService` and confirms by RPC status or updated snapshot state.
+/// Renames items through the rename control of the page, or through `lService` when the page does not show the tile, and confirms by store state or RPC status.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
     ensure_flow_store(engine).await?;
     let total = items.len();
@@ -334,6 +335,19 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
     let mut failed = Vec::new();
 
     'items: for (idx, entry) in items.into_iter().enumerate() {
+        // Use the rename control of the page first. The page then builds its own mutation.
+        if tile_state(engine, &entry.id).await.is_present()
+            && matches!(
+                rename_through_menu(engine, &entry.id, &entry.name).await,
+                Ok(true)
+            )
+        {
+            renamed.push(json!({ "id": entry.id, "name": entry.name, "method": "menu:rename" }));
+            if idx + 1 < total {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            continue 'items;
+        }
         let mut ok = false;
         for attempt in 0..2 {
             // Subscribe before calling rename so the listener catches store RPC responses.
@@ -394,7 +408,7 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
             }
         }
         if ok {
-            renamed.push(json!({ "id": entry.id, "name": entry.name }));
+            renamed.push(json!({ "id": entry.id, "name": entry.name, "method": "mutation" }));
         } else {
             failed.push(json!({
                 "id": entry.id,
@@ -445,91 +459,12 @@ fn trash_error_message(res: &Value) -> String {
     msg
 }
 
-/// Menu item text that moves a tile to trash.
-const TRASH_MENU_ITEM: &str = "Move to trash";
-
-/// Returns the store state of tile `id`: `present`, `trashed`, or `gone`. Returns `None` when the store is not readable.
-async fn tile_state(engine: &ChromeEngine, id: &str) -> Option<String> {
-    let res = engine
-        .call_flow_async("tileDomOp", json!([{ "action": "state", "id": id }]))
-        .await
-        .ok()?;
-    res.get("state")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
-/// Returns true when the store shows tile `id` as trashed or removed within `tries` polls of 250 ms.
-async fn wait_trashed(engine: &ChromeEngine, id: &str, tries: u32) -> bool {
-    for _ in 0..tries {
-        let state = tile_state(engine, id).await;
-        if matches!(state.as_deref(), Some("trashed" | "gone")) {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    false
-}
-
-/// Moves a media tile to trash through its "More options" menu, and returns true when the store confirms it.
-///
-/// Returns false when the page does not show the tile, the menu, or the menu item, so that the caller can use the store mutation.
-async fn trash_through_menu(engine: &ChromeEngine, id: &str) -> Result<bool> {
-    let loc = engine
-        .call_flow_async("tileDomOp", json!([{ "action": "locate", "id": id }]))
-        .await?;
-    if loc.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        return Ok(false);
-    }
-    let (Some(tile), Some(menu)) = (loc.get("tile"), loc.get("menu")) else {
-        return Ok(false);
-    };
-    if let (Some(x), Some(y)) = (
-        tile.get("x").and_then(|v| v.as_f64()),
-        tile.get("y").and_then(|v| v.as_f64()),
-    ) {
-        engine.mouse_move(x, y).await?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
-    if !engine.click_point(menu).await? {
-        return Ok(false);
-    }
-    let mut clicked = false;
-    for _ in 0..15 {
-        let point = engine
-            .call_flow_js(
-                "locatePoint",
-                json!([{ "by": "menuitem", "name": TRASH_MENU_ITEM }]),
-            )
-            .await?;
-        if engine.click_point(&point).await? {
-            clicked = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    if !clicked {
-        let _ = engine
-            .call_flow_async("tileDomOp", json!([{ "action": "dismiss" }]))
-            .await;
-        return Ok(false);
-    }
-    if wait_trashed(engine, id, 40).await {
-        return Ok(true);
-    }
-    // The page can show a dialog after the click. Close it before the caller sends the store mutation.
-    let _ = engine
-        .call_flow_async("tileDomOp", json!([{ "action": "dismiss" }]))
-        .await;
-    Ok(false)
-}
-
 /// Moves a tile or collection into Google Flow trash and returns the method and whether the store confirms it.
 ///
 /// Uses the tile menu of the page first. If the page does not show the tile or its menu, sends the store mutation.
 /// `confirmed` is null when the tile map did not show the item as present before the operation, for example for a scene clip.
 pub(crate) async fn invoke_trash_tile(engine: &ChromeEngine, id: &str) -> Result<Value> {
-    let confirmable = tile_state(engine, id).await.as_deref() == Some("present");
+    let confirmable = tile_state(engine, id).await.is_present();
     let menu_error = if confirmable {
         match trash_through_menu(engine, id).await {
             Ok(true) => {

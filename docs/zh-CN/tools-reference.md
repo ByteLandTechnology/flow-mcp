@@ -314,6 +314,8 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `items` | `object[]` | 是 | 非空的 `{"id": "...", "name": "..."}` 对象数组。 |
 
+对于页面上显示的图像或视频 tile，`flow-mcp` 先使用 tile 菜单的 **Rename** 项，并在页面的重命名控件中输入新名称。其他情况下发送 store mutation。结果中 `items` 的每一项都带有 `method`：`menu:rename` 或 `mutation`。
+
 ### `flow_collections`
 
 列出、创建、重命名、填充、移出项目或删除项目集合。
@@ -326,6 +328,8 @@ flow-mcp [OPTIONS] <COMMAND>
 | `to` | `string` | 否 | 用于 `"rename"` 的新集合名称。 |
 | `collection` | `string` | 否 | 用于 `"add"` 或 `"delete"` 的目标集合 ID 或名称（`"add"` 会创建缺失集合）。 |
 | `ids` | `string[]` | 否 | 要移入（`"add"`）或移出（`"remove"`）集合的精确资产或角色 ID。 |
+
+对于 `"remove"`，`flow-mcp` 先使用 tile 菜单的 **Move out of collection** 项。页面上没有显示的 tile 则发送 store mutation。对于 `"add"`，`flow-mcp` 发送 store mutation，再读取项目 store；如果有 tile 不在目标集合中，则返回错误。
 
 ### `flow_download`
 

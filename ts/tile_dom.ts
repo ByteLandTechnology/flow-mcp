@@ -1,9 +1,9 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-// Locate project tiles in the page by media ID, and read their trash state from the bound store.
+// Locate project tiles in the page by media ID, read their state from the bound store, and use the rename control of the page.
 
-import { delay, dismissOverlay, legacyTile } from "./dom";
+import { collectionIdOf, delay, dismissOverlay, legacyTile } from "./dom";
 import { runtimeState } from "./state";
 import type { FlowTile, TileDomOpRequest, ViewportPoint } from "./types";
 
@@ -97,7 +97,7 @@ async function locateTile(id: string): Promise<Record<string, unknown>> {
   };
 }
 
-/** Returns `present`, `trashed`, or `gone` for the store tile `id`. */
+/** Returns `present`, `trashed`, or `gone` for the store tile `id`, with its name and its collection ID while it is present. */
 function tileState(id: string): Record<string, unknown> {
   const tileMap = runtimeState.store?.getTileMap?.();
   if (!(tileMap instanceof Map)) return { ok: false, error: "store_not_bound" };
@@ -105,15 +105,67 @@ function tileState(id: string): Record<string, unknown> {
   if (!t) return { ok: true, state: "gone" };
   const trashed =
     t.trashed === true || t.isTrashed === true || t.yb === true || t.Ab === true;
-  return { ok: true, state: trashed ? "trashed" : "present" };
+  const isCollectionId = (v: string): boolean =>
+    String(tileMap.get(v)?.type || "").toUpperCase() === "COLLECTION";
+  return {
+    ok: true,
+    state: trashed ? "trashed" : "present",
+    name: String(t.displayName ?? ""),
+    collection: collectionIdOf(t, isCollectionId),
+  };
 }
 
-/** Runs one tile action: `locate` finds the tile in the page, `state` reads its trash state, and `dismiss` closes an open menu. */
+/** Returns the text control of the open "Rename tile" overlay, or null. */
+function renameControl(): HTMLElement | null {
+  const host = Array.from(
+    document.querySelectorAll<HTMLElement>('[aria-label="Rename tile"]'),
+  ).find((e) => e.getClientRects().length > 0);
+  if (!host) return null;
+  if (host instanceof HTMLInputElement || host instanceof HTMLTextAreaElement) return host;
+  return (
+    host.querySelector<HTMLElement>('input, textarea, [contenteditable="true"]') ??
+    (host.isContentEditable ? host : null)
+  );
+}
+
+/** Returns the text of the rename control `el`. */
+function renameText(el: HTMLElement): string {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
+  return (el.innerText || "").trim();
+}
+
+/** Focuses the open "Rename tile" control and selects its text, so that typed text replaces the old name. */
+function selectRenameText(): Record<string, unknown> {
+  const el = renameControl();
+  if (!el) return { ok: false, error: "rename_control_not_found" };
+  el.focus();
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    el.select();
+  } else {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+  return { ok: true, focused: document.activeElement === el, value: renameText(el) };
+}
+
+/** Returns the text of the open "Rename tile" control. */
+function readRenameText(): Record<string, unknown> {
+  const el = renameControl();
+  if (!el) return { ok: false, error: "rename_control_not_found" };
+  return { ok: true, value: renameText(el) };
+}
+
+/** Runs one tile action: `locate` finds the tile in the page, `state` reads its store state, `rename_select` and `rename_value` use the open rename control, and `dismiss` closes an open menu. */
 export async function tileDomOp(req: TileDomOpRequest): Promise<unknown> {
   const action = String(req?.action || "");
   const id = String(req?.id || "");
   if (action === "locate") return locateTile(id);
   if (action === "state") return tileState(id);
+  if (action === "rename_select") return selectRenameText();
+  if (action === "rename_value") return readRenameText();
   if (action === "dismiss") {
     await dismissOverlay();
     return { ok: true };

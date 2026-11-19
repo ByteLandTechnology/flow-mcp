@@ -314,6 +314,8 @@ Rename assets, characters, scenes, or collections in batches and confirm through
 | :--- | :--- | :--- | :--- |
 | `items` | `object[]` | Yes | Non-empty array of `{"id": "...", "name": "..."}` entries. |
 
+For an image or video tile that the page shows, `flow-mcp` first uses the **Rename** item of the tile menu and types the new name into the rename control of the page. In all other cases it sends the store mutation. Each entry of `items` in the result has `method`: `menu:rename` or `mutation`.
+
 ### `flow_collections`
 
 List, create, rename, populate, remove items from, or delete project collections.
@@ -326,6 +328,8 @@ List, create, rename, populate, remove items from, or delete project collections
 | `to` | `string` | No | New collection name for `"rename"`. |
 | `collection` | `string` | No | Target collection ID or name for `"add"` or `"delete"` (`"add"` creates missing collections). |
 | `ids` | `string[]` | No | Exact asset or character IDs to move into (`"add"`) or out of (`"remove"`) a collection. |
+
+For `"remove"`, `flow-mcp` first uses the **Move out of collection** item of the tile menu. For each tile that the page does not show, it sends the store mutation. For `"add"`, it sends the store mutation, reads the project store, and returns an error if a tile is not in the target collection.
 
 ### `flow_download`
 
