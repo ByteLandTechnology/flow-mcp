@@ -4,11 +4,7 @@
 // Bind and read the collection store through JavaScript objects.
 
 import { isNgLViewMap, readOwn } from "./angular";
-import { readBuildLabel } from "./probe";
-import type { FlowTile } from "./types";
-
-/** Flow build with the verified project query and collection mutation fields. */
-const COLLECTION_WRITE_BUILD = "boq_labs-ai-sandbox-frontend_20261117.10_p0";
+import type { FlowTile, StoreProbeCheck } from "./types";
 
 /** Project tile rows in the Flow query cache. */
 interface ProjectTileData {
@@ -167,11 +163,18 @@ export function bindCollectionStore(maps: unknown[], projectId: string): ReturnT
     : collectionStoreStatus(projectId);
 }
 
-/** Returns true when the build exposes the verified collection dispatcher and query. */
-export function supportsCollectionWrites(store: CollectionStore): boolean {
-  return readBuildLabel() === COLLECTION_WRITE_BUILD &&
-    typeof store.service.na.VI === "function" &&
-    typeof projectQuery(store)?.fetch === "function";
+/** Checks the bound collection store, dispatcher, and project query. */
+export function collectionWriteChecks(): StoreProbeCheck[] {
+  const store = boundStore && isCurrent(boundStore) ? boundStore : null;
+  const query = store && projectQuery(store);
+  const ready = Boolean(query && query.state.status !== "pending" && tileMap(query.state.data));
+  const dispatcher = typeof store?.service.na.VI === "function";
+  const refetch = typeof query?.fetch === "function";
+  return [
+    { name: "collection_store", ok: ready, detail: ready ? "ready" : "not ready for the active project" },
+    { name: "collection_dispatcher", ok: dispatcher, detail: dispatcher ? "present" : "missing" },
+    { name: "collection_refetch", ok: refetch, detail: refetch ? "present" : "missing" },
+  ];
 }
 
 /** Sends one mutation to the server with the bound project ID. */

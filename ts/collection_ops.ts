@@ -8,11 +8,11 @@ import {
   readCollectionStore,
   refreshCollectionStore,
   submitCollectionMutation,
-  supportsCollectionWrites,
 } from "./collection_store";
 import type { CollectionStore } from "./collection_store";
 import { delay, isTrashedTile } from "./dom";
-import { readBuildLabel } from "./probe";
+import { collectionWriteCompatibility, readBuildLabel } from "./frontend_compatibility";
+import type { CollectionWriteFormat } from "./frontend_compatibility";
 import { readStoreTiles } from "./read_store_snapshot";
 import type { FlowTile, SnapshotCollectionItem } from "./types";
 
@@ -25,6 +25,14 @@ export type CollectionRequest =
   | { action: "rename"; id: string; name: string }
   | { action: "move"; target: string | null; ids: string[] }
   | { action: "delete"; id: string };
+
+/** Project and request format for a verified collection write. */
+interface CollectionWriter {
+  /** Store bound to the active project. */
+  store: CollectionStore;
+  /** Format for the active build. */
+  format: CollectionWriteFormat;
+}
 
 /** Time limit for one submission and its confirmation. */
 const MUTATION_TIMEOUT_MS = 10_000;
@@ -145,14 +153,18 @@ function outcomeUnknown(
 
 /** Renames a collection by exact ID and confirms its name. */
 async function rename(
-  store: CollectionStore,
+  { store, format }: CollectionWriter,
   id: string,
   name: string,
 ): Promise<Map<string, FlowTile> | null> {
   if (!readCollectionStore(store)) return null;
   return mutateAndVerify(
     store,
-    { type: "single_tile", Uc: id, df: { type: "set_display_name", displayName: name } },
+    {
+      type: "single_tile",
+      [format.tileId]: id,
+      [format.tileChange]: { type: "set_display_name", displayName: name },
+    },
     (tiles) => {
       const tile = tiles.get(id);
       return available(tile) && tile.type === "COLLECTION" && tile.displayName === name;
@@ -161,22 +173,22 @@ async function rename(
 }
 
 /** Creates a collection with the request ID and sets its display name. */
-async function create(store: CollectionStore, id: string, name: string): Promise<unknown> {
+async function create(writer: CollectionWriter, id: string, name: string): Promise<unknown> {
   // This build sets the server-side name to "Untitled collection" on creation.
-  const created = await mutateAndVerify(store, { type: "create_collection", id }, (tiles) => {
+  const created = await mutateAndVerify(writer.store, { type: "create_collection", id }, (tiles) => {
     const tile = tiles.get(id);
     return available(tile) && tile.type === "COLLECTION" && !tile.Cc;
   });
-  if (!created) return outcomeUnknown(store, "create_collection", [id]);
+  if (!created) return outcomeUnknown(writer.store, "create_collection", [id]);
 
-  const named = created.get(id)?.displayName === name ? created : await rename(store, id, name);
-  if (!named) return outcomeUnknown(store, "name_created_collection", [id]);
+  const named = created.get(id)?.displayName === name ? created : await rename(writer, id, name);
+  if (!named) return outcomeUnknown(writer.store, "name_created_collection", [id]);
   return { ok: true, created: true, id, method: "mutation", collections: summarize(named) };
 }
 
 /** Moves the requested tiles and confirms that each one is present in the target. */
 async function move(
-  store: CollectionStore,
+  { store, format }: CollectionWriter,
   tiles: Map<string, FlowTile>,
   ids: string[],
   target: string | null,
@@ -197,7 +209,7 @@ async function move(
   const moving = found.filter((tile) => (tile.Cc || null) !== target);
   const after = moving.length === 0 ? tiles : await mutateAndVerify(
     store,
-    { type: "batch_move_to_collection", Sj: target ?? undefined, Bb: moving },
+    { type: "batch_move_to_collection", [format.moveTarget]: target ?? undefined, [format.moveTiles]: moving },
     (fresh) => {
       if (target !== null) {
         const collection = fresh.get(target);
@@ -251,25 +263,25 @@ export async function collectionOps(
       // The known dispatcher moves members and deletes the collection in separate requests.
       return { ok: false, error: "collection_delete_unavailable", id: request.id, build: readBuildLabel() };
   }
-  if (!supportsCollectionWrites(store)) {
-    return { ok: false, error: "unsupported_front_end", build: readBuildLabel() };
-  }
+  const support = collectionWriteCompatibility();
+  if (!support.ok) return support;
   if (mutationPending) return { ok: false, error: "collection_mutation_pending" };
+  const writer = { store, format: support.format };
 
   switch (request.action) {
     case "create":
-      return create(store, request.id, request.name);
+      return create(writer, request.id, request.name);
     case "rename": {
       const tile = tiles.get(request.id);
       if (!available(tile) || tile.type !== "COLLECTION") {
         return { ok: false, error: "collection_not_found", id: request.id };
       }
-      const after = tile.displayName === request.name ? tiles : await rename(store, request.id, request.name);
+      const after = tile.displayName === request.name ? tiles : await rename(writer, request.id, request.name);
       return after
         ? { ok: true, method: "mutation", collections: summarize(after) }
         : outcomeUnknown(store, "rename_collection", [request.id]);
     }
     case "move":
-      return move(store, tiles, request.ids, request.target);
+      return move(writer, tiles, request.ids, request.target);
   }
 }

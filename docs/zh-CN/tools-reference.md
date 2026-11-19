@@ -90,7 +90,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 返回 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`。不会自动打开或创建项目。
 
-当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。
+当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。 `operations` 报告当前构建和 store 是否支持 `collection_write` 与 `asset_trash_store`，每项均包含 `ok` 和 `failed_checks`。
 
 ### `flow_login`
 
@@ -369,4 +369,4 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | 是 | 匹配资产或集合 ID、名称或提示词的忽略大小写子串。 |
 
-`flow-mcp` 先在页面的 tile 菜单里点击 **Move to trash**。如果页面没有显示该 tile 或其菜单，则改为发送 store mutation。返回结果包含 `method` 和 `confirmed`。当项目 store 显示该项已进回收站或已移除时，`confirmed` 为 `true`。如果操作前 store 的 tile map 中没有该项（例如场景片段），`confirmed` 为 `null`。 对于集合，该工具使用与 `flow_collections` 相同的删除检查，返回 `collection_delete_unavailable`。
+`flow-mcp` 先在页面的 tile 菜单里点击 **Move to trash**。如果页面没有显示该 tile 或其菜单，工具会在回收请求格式已验证的构建上通过 store 回收。构建或 store 检查失败时，工具返回 `unsupported_front_end`。返回结果包含 `method` 和 `confirmed`。当项目 store 显示该项已进回收站或已移除时，`confirmed` 为 `true`。如果操作前 store 的 tile map 中没有该项（例如场景片段），`confirmed` 为 `null`。 对于集合，该工具使用与 `flow_collections` 相同的删除检查，返回 `collection_delete_unavailable`。

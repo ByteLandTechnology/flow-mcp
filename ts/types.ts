@@ -703,6 +703,8 @@ export interface StoreProbeResult {
   ok: boolean;
   /** Individual checks in run order. */
   checks: StoreProbeCheck[];
+  /** Compatibility of each managed internal operation. */
+  operations: Record<string, { ok: boolean; failed_checks: StoreProbeCheck[] }>;
 }
 
 /** Public browser runtime API exposed at `window.__flowMcp`. */

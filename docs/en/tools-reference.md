@@ -90,7 +90,7 @@ Check Google Flow authentication state, active project, `JobQueue`, SQLite index
 
 Returns `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`. Does not open or create projects.
 
-When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project.
+When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project. The `operations` field reports whether `collection_write` and `asset_trash_store` can run with the active build and store. Each operation has `ok` and `failed_checks`.
 
 ### `flow_login`
 
@@ -369,4 +369,4 @@ Move a matching asset, character, scene, or collection to trash in Google Flow.
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | Yes | Case-insensitive asset or collection ID, name, or prompt substring. |
 
-`flow-mcp` first clicks **Move to trash** in the tile menu of the page. If the page does not show the tile or its menu, `flow-mcp` sends the store mutation. The result has `method` and `confirmed`. `confirmed` is `true` when the project store shows the item as trashed or removed. `confirmed` is `null` when the tile map of the store did not contain the item before the operation, for example a scene clip. For collections, the tool uses the same deletion check as `flow_collections` and returns `collection_delete_unavailable`.
+`flow-mcp` first clicks **Move to trash** in the tile menu of the page. If the page does not show the tile or its menu, `flow-mcp` uses the store for builds with a verified trash request format. It returns `unsupported_front_end` when the build or store checks fail. The result has `method` and `confirmed`. `confirmed` is `true` when the project store shows the item as trashed or removed. `confirmed` is `null` when the tile map of the store did not contain the item before the operation, for example a scene clip. For collections, the tool uses the same deletion check as `flow_collections` and returns `collection_delete_unavailable`.

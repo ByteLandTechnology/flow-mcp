@@ -3,9 +3,28 @@
 
 // Asset rename and trash mutations through the bound store.
 
-import { destructiveGate, readBuildLabel } from "./probe";
+import { readOwn } from "./angular";
+import { assetTrashCompatibility, readBuildLabel } from "./frontend_compatibility";
 import { runtimeState } from "./state";
-import type { AssetRenameExtra } from "./types";
+import type { AssetTrashFormat } from "./frontend_compatibility";
+import type { AssetRenameExtra, FlowTile } from "./types";
+
+/** Returns true when a scene tile contains the given workflow. */
+function isSceneClip(tiles: Iterable<FlowTile>, id: string, format: AssetTrashFormat): boolean {
+  for (const scene of tiles) {
+    if (String(scene?.type ?? "").toUpperCase() !== "SCENE") continue;
+    const clips = readOwn(scene, format.sceneClips) ?? scene.Oc;
+    if (Array.isArray(clips) && clips.some((clip) => String(readOwn(clip, "workflowId") ?? "") === id)) {
+      return true;
+    }
+    const history = readOwn(scene, format.sceneHistory) ?? scene.Yf;
+    if (history instanceof Map ? history.has(id) :
+        history && Object.prototype.hasOwnProperty.call(history, id)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** Renames or moves an asset, character, or scene tile to trash. */
 export async function assetOps(
@@ -63,94 +82,36 @@ export async function assetOps(
     return { ok: false, error: "store_mutate_missing" };
   }
 
-  const gate = destructiveGate();
-  if (gate) return gate;
+  const support = assetTrashCompatibility(tileMap);
+  if (!support.ok) return support;
+  const { format } = support;
 
-  const mutate = (payload: Record<string, unknown>): Promise<unknown> =>
-    helper.mutate(payload);
-  /** Tries each mutation shape in order and reports every rejection when all fail. */
-  const tryShapes = async (
-    shapes: { method: string; payload: Record<string, unknown> }[],
-  ): Promise<unknown> => {
-    const attempts: { method: string; error: string }[] = [];
-    for (const shape of shapes) {
-      try {
-        await mutate(shape.payload);
-        return { ok: true, method: shape.method };
-      } catch (e) {
-        attempts.push({
-          method: shape.method,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
-    return {
-      ok: false,
-      error: "mutation_rejected_all_shapes",
-      build: readBuildLabel(),
-      attempts,
+  let method: string;
+  let payload: Record<string, unknown>;
+  if (tile) {
+    method = `batch_set_tiles_trashed:${format.entries}`;
+    payload = {
+      type: "batch_set_tiles_trashed",
+      jc: new Date(),
+      [format.entries]: [{ Oa: tile, Ab: true, [format.destination]: { mode: "root" } }],
     };
-  };
-  if (!tile) {
-    let inSceneClip = false;
-    for (const st of tileMap.values()) {
-      if (!st || String(st.type || "").toUpperCase() !== "SCENE") continue;
-      const inOc =
-        Array.isArray(st.Oc) &&
-        st.Oc.some((clip) => clip && String(clip.workflowId || "") === id);
-      const inYf =
-        st.Yf instanceof Map
-          ? st.Yf.has(id)
-          : Boolean(
-              st.Yf &&
-                typeof st.Yf === "object" &&
-                Object.prototype.hasOwnProperty.call(st.Yf, id),
-            );
-      if (inOc || inYf) {
-        inSceneClip = true;
-        break;
-      }
+  } else {
+    if (!isSceneClip(tileMap.values(), id, format)) {
+      return { ok: false, error: "asset_not_found" };
     }
-    if (inSceneClip) {
-      return tryShapes([
-        {
-          method: "batch_delete_tiles:scene_clip",
-          payload: { type: "batch_delete_tiles", rg: [id], fg: [id] },
-        },
-      ]);
-    }
-    return { ok: false, error: "asset_not_found" };
+    method = "batch_delete_tiles:scene_clip";
+    payload = { type: "batch_delete_tiles", [format.sceneWorkflows]: [id] };
   }
 
-  const tileId = String(tile.id ?? id);
-  return tryShapes([
-    {
-      // The 2026-11-15 front end trashes tiles in a batch with `Bv` entries. The 2026-11-19 front end uses `Kv` entries.
-      method: "batch_set_tiles_trashed:Bv",
-      payload: {
-        type: "batch_set_tiles_trashed",
-        jc: new Date(),
-        Bv: [{ Oa: tile, Ab: true, um: { mode: "root" } }],
-        Kv: [{ Oa: tile, Ab: true, Dm: { mode: "root" } }],
-      },
-    },
-    {
-      method: "single_tile:set_trashed",
-      payload: {
-        type: "single_tile",
-        Xc: tileId,
-        Uc: tileId,
-        Ve: { type: "set_trashed", yb: true, jc: new Date(), fm: new Date() },
-      },
-    },
-    {
-      method: "batch_set_tiles_trashed",
-      payload: {
-        type: "batch_set_tiles_trashed",
-        jc: new Date(),
-        uu: [{ Oa: tile, yb: true }],
-        nv: [{ Na: tile, yb: true }],
-      },
-    },
-  ]);
+  try {
+    await helper.mutate(payload);
+    return { ok: true, method };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "mutation_rejected",
+      build: readBuildLabel(),
+      attempts: [{ method, error: error instanceof Error ? error.message : String(error) }],
+    };
+  }
 }

@@ -90,7 +90,7 @@ Google Flow 認証状態、アクティブプロジェクト、`JobQueue`、SQLi
 
 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }` を返します。プロジェクトを自動的に開いたり作成したりしません。
 
-アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。
+アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。 `operations` には、現在のビルドと store で `collection_write` と `asset_trash_store` が使えるかが表示されます。各操作には `ok` と `failed_checks` が含まれます。
 
 ### `flow_login`
 
@@ -369,4 +369,4 @@ Google Flow 内で一致するアセット、キャラクター、シーン、�
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | はい | アセットまたはコレクションの ID、名前、またはプロンプトに一致する大文字小文字を区別しない部分文字列。 |
 
-`flow-mcp` はまずページのタイルメニューで **Move to trash** をクリックします。ページにタイルまたはメニューが表示されていない場合は、store mutation を送信します。結果には `method` と `confirmed` が含まれます。プロジェクト store がその項目をゴミ箱内または削除済みと示すと、`confirmed` は `true` になります。操作前に store の tile map にその項目がない場合（シーンクリップなど）、`confirmed` は `null` になります。 コレクションの場合は `flow_collections` と同じ削除チェックを行い、`collection_delete_unavailable` を返します。
+`flow-mcp` はまずページのタイルメニューで **Move to trash** をクリックします。ページにタイルまたはメニューが表示されていない場合は、リクエスト形式を検証済みのビルドで store を使います。ビルドまたは store のチェックに失敗すると `unsupported_front_end` を返します。結果には `method` と `confirmed` が含まれます。プロジェクト store がその項目をゴミ箱内または削除済みと示すと、`confirmed` は `true` になります。操作前に store の tile map にその項目がない場合（シーンクリップなど）、`confirmed` は `null` になります。 コレクションの場合は `flow_collections` と同じ削除チェックを行い、`collection_delete_unavailable` を返します。

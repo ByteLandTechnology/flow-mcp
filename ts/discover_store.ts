@@ -10,6 +10,7 @@ import {
   withLViewMapCapture,
 } from "./angular";
 import { delay, hoverProbe } from "./dom";
+import { withTileChangeAliases } from "./frontend_compatibility";
 import { clearStore, runtimeState } from "./state";
 import type {
   DiscoverStoreResult,
@@ -155,24 +156,13 @@ function mutateAsyncOf(
   return null;
 }
 
-/** Copies the tile change of a `single_tile` mutation from `Ve` to `We` and `df`, the keys of the newer front ends. */
-function withTileChangeAlias(
-  payload: Record<string, unknown>,
-): Record<string, unknown> {
-  // Each front-end build renames the tile-change key: `Ve`, then `We`, then `df` (2026-11-19).
-  if (payload?.type === "single_tile" && payload.Ve) {
-    return { ...payload, We: payload.We ?? payload.Ve, df: payload.df ?? payload.Ve };
-  }
-  return payload;
-}
-
 /** Dispatches a store mutation payload and waits for queue completion. */
 async function invokeMutation(
   queueObj: MutationQueueObj | FlowStoreService | null | undefined,
   payload: Record<string, unknown>,
   lcObj?: MutationQueueObj | null,
 ): Promise<unknown> {
-  payload = withTileChangeAlias(payload);
+  payload = withTileChangeAliases(payload);
   const mq = queueObj as MutationQueueObj | null | undefined;
   const qKa = typeof mq?.ka === "function" ? mq.ka.bind(mq) : null;
   const hasPendingQueueItems = (): boolean => {
@@ -483,12 +473,12 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
         getTileMap: getUoMap,
         isReady: () => isStoreDataReady(runtimeState.lService),
         mutate: (payload) =>
-          uoPg.call(uo, projectId, withTileChangeAlias(payload)),
+          uoPg.call(uo, projectId, withTileChangeAliases(payload)),
         rename: async (id, displayName) =>
           await uoPg.call(
             uo,
             projectId,
-            withTileChangeAlias({
+            withTileChangeAliases({
               type: "single_tile",
               Xc: id,
               Uc: id,
@@ -509,14 +499,14 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
       mutate: (payload) => {
         const fn = resolveMutatorFrom(runtimeState.lService, projectId);
         if (!fn) throw new Error("store_mutate_missing");
-        return fn(withTileChangeAlias(payload));
+        return fn(withTileChangeAliases(payload));
       },
       rename: async (id, displayName) => {
         const svc = runtimeState.lService;
         const fn = resolveMutatorFrom(svc, projectId);
         if (fn) {
           return await fn(
-            withTileChangeAlias({
+            withTileChangeAliases({
               type: "single_tile",
               Xc: id,
               Uc: id,

@@ -549,7 +549,7 @@ pub(crate) async fn trash_asset(
     ensure_flow_store(engine).await?;
     let res = invoke_trash_tile(engine, id)
         .await
-        .with_context(|| format!("Failed to trash '{id}'"))?;
+        .map_err(|err| anyhow::anyhow!("Failed to trash '{id}': {err:#}"))?;
     if is_character {
         let _ = db.delete_character(id).await;
     }
