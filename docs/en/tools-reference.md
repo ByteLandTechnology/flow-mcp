@@ -329,6 +329,8 @@ List, create, rename, populate, remove items from, or delete project collections
 | `collection` | `string` | No | Target collection ID or name for `"add"` or `"delete"` (`"add"` creates missing collections). |
 | `ids` | `string[]` | No | Exact asset or character IDs to move into (`"add"`) or out of (`"remove"`) a collection. |
 
+`flow-mcp` uses the controls of the page first and the store mutation second. It reads the project store after each operation and returns an error if the store does not show the result. `"create"` uses the **Create collection** button of the sidebar. `"rename"` uses the title of the collection page. `"delete"` moves the assets out of the collection first and keeps them, then uses the menu of the collection tile; it returns an error if the collection holds another collection. The result of these actions has `method`. To find a tile, `flow-mcp` opens the page of its collection and then opens the previous view again.
+
 For `"remove"`, `flow-mcp` first uses the **Move out of collection** item of the tile menu. For each tile that the page does not show, it sends the store mutation. For `"add"`, it sends the store mutation, reads the project store, and returns an error if a tile is not in the target collection.
 
 ### `flow_download`

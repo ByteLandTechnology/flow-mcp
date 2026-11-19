@@ -25,6 +25,7 @@ use crate::media_files;
 use crate::project::{self, ProjectsParams};
 use crate::queue::{JobQueue, JobResult, JobRunner, JobView, SceneParams, WaitParams};
 use crate::scenes::{self, ScenesParams, VideoParams};
+use crate::tile_menu::PageHold;
 use crate::voices::{self, VoicePreviewParams};
 
 /// Maximum downloaded file size served directly through MCP `resources/read` (`64 MiB`).
@@ -75,6 +76,8 @@ impl FlowService {
             let engine = Arc::clone(&engine_for_runner);
             let db = db_for_runner.clone();
             Box::pin(async move {
+                // A menu operation must not click the page or change its route while this job runs.
+                let _page = PageHold::new();
                 let (files, created, resources) = if scene.agent.unwrap_or(false) {
                     generation::run_agent_batch(&engine, &db, &scene, on_progress).await?
                 } else if let Some(ref extend_from) = scene.video_extend_from {

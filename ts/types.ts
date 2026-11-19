@@ -677,10 +677,14 @@ export interface LocatePointRequest {
 
 /** Request for `tileDomOp`. */
 export interface TileDomOpRequest {
-  /** `locate`, `state`, `rename_select`, `rename_value`, or `dismiss`. */
+  /** `locate`, `collection_tile`, `state`, `view`, `open_view`, `text_point`, `text_select`, `text_value`, or `dismiss`. */
   action: string;
-  /** Store tile ID for `locate` and `state`. */
+  /** Store tile ID for `locate` and `state`, or the collection ID for `open_view` (empty for the main grid). */
   id?: string;
+  /** Text control for the text actions: `tile`, `item`, or `title`. */
+  control?: string;
+  /** Collection name for `collection_tile`, or the current text of the `title` control. */
+  name?: string;
 }
 
 /** One check of the store probe. */

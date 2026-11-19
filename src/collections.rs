@@ -12,7 +12,10 @@ use tokio::time::Duration;
 use crate::assets::{RenameEntry, invoke_trash_tile, rename_assets};
 use crate::engine::ChromeEngine;
 use crate::project::{ensure_flow_store, read_snapshot, wait_flow_mutation_rpc};
-use crate::tile_menu::{move_out_through_menu, tile_state};
+use crate::tile_menu::{
+    create_collection_through_page, delete_empty_collection_through_menu, move_out_through_menu,
+    rename_collection_through_page, tile_state,
+};
 
 /// Collection summary in the active Flow project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,7 +56,26 @@ async fn list_collections(engine: &ChromeEngine) -> Result<Vec<FlowCollection>> 
     Ok(cols)
 }
 
+/// Reads the collections every 500 ms, and returns the first list that `done` accepts within `tries` reads.
+async fn wait_collections(
+    engine: &ChromeEngine,
+    tries: u32,
+    done: impl Fn(&[FlowCollection]) -> bool,
+) -> Option<Vec<FlowCollection>> {
+    for _ in 0..tries {
+        if let Ok(cols) = list_collections(engine).await
+            && done(&cols)
+        {
+            return Some(cols);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    None
+}
+
 /// Creates a collection in the active Flow project when no matching name exists.
+///
+/// Uses the "Create collection" button of the page first. If the page does not show the button, sends the store mutation. Returns an error when the store does not show the new collection.
 async fn create_collection(engine: &ChromeEngine, name: &str) -> Result<Value> {
     let trimmed = name.trim();
     anyhow::ensure!(!trimmed.is_empty(), "Collection name must not be empty");
@@ -65,14 +87,41 @@ async fn create_collection(engine: &ChromeEngine, name: &str) -> Result<Value> {
         return Ok(json!({ "created": false, "collection": found, "collections": existing }));
     }
 
-    let col_id = engine
-        .call_flow_async("collectionOps", json!(["create", trimmed, Value::Null]))
-        .await?;
-    let updated = list_collections(engine).await?;
-    Ok(json!({ "created": true, "id": col_id, "collections": updated }))
+    let is_new = |cols: &[FlowCollection]| {
+        cols.iter()
+            .any(|c| c.name == trimmed && !existing.iter().any(|old| old.id == c.id))
+    };
+    let method = match create_collection_through_page(engine, trimmed).await {
+        Ok(Some(true)) => "page:create_collection",
+        Ok(Some(false)) => anyhow::bail!(
+            "Failed to create collection '{}': the page did not accept the name; a collection with the default name can remain",
+            trimmed
+        ),
+        _ => {
+            engine
+                .call_flow_async("collectionOps", json!(["create", trimmed, Value::Null]))
+                .await?;
+            "mutation"
+        }
+    };
+    let updated = wait_collections(engine, 20, is_new)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to create collection '{}' ({}): the store does not show it",
+                trimmed, method
+            )
+        })?;
+    let created = updated
+        .iter()
+        .find(|c| c.name == trimmed && !existing.iter().any(|old| old.id == c.id));
+    let id = created.map(|c| c.id.clone());
+    Ok(json!({ "created": true, "id": id, "method": method, "collections": updated }))
 }
 
 /// Renames a collection that matches `from` by ID or case-insensitive name.
+///
+/// Uses the title of the collection page first, then the store mutation. Returns an error when the store does not show the new name.
 async fn rename_collection(engine: &ChromeEngine, from: &str, to: &str) -> Result<Value> {
     let new_name = to.trim();
     anyhow::ensure!(
@@ -86,6 +135,22 @@ async fn rename_collection(engine: &ChromeEngine, from: &str, to: &str) -> Resul
         .cloned()
         .with_context(|| format!("Collection not found: {}", from))?;
 
+    let has_new_name =
+        |cols: &[FlowCollection]| cols.iter().any(|c| c.id == target.id && c.name == new_name);
+    // Use the title of the collection page first. The page then builds its own mutation.
+    if matches!(
+        rename_collection_through_page(engine, &target.id, &target.name, new_name).await,
+        Ok(true)
+    ) && let Some(after) = wait_collections(engine, 20, has_new_name).await
+    {
+        return Ok(json!({
+            "renamed": true,
+            "from": from,
+            "to": new_name,
+            "method": "page:collection_title",
+            "collections": after,
+        }));
+    }
     let res = rename_assets(
         engine,
         vec![RenameEntry {
@@ -94,10 +159,22 @@ async fn rename_collection(engine: &ChromeEngine, from: &str, to: &str) -> Resul
         }],
     )
     .await?;
-    let after = list_collections(engine).await?;
-    Ok(
-        json!({ "renamed": true, "from": from, "to": new_name, "result": res, "collections": after }),
-    )
+    let after = wait_collections(engine, 10, has_new_name)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to rename collection '{}' to '{}': the store does not show the new name",
+                target.name, new_name
+            )
+        })?;
+    Ok(json!({
+        "renamed": true,
+        "from": from,
+        "to": new_name,
+        "method": "mutation",
+        "result": res,
+        "collections": after,
+    }))
 }
 
 /// Executes `batch_move_to_collection` for `ids` toward `target_id` (or `None` to uncollect).
@@ -217,7 +294,26 @@ async fn remove_from_collection(engine: &ChromeEngine, ids: Vec<String>) -> Resu
     }))
 }
 
-/// Deletes a collection matching `query` (`batch_move_and_delete_collection`).
+/// Returns the IDs of the assets that the snapshot shows in collection `collection_id`.
+async fn collection_member_ids(engine: &ChromeEngine, collection_id: &str) -> Result<Vec<String>> {
+    let snap = read_snapshot(engine).await?;
+    let ids = snap
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .map(|assets| {
+            assets
+                .iter()
+                .filter(|a| a.get("collection_id").and_then(|v| v.as_str()) == Some(collection_id))
+                .filter_map(|a| a.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ids)
+}
+
+/// Deletes a collection matching `query` and keeps its assets.
+///
+/// Moves the assets out of the collection first, because the page moves all contents of a collection to trash when it deletes the collection. Then uses the menu of the folder tile, or the store mutation. Returns an error when the collection holds another collection, when an asset stays in it, or when the store still shows the collection.
 async fn delete_collection(engine: &ChromeEngine, query: &str) -> Result<Value> {
     let cols = list_collections(engine).await?;
     let target = cols
@@ -225,14 +321,52 @@ async fn delete_collection(engine: &ChromeEngine, query: &str) -> Result<Value> 
         .find(|c| c.id == query || c.name.eq_ignore_ascii_case(query))
         .cloned()
         .with_context(|| format!("Collection not found: {}", query))?;
-    let res = invoke_trash_tile(engine, &target.id)
-        .await
-        .with_context(|| format!("Failed to delete collection '{}'", target.name))?;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    for other in cols.iter().filter(|c| c.id != target.id) {
+        let parent = tile_state(engine, &other.id).await.collection;
+        anyhow::ensure!(
+            parent.as_deref() != Some(target.id.as_str()),
+            "Collection '{}' holds the collection '{}'; move or delete that collection first",
+            target.name,
+            other.name
+        );
+    }
+    let members = collection_member_ids(engine, &target.id).await?;
+    let moved_out = members.len();
+    if !members.is_empty() {
+        remove_from_collection(engine, members).await?;
+    }
+    let is_empty = |cols: &[FlowCollection]| cols.iter().any(|c| c.id == target.id && c.count == 0);
+    anyhow::ensure!(
+        wait_collections(engine, 10, is_empty).await.is_some(),
+        "Collection '{}' still holds assets after the move; it is not deleted",
+        target.name
+    );
+    let is_gone = |cols: &[FlowCollection]| !cols.iter().any(|c| c.id == target.id);
+    let mut method = Value::String("menu:move_all_contents_to_trash".to_string());
+    // The page finds the folder tile by its name. Use the menu only when no other collection has this name.
+    let unique_name = cols.iter().filter(|c| c.name == target.name).count() == 1;
+    let by_menu = unique_name
+        && matches!(
+            delete_empty_collection_through_menu(engine, &target.id, &target.name).await,
+            Ok(true)
+        )
+        && wait_collections(engine, 20, is_gone).await.is_some();
+    if !by_menu {
+        let res = invoke_trash_tile(engine, &target.id)
+            .await
+            .with_context(|| format!("Failed to delete collection '{}'", target.name))?;
+        method = res.get("method").cloned().unwrap_or(Value::Null);
+        anyhow::ensure!(
+            wait_collections(engine, 10, is_gone).await.is_some(),
+            "Failed to delete collection '{}': the store still shows it",
+            target.name
+        );
+    }
     Ok(json!({
         "deleted": true,
         "collection": target,
-        "method": res.get("method").cloned().unwrap_or(Value::Null),
+        "assets_moved_out": moved_out,
+        "method": method,
     }))
 }
 

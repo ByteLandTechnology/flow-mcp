@@ -329,6 +329,8 @@ flow-mcp [OPTIONS] <COMMAND>
 | `collection` | `string` | 否 | 用于 `"add"` 或 `"delete"` 的目标集合 ID 或名称（`"add"` 会创建缺失集合）。 |
 | `ids` | `string[]` | 否 | 要移入（`"add"`）或移出（`"remove"`）集合的精确资产或角色 ID。 |
 
+`flow-mcp` 优先使用页面上的控件，其次才发送 store mutation。每次操作后都会读取项目 store，如果 store 没有显示结果则返回错误。`"create"` 使用侧边栏的 **Create collection** 按钮。`"rename"` 使用集合页面的标题。`"delete"` 先把资产移出集合并保留它们，再使用集合 tile 的菜单；如果集合里还有其他集合，则返回错误。这些操作的结果带有 `method`。查找 tile 时，`flow-mcp` 会打开它所在集合的页面，之后再回到原来的视图。
+
 对于 `"remove"`，`flow-mcp` 先使用 tile 菜单的 **Move out of collection** 项。页面上没有显示的 tile 则发送 store mutation。对于 `"add"`，`flow-mcp` 发送 store mutation，再读取项目 store；如果有 tile 不在目标集合中，则返回错误。
 
 ### `flow_download`

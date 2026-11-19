@@ -1,9 +1,10 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-// Locate project tiles in the page by media ID, read their state from the bound store, and use the rename control of the page.
+// Locate project tiles in the page, read their state from the bound store, and dispatch page view and text control actions.
 
 import { collectionIdOf, delay, dismissOverlay, legacyTile } from "./dom";
+import { openView, readText, readView, selectText, textPoint } from "./page_view";
 import { runtimeState } from "./state";
 import type { FlowTile, TileDomOpRequest, ViewportPoint } from "./types";
 
@@ -45,11 +46,6 @@ function findContainers(mediaIds: string[]): HTMLElement[] {
   return Array.from(found);
 }
 
-/** Returns the first rendered grid tile that shows one of `mediaIds`, or null. */
-function findContainer(mediaIds: string[]): HTMLElement | null {
-  return findContainers(mediaIds)[0] ?? null;
-}
-
 /** Returns the viewport center of `el`. */
 function centerOf(el: Element): ViewportPoint {
   const r = el.getBoundingClientRect();
@@ -81,7 +77,38 @@ function findScroller(): HTMLElement | null {
   return best;
 }
 
-/** Scrolls the virtual grid until the tile of `id` renders, and returns the tile and its "More options" button points. */
+/** Scrolls the grid from the top until `find` returns the tiles to use, and returns the points of the single tile and of its "More options" button. */
+async function locateContainer(find: () => HTMLElement[]): Promise<Record<string, unknown>> {
+  let container: HTMLElement | undefined = find()[0];
+  const scroller = findScroller();
+  if (!container && scroller) {
+    scroller.scrollTop = 0;
+    await delay(250);
+    container = find()[0];
+    for (let i = 0; i < 80 && !container; i++) {
+      const before = scroller.scrollTop;
+      scroller.scrollTop = before + Math.max(200, scroller.clientHeight * 0.8);
+      await delay(200);
+      container = find()[0];
+      if (scroller.scrollTop === before) break;
+    }
+  }
+  if (!container) return { ok: false, error: "tile_not_rendered" };
+  container.scrollIntoView({ block: "center" });
+  await delay(300);
+  // The virtual grid can replace the element after a scroll.
+  const rendered = find();
+  if (rendered.length > 1) return { ok: false, error: "tile_ambiguous" };
+  container = rendered[0] ?? container;
+  const menu = container.querySelector('button[aria-label="More options"]');
+  return {
+    ok: true,
+    tile: centerOf(container),
+    menu: menu ? centerOf(menu) : null,
+  };
+}
+
+/** Finds the tile of `id` in the page by its media ID. */
 async function locateTile(id: string): Promise<Record<string, unknown>> {
   const tileMap = runtimeState.store?.getTileMap?.();
   if (!(tileMap instanceof Map)) return { ok: false, error: "store_not_bound" };
@@ -91,33 +118,26 @@ async function locateTile(id: string): Promise<Record<string, unknown>> {
   if (mediaIsShared(tileMap, id, mediaIds)) {
     return { ok: false, error: "tile_media_ambiguous" };
   }
-  let container = findContainer(mediaIds);
-  const scroller = findScroller();
-  if (!container && scroller) {
-    scroller.scrollTop = 0;
-    await delay(250);
-    container = findContainer(mediaIds);
-    for (let i = 0; i < 80 && !container; i++) {
-      const before = scroller.scrollTop;
-      scroller.scrollTop = before + Math.max(200, scroller.clientHeight * 0.8);
-      await delay(200);
-      container = findContainer(mediaIds);
-      if (scroller.scrollTop === before) break;
-    }
-  }
-  if (!container) return { ok: false, error: "tile_not_rendered" };
-  container.scrollIntoView({ block: "center" });
-  await delay(300);
-  // The virtual grid can replace the element after a scroll.
-  const rendered = findContainers(mediaIds);
-  if (rendered.length > 1) return { ok: false, error: "tile_media_ambiguous" };
-  container = rendered[0] ?? container;
-  const menu = container.querySelector('button[aria-label="More options"]');
-  return {
-    ok: true,
-    tile: centerOf(container),
-    menu: menu ? centerOf(menu) : null,
-  };
+  return locateContainer(() => findContainers(mediaIds));
+}
+
+/** Finds the folder tile of the collection `name` in the main grid and returns its item count. The text of a folder tile is the name, an icon word, and the item count. */
+async function locateCollectionTile(name: string): Promise<Record<string, unknown>> {
+  const want = name.trim().replace(/\s+/g, " ");
+  if (!want) return { ok: false, error: "collection_name_empty" };
+  const find = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>("flow-grid-tile-container")).filter((el) => {
+      const text = (el.innerText || "").trim().replace(/\s+/g, " ");
+      return text.startsWith(`${want} `) && /^\S+ \d+$/.test(text.slice(want.length + 1));
+    });
+  const loc = await locateContainer(find);
+  if (loc.ok !== true) return loc;
+  // Read the item count from the tile again, after the last scroll.
+  const tiles = find();
+  if (tiles.length !== 1) return { ok: false, error: "tile_ambiguous" };
+  const text = (tiles[0].innerText || "").trim().replace(/\s+/g, " ");
+  const count = Number(/(\d+)$/.exec(text)?.[1]);
+  return Number.isFinite(count) ? { ...loc, count } : { ok: false, error: "collection_count_unknown" };
 }
 
 /** Returns `present`, `trashed`, or `gone` for the store tile `id`, with its name and its collection ID while it is present. */
@@ -138,57 +158,20 @@ function tileState(id: string): Record<string, unknown> {
   };
 }
 
-/** Returns the text control of the open "Rename tile" overlay, or null. */
-function renameControl(): HTMLElement | null {
-  const host = Array.from(
-    document.querySelectorAll<HTMLElement>('[aria-label="Rename tile"]'),
-  ).find((e) => e.getClientRects().length > 0);
-  if (!host) return null;
-  if (host instanceof HTMLInputElement || host instanceof HTMLTextAreaElement) return host;
-  return (
-    host.querySelector<HTMLElement>('input, textarea, [contenteditable="true"]') ??
-    (host.isContentEditable ? host : null)
-  );
-}
-
-/** Returns the text of the rename control `el`. */
-function renameText(el: HTMLElement): string {
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
-  return (el.innerText || "").trim();
-}
-
-/** Focuses the open "Rename tile" control and selects its text, so that typed text replaces the old name. */
-function selectRenameText(): Record<string, unknown> {
-  const el = renameControl();
-  if (!el) return { ok: false, error: "rename_control_not_found" };
-  el.focus();
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    el.select();
-  } else {
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-  }
-  return { ok: true, focused: document.activeElement === el, value: renameText(el) };
-}
-
-/** Returns the text of the open "Rename tile" control. */
-function readRenameText(): Record<string, unknown> {
-  const el = renameControl();
-  if (!el) return { ok: false, error: "rename_control_not_found" };
-  return { ok: true, value: renameText(el) };
-}
-
-/** Runs one tile action: `locate` finds the tile in the page, `state` reads its store state, `rename_select` and `rename_value` use the open rename control, and `dismiss` closes an open menu. */
+/** Runs one page action. `locate` and `collection_tile` find a tile in the page, `state` reads the store state of a tile, `view` and `open_view` read and change the page view, `text_point`, `text_select`, and `text_value` use a text control, and `dismiss` closes an open menu. */
 export async function tileDomOp(req: TileDomOpRequest): Promise<unknown> {
   const action = String(req?.action || "");
   const id = String(req?.id || "");
+  const control = String(req?.control || "");
+  const name = String(req?.name || "");
   if (action === "locate") return locateTile(id);
+  if (action === "collection_tile") return locateCollectionTile(name);
   if (action === "state") return tileState(id);
-  if (action === "rename_select") return selectRenameText();
-  if (action === "rename_value") return readRenameText();
+  if (action === "view") return readView();
+  if (action === "open_view") return openView(id);
+  if (action === "text_point") return textPoint(control, name);
+  if (action === "text_select") return selectText(control, name);
+  if (action === "text_value") return readText(control, name);
   if (action === "dismiss") {
     await dismissOverlay();
     return { ok: true };
