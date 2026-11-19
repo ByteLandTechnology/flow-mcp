@@ -34,9 +34,15 @@ export function isLiveLView(lv: unknown): lv is NgLView {
 
 /** Returns true when `m` matches Angular's integer-keyed LView registry map. */
 export function isNgLViewMap(m: unknown): m is Map<number, NgLView> {
-  if (!(m instanceof Map) || m.size === 0) return false;
-  for (const [k, v] of m.entries()) {
-    return typeof k === "number" && Array.isArray(v) && v[19] === k;
+  // Runtime.queryObjects(Map.prototype) also returns objects that only inherit from
+  // Map.prototype. Reading `size` on them throws, so a non-Map is simply not a match.
+  try {
+    if (!(m instanceof Map) || m.size === 0) return false;
+    for (const [k, v] of m.entries()) {
+      return typeof k === "number" && Array.isArray(v) && v[19] === k;
+    }
+  } catch {
+    return false;
   }
   return false;
 }
