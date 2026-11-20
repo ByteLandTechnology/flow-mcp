@@ -7,6 +7,7 @@ import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import type {
   AgentAttachmentFormat,
   AgentChatFormat,
+  AgentSettingsFormat,
   AssetTrashFormat,
   CharacterBioFormat,
   CollectionWriteFormat,
@@ -64,6 +65,13 @@ export function agentChatCompatibility(
   checks: StoreProbeCheck[] = [],
 ): FrontendCompatibility<AgentChatFormat> {
   return checkOperation("agent_chat", readBuildLabel(), checks);
+}
+
+/** Returns the verified project settings format when its checks pass. */
+export function agentSettingsCompatibility(
+  checks: StoreProbeCheck[] = [],
+): FrontendCompatibility<AgentSettingsFormat> {
+  return checkOperation("agent_settings", readBuildLabel(), checks);
 }
 
 /** Returns the Agent attachment format when the build and runtime checks pass. */
@@ -167,6 +175,7 @@ export function probeStore(): StoreProbeResult {
     operations: {
       agent_chat: operationStatus(agentChatCompatibility()),
       agent_attachments: operationStatus(agentAttachmentCompatibility()),
+      agent_settings: operationStatus(agentSettingsCompatibility()),
       collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
       character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
       asset_trash_store: operationStatus(checkOperation("asset_trash_store", build, trashChecks)),

@@ -3,6 +3,8 @@
 
 // MCP request types and native Flow Agent message and service types.
 
+import type { AgentSettingsPatch } from "./agent_settings_protocol";
+
 /** Decision on a permission request or plan. */
 export type AgentDecision =
   | "approve"
@@ -15,6 +17,8 @@ export type AgentDecision =
 export interface AgentRequest {
   /** Operation to run. */
   action:
+    | "get_settings"
+    | "update_settings"
     | "list_sessions"
     | "create_session"
     | "rename_session"
@@ -27,6 +31,8 @@ export interface AgentRequest {
     | "stop";
   /** Project that owns the session. */
   project_id: string;
+  /** Project settings to change. */
+  settings?: AgentSettingsPatch | null;
   /** ID of the existing or new session. */
   session_id?: string;
   /** User message for a new turn. */

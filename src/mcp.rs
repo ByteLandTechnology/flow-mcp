@@ -254,9 +254,9 @@ impl FlowMcpServer {
         Self::format_result(self.service.generate(req).await)
     }
 
-    /// Manages Flow Agent sessions and conversation turns.
+    /// Manages Flow Agent project settings, sessions, and turns.
     #[tool(
-        description = "Manage Flow Agent chat sessions. Create a session with a first message, list, rename, or delete sessions, send messages, read history, check or resume turns, respond to requests, or stop a turn."
+        description = "Manage Flow Agent project settings and chat. Read or update generation confirmation, image and video defaults, and memory cards. Create, list, rename, or delete sessions, send messages, read history, check or resume turns, respond to requests, or stop a turn."
     )]
     async fn flow_agent(&self, Parameters(req): Parameters<AgentParams>) -> CallToolResult {
         Self::format_result(self.service.agent(req).await)

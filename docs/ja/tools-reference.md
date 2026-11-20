@@ -216,7 +216,7 @@ Google Flow でキャラクターボイスピッカーを開き、リスト全�
 
 ### `flow_agent`
 
-Google Flow プロジェクトで Agent チャットを管理します。すべての操作に `project_id` が必要です。既存のセッションには `session_id` を指定します。Flow は最初のメッセージを受け取るとセッションを保存します。
+Google Flow プロジェクトで Agent の設定とチャットを管理します。すべての操作に `project_id` が必要です。既存のセッションには `session_id` を指定します。Flow は最初のメッセージを受け取るとセッションを保存します。
 
 `create_session` と `send_message` では、`asset_ids` でプロジェクト内の画像や動画を添付できます。アセット ID またはプライマリメディア ID を指定します。`files` にはアップロードして添付するローカルの画像や動画のパスを指定します。ローカル動画は 30 秒以内にトリミングしてください。ファイルの保存後、ツールは `uploaded_asset_ids` を返すことがあります。ターンの `user.attachment_media_ids` に添付したメディア ID が入ります。
 
@@ -224,6 +224,8 @@ Google Flow プロジェクトで Agent チャットを管理します。すべ�
 
 | 操作 | その他の必須項目 | 結果 |
 | :--- | :--- | :--- |
+| `get_settings` | | プロジェクトの設定、メモリカード、利用可能なモデル |
+| `update_settings` | `settings` | 更新後に Flow から取得した設定と `confirmed: true` |
 | `list_sessions` | | セッションの ID とタイトル、および送信可否（`can_send`） |
 | `create_session` | `message` | セッション ID と最初のターン |
 | `rename_session` | `session_id`、`title` | 変更後のタイトル |
@@ -234,6 +236,15 @@ Google Flow プロジェクトで Agent チャットを管理します。すべ�
 | `respond` | `session_id`、`turn`、`action_id`、`decision` または `answers` | 更新したターン、またはプランを実行する新しいターン |
 | `stop` | `session_id`、`turn` | 停止したターン |
 | `resume` | `session_id`、`turn` | 保存済みで進行中のターンに再接続します |
+
+`get_settings` と `update_settings` では `session_id` を省略します。設定はプロジェクト内のすべての Agent セッションに適用されます。`settings` には変更する項目だけを指定します。
+
+- `confirm_before_generating` は `always` または `never` です。`never` を選ぶと、Agent は承認なしでクレジットを消費できます。
+- `image_defaults` と `video_defaults` では `model`、`aspect_ratio`、`output_count`（1〜4）を指定できます。モデル ID と対応するアスペクト比は `available_models` を参照します。
+- `memory` は `{"action":"create","card":{...}}`、`{"action":"update","id":"<カード ID>","card":{...}}`、`{"action":"delete","id":"<カード ID>"}` を受け付けます。結果の `memory_id` に操作対象のカード ID が入ります。
+- カードの項目は `title`、`description`、`enabled`、`image_media_ids`、`character_ids`、`likeness_ids` です。新しいカードは既定で有効です。画像の参照には `flow_assets` の `primary_media_id` を使います。空のリストを指定すると該当する参照を消去できます。
+
+設定の更新で `outcome_unknown` が返った場合は、`get_settings` で結果を確認してから再試行します。
 
 ターン番号は 1 から始まります。結果には途中の応答、メディア ID、保留中の操作が含まれます。
 

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::{Duration, sleep};
 
+use crate::agent_settings::{AgentSettingsPatch, has_text};
 use crate::config::FLOW_URL;
 use crate::engine::{BackgroundPage, ChromeEngine, checked_runtime_result, validate_local_files};
 use crate::project::project_workspace_url;
@@ -41,6 +42,10 @@ const ATTACHMENT_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum AgentAction {
+    /// Reads the Agent settings for the project.
+    GetSettings,
+    /// Changes the Agent settings for the project.
+    UpdateSettings,
     /// Lists the sessions in the specified project.
     ListSessions,
     /// Creates a session and submits its first message.
@@ -98,8 +103,10 @@ pub(crate) struct AgentParams {
     action: AgentAction,
     /// Google Flow project ID.
     project_id: String,
-    /// Session ID for all actions except listing and creation.
+    /// Session ID for actions on an existing session.
     session_id: Option<String>,
+    /// Settings to change with `update_settings`.
+    settings: Option<AgentSettingsPatch>,
     /// Text to send on creation or on a new turn.
     message: Option<String>,
     /// Existing image or video IDs in the specified project.
@@ -128,7 +135,10 @@ impl AgentParams {
     fn validate(&self) -> Result<()> {
         ensure!(valid_id(&self.project_id), "Invalid project_id");
         match self.action {
-            AgentAction::ListSessions | AgentAction::CreateSession => {
+            AgentAction::GetSettings
+            | AgentAction::UpdateSettings
+            | AgentAction::ListSessions
+            | AgentAction::CreateSession => {
                 ensure!(
                     self.session_id.is_none(),
                     "This action does not accept session_id"
@@ -138,6 +148,14 @@ impl AgentParams {
                 self.session_id.as_deref().is_some_and(valid_id),
                 "A valid session_id is required"
             ),
+        }
+        if self.action == AgentAction::UpdateSettings {
+            self.settings
+                .as_ref()
+                .context("settings is required")?
+                .validate()?;
+        } else {
+            ensure!(self.settings.is_none(), "Use settings with update_settings");
         }
         if matches!(
             self.action,
@@ -212,7 +230,10 @@ impl AgentParams {
     fn writes(&self) -> bool {
         !matches!(
             self.action,
-            AgentAction::ListSessions | AgentAction::ListMessages | AgentAction::GetTurn
+            AgentAction::GetSettings
+                | AgentAction::ListSessions
+                | AgentAction::ListMessages
+                | AgentAction::GetTurn
         )
     }
 }
@@ -224,11 +245,6 @@ fn valid_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-}
-
-/// Returns true when the value contains a character other than white space.
-fn has_text(s: &str) -> bool {
-    !s.trim().is_empty()
 }
 
 /// Owns the Agent page and serializes requests to its runtime.

@@ -4,6 +4,7 @@
 //! Binary entry point for `flow-mcp`.
 
 mod agent;
+mod agent_settings;
 mod assets;
 mod auth;
 mod cdp;

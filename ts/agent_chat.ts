@@ -22,6 +22,8 @@ import type {
   StoredTurn,
   Transport,
 } from "./agent_protocol";
+import { agentSettingsOp, settingsWritePending } from "./agent_settings";
+import type { AgentInjector } from "./agent_settings";
 import { agentChatCompatibility } from "./frontend_compatibility";
 import { readBuildLabel } from "./frontend_builds";
 import type { AgentChatFormat } from "./frontend_builds";
@@ -34,6 +36,8 @@ interface Binding {
   page: Record<string, unknown>;
   /** Field layout of the supported project page. */
   format: AgentChatFormat;
+  /** Angular injector of the project page. */
+  injector: AgentInjector;
   /** Library exports used by this binding. */
   flow: FlowAgentExports;
   /** Agent transport service for this document. */
@@ -136,7 +140,7 @@ export function agentBound(projectId: string): boolean {
 /** Returns true while a turn uses the live transport. */
 export function agentBusy(projectId: string): boolean {
   const bound = liveBinding(projectId);
-  return Boolean(bound && bound.transport.ha.size > 0);
+  return Boolean(bound && (bound.transport.ha.size > 0 || settingsWritePending));
 }
 
 /** Checks the frontend build and verifies the native Agent exports. */
@@ -188,9 +192,7 @@ export function bindAgent(
       if (project.call(page) !== projectId) continue;
       const transport = page[format.transport] as Transport | undefined;
       const ns = namespace();
-      const injector = page[format.injector] as
-        | { get?: (type: unknown) => unknown }
-        | undefined;
+      const injector = page[format.injector] as AgentInjector | undefined;
       const composer = injector?.get?.(ns[format.composer]) as
         | { wb?: () => boolean }
         | undefined;
@@ -201,7 +203,7 @@ export function bindAgent(
         | Binding["questions"]
         | undefined;
       if (
-        !transport ||
+        !injector || !transport ||
         !(transport.ha instanceof Map) ||
         typeof transport.ka?.ha !== "function" ||
         typeof transport.ka.Ma !== "function" ||
@@ -223,6 +225,7 @@ export function bindAgent(
         projectId,
         format,
         page,
+        injector,
         transport,
         questions,
         permissions,
@@ -773,6 +776,15 @@ export async function agentOp(request: AgentRequest) {
   const bound = liveBinding(request.project_id);
   if (!bound) return failure("agent_project_changed");
   const { projectId, transport } = bound;
+  if (request.action === "get_settings" || request.action === "update_settings") {
+    if (request.action === "update_settings" && transport.ha.size > 0)
+      return failure("agent_turn_active");
+    return agentSettingsOp({
+      projectId,
+      injector: bound.injector,
+      isCurrent: () => liveBinding(projectId) === bound,
+    }, request.settings ?? undefined);
+  }
   const id = request.session_id;
   if (request.action === "list_sessions") {
     const saved = await savedSessions(bound);

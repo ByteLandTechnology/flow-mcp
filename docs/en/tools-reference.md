@@ -216,7 +216,7 @@ Queue a Veo video or Imagen image generation job on `JobQueue`. Returns a `JobVi
 
 ### `flow_agent`
 
-Manage Flow Agent chat in a Google Flow project. Each call requires `project_id`. Use `session_id` for an existing session. Flow saves a new session when it accepts the first message.
+Manage Flow Agent settings and chat in a Google Flow project. Each call requires `project_id`. Use `session_id` for an existing session. Flow saves a new session when it accepts the first message.
 
 Use `asset_ids` with `create_session` or `send_message` to attach existing project images or videos. Supply asset IDs or their primary media IDs. Use `files` with local image or video paths to upload and attach files in the same call. Trim local videos to 30 seconds or less. The tool can return `uploaded_asset_ids` after it saves files in the project. Turn results show attached media IDs in `user.attachment_media_ids`.
 
@@ -224,6 +224,8 @@ If an upload times out, the error shows the IDs of files that Flow has confirmed
 
 | Action | Other required fields | Result |
 | :--- | :--- | :--- |
+| `get_settings` | | Project settings, memory cards, and available models |
+| `update_settings` | `settings` | Settings read from Flow after the update and `confirmed: true` |
 | `list_sessions` | | Session IDs, titles, and `can_send` for the project |
 | `create_session` | `message` | Session ID and first turn |
 | `rename_session` | `session_id`, `title` | Updated session title |
@@ -234,6 +236,15 @@ If an upload times out, the error shows the IDs of files that Flow has confirmed
 | `respond` | `session_id`, `turn`, `action_id`, `decision` or `answers` | Updated turn or new plan execution turn |
 | `stop` | `session_id`, `turn` | Stopped turn |
 | `resume` | `session_id`, `turn` | Reconnects to a saved turn that is still in progress |
+
+Use `get_settings` and `update_settings` without a `session_id`. These settings apply to all Agent sessions in the project. Send only the fields to change in `settings`.
+
+- Set `confirm_before_generating` to `always` or `never`. With `never`, the Agent can use credits without approval.
+- Set `image_defaults` or `video_defaults` with `model`, `aspect_ratio`, or `output_count` (1 to 4). Use a model ID and aspect ratio from `available_models`.
+- Set `memory` to `{"action":"create","card":{...}}`, `{"action":"update","id":"<card_id>","card":{...}}`, or `{"action":"delete","id":"<card_id>"}`. The result includes `memory_id` for the card that the request changes.
+- Card fields are `title`, `description`, `enabled`, `image_media_ids`, `character_ids`, and `likeness_ids`. New cards are enabled by default. Use image `primary_media_id` values from `flow_assets`. Supply an empty reference list to clear that list.
+
+If a settings update returns `outcome_unknown`, call `get_settings` to check the result before you send the update again.
 
 Turn numbers start at 1. A turn can contain partial text, media IDs, and pending actions.
 

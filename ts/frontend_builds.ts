@@ -5,6 +5,7 @@
 
 import type { AgentAttachmentExport } from "./agent_attachments";
 import type { AgentExport } from "./agent_protocol";
+import type { AgentSettingsExport } from "./agent_settings_protocol";
 
 /** Field names for the collection write requests of one build. */
 export interface CollectionWriteFormat {
@@ -38,12 +39,24 @@ export interface FrontendFormats {
   agent_chat: AgentChatFormat;
   /** Agent references and local media uploads. */
   agent_attachments: AgentAttachmentFormat;
+  /** Project-level Agent preferences and memory. */
+  agent_settings: AgentSettingsFormat;
   /** Direct collection writes. */
   collection_write: CollectionWriteFormat;
   /** Asset trash through the project store. */
   asset_trash_store: AssetTrashFormat;
   /** Character personality note update. */
   character_bio: CharacterBioFormat;
+}
+
+/** Browser exports and service fields for Agent settings. */
+export interface AgentSettingsFormat {
+  /** Project metadata service's query client. */
+  queryClient: string;
+  /** Project metadata service's request client. */
+  requestClient: string;
+  /** Browser exports for native settings requests. */
+  exports: Readonly<Record<AgentSettingsExport, string>>;
 }
 
 /** Project page and browser exports for Agent chat. */
@@ -140,6 +153,44 @@ const NOVEMBER_18_STORE: ProjectStoreFormat = {
   queryClient: "Wa",
   dispatcher: "sJ",
   rows: "Ab",
+};
+
+/** Agent settings format of build 20261118.14. */
+const NOVEMBER_18_AGENT_SETTINGS: AgentSettingsFormat = {
+  queryClient: "Wa",
+  requestClient: "ka",
+  exports: {
+    projectService: "DN",
+    projectKey: "RL",
+    modelService: "xN",
+    modelKey: "PFb",
+    fetchModels: "RFb",
+    serviceTier: "pG",
+    locale: "lh",
+    modelOptions: "xO",
+    defaultModel: "rO",
+    selectModel: "hZ",
+    aspectLabels: "AE",
+    videoAspects: "DO",
+    imageAspect: "Jlc",
+    videoAspect: "Klc",
+    request: "Ny",
+    settings: "k_",
+    mask: "Zq",
+    card: "bM",
+    rpc: "ax",
+    updateMethod: "CDb",
+    finish: "ac",
+    message: "Sk",
+    maskPaths: "Xq",
+    string: "pv",
+    strings: "rv",
+    enumValue: "Ft",
+    integer: "nv",
+    boolean: "Zs",
+    setCards: "csc",
+    setMemoryEnabled: "bsc",
+  },
 };
 
 /** Agent chat format of build 20261118.14. */
@@ -243,6 +294,7 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
       agent_chat: NOVEMBER_18_AGENT,
       agent_attachments: NOVEMBER_18_ATTACHMENTS,
+      agent_settings: NOVEMBER_18_AGENT_SETTINGS,
     },
   }],
 ]);

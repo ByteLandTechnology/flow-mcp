@@ -216,7 +216,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ### `flow_agent`
 
-管理 Google Flow 项目中的 Agent 对话。每次调用都传入 `project_id`。操作已有会话时传入 `session_id`。Flow 接收首条消息时保存新会话。
+管理 Google Flow 项目中的 Agent 设置和对话。每次调用都传入 `project_id`。操作已有会话时传入 `session_id`。Flow 接收首条消息时保存新会话。
 
 `create_session` 和 `send_message` 都支持附件。用 `asset_ids` 附加当前项目的图片或视频，接受资产 ID 或主媒体 ID。用 `files` 上传并附加本机图片或视频，上传的视频要先裁到 30 秒以内。文件保存到项目后，工具可返回 `uploaded_asset_ids`。轮次结果的 `user.attachment_media_ids` 列出所附媒体 ID。
 
@@ -224,6 +224,8 @@ flow-mcp [OPTIONS] <COMMAND>
 
 | 操作 | 其他必填参数 | 返回 |
 | :--- | :--- | :--- |
+| `get_settings` | | 项目设置、记忆卡片和可用模型 |
+| `update_settings` | `settings` | 写入后从 Flow 回读的设置和 `confirmed: true` |
 | `list_sessions` | | 会话 ID、标题和项目是否允许发送消息（`can_send`） |
 | `create_session` | `message` | 会话 ID 和首轮消息 |
 | `rename_session` | `session_id`、`title` | 更新后的会话标题 |
@@ -234,6 +236,15 @@ flow-mcp [OPTIONS] <COMMAND>
 | `respond` | `session_id`、`turn`、`action_id`、`decision` 或 `answers` | 更新后的轮次，或执行计划的新轮次 |
 | `stop` | `session_id`、`turn` | 已停止的轮次 |
 | `resume` | `session_id`、`turn` | 重新连接已保存且仍在进行的轮次 |
+
+`get_settings` 和 `update_settings` 按项目操作，调用时省略 `session_id`。设置适用于项目里的所有 Agent 会话。`settings` 中只传入要修改的字段。
+
+- `confirm_before_generating` 可设为 `always` 或 `never`。选择 `never` 时，Agent 可以直接消耗点数。
+- `image_defaults` 和 `video_defaults` 支持修改 `model`、`aspect_ratio` 或 `output_count`（1 至 4）。模型 ID 和适用的画面比例以 `available_models` 为准。
+- `memory` 支持 `{"action":"create","card":{...}}`、`{"action":"update","id":"<卡片 ID>","card":{...}}` 和 `{"action":"delete","id":"<卡片 ID>"}`。结果中的 `memory_id` 是本次操作的卡片 ID。
+- 卡片字段有 `title`、`description`、`enabled`、`image_media_ids`、`character_ids` 和 `likeness_ids`。新卡片默认启用。图片引用使用 `flow_assets` 返回的 `primary_media_id`。传入空数组可清除对应的引用列表。
+
+写入返回 `outcome_unknown` 时，先用 `get_settings` 确认结果再重试。
 
 轮次编号从 1 开始。结果可包含部分文字回复、媒体 ID 和待处理操作。
 
