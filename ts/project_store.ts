@@ -193,6 +193,8 @@ export async function refreshProjectStore(store: ProjectStore): Promise<Map<stri
 
 /** Time limit for one submission and its confirmation. */
 const MUTATION_TIMEOUT_MS = 10_000;
+/** Time between checks for a submitted change. */
+const MUTATION_CHECK_INTERVAL_MS = 250;
 /** True until the previous project submission settles. */
 export let projectMutationPending = false;
 /** Projects that need a new query result after a mutation. */
@@ -216,15 +218,16 @@ export async function mutateAndVerify(
   });
   const work = (async () => {
     try {
-      await submitProjectMutation(store, payload);
-      for (let attempt = 0; attempt < 3 && !timedOut; attempt++) {
-        const tiles = await refreshProjectStore(store);
-        if (!tiles || timedOut) return null;
-        if (verified(tiles)) {
+      // A request can reach Flow even if the response does not reach this page.
+      await submitProjectMutation(store, payload).catch(() => {});
+      while (!timedOut && boundStore === store && isCurrent(store)) {
+        const tiles = await refreshProjectStore(store).catch(() => null);
+        if (timedOut) return null;
+        if (tiles && verified(tiles)) {
           projectsToRefresh.delete(store.projectId);
           return tiles;
         }
-        await delay(250);
+        await Promise.race([delay(MUTATION_CHECK_INTERVAL_MS), timeout]);
       }
       return null;
     } catch {
