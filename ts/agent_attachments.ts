@@ -8,8 +8,8 @@ import { agentAttachmentCompatibility } from "./frontend_compatibility";
 import { uploadUiAction } from "./open_upload_trigger";
 import type { FlowTile } from "./types";
 
-/** Media tile in the active Flow project. */
-interface MediaTile extends FlowTile {
+/** Tile that can supply a reference in the active Flow project. */
+interface AttachmentTile extends FlowTile {
   /** Asset ID shown in the project. */
   id: string;
   /** ID of the primary image or video. */
@@ -18,13 +18,24 @@ interface MediaTile extends FlowTile {
   type: string;
 }
 
-/** Reference accepted by the native Agent message builder. */
+/** Image or video reference accepted by the native message builder. */
 interface MediaReference {
   /** ID of the image or video. */
   mediaId: string;
   /** Type of media to attach. */
-  mediaType: string;
+  mediaType: "IMAGE" | "VIDEO";
 }
+
+/** Character reference accepted by the native message builder. */
+interface CharacterReference {
+  /** Type of reference to attach. */
+  mediaType: "CHARACTER";
+  /** ID of the character entity. */
+  Nc: string;
+}
+
+/** Reference accepted by the native Agent message builder. */
+type AttachmentReference = MediaReference | CharacterReference;
 
 /** Dimensions of a local image. */
 interface ImageSize {
@@ -45,9 +56,9 @@ interface FlowId {
 /** Native attachment functions of the verified front end. */
 interface AttachmentExports {
   /** Converts a project tile to a reference. */
-  reference(tile: MediaTile, position?: string): MediaReference | undefined;
+  reference(tile: AttachmentTile, position?: string): AttachmentReference | undefined;
   /** Creates an Agent message with references. */
-  message(input: { Lc: object; nc: MediaReference[] }): object;
+  message(input: { Lc: object; nc: AttachmentReference[] }): object;
   /** Builds the text content of the message. */
   text(value: string): object;
   /** Allocates a Flow ID. */
@@ -157,12 +168,30 @@ export async function waitForAttachment<T>(
   }
 }
 
-/** Gets the project reference only if the tile contains available media. */
-function mediaReference(flow: AttachmentExports, tile: MediaTile | undefined) {
-  if (!tile || isTrashedTile(tile) || !["IMAGE", "VIDEO"].includes(tile.type))
-    return undefined;
+/** Returns true when the tile can identify a media reference. */
+function isMediaTile(tile: AttachmentTile): boolean {
+  return tile.type === "IMAGE" || tile.type === "VIDEO";
+}
+
+/** Gets a native reference and checks that it matches the selected asset. */
+function projectReference(flow: AttachmentExports, tile: AttachmentTile | undefined) {
+  if (!tile || isTrashedTile(tile)) return undefined;
+  const character = tile.type === "CHARACTER";
+  if (character ? tile.isPending : !isMediaTile(tile)) return undefined;
   const reference = flow.reference(tile, "REFERENCE");
-  return reference?.mediaId ? reference : undefined;
+  if (character) {
+    return reference?.mediaType === "CHARACTER" && reference.Nc === tile.id
+      ? reference : undefined;
+  }
+  return reference && reference.mediaType !== "CHARACTER" && reference.mediaId
+    ? reference : undefined;
+}
+
+/** Uses separate keys for character IDs and media IDs. */
+function referenceKey(reference: AttachmentReference): string {
+  return reference.mediaType === "CHARACTER"
+    ? `character:${reference.Nc}`
+    : `media:${reference.mediaId}`;
 }
 
 /** Gets the upload metadata and checks the video duration. */
@@ -218,7 +247,7 @@ async function uploadFile(
   dispatcher: UploadDispatcher,
   input: AttachmentInput,
   prepared: PreparedFile,
-): Promise<MediaTile> {
+): Promise<AttachmentTile> {
   const { signal } = input;
   const { file, video, aspectRatio, imageSize } = prepared;
   const [workflow, media] = await waitForAttachment(
@@ -313,24 +342,24 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
     }
     if (!input.isCurrent())
       return { ok: false as const, error: "agent_project_changed" };
-    const projectTiles: MediaTile[] = (tiles as () => MediaTile[])();
-    const references = new Map<string, MediaReference>();
+    const projectTiles = (tiles as () => AttachmentTile[])();
+    const references = new Map<string, AttachmentReference>();
     for (const id of input.assetIds) {
       const tile =
         projectTiles.find((asset) => asset.id === id) ??
         projectTiles.find(
           (asset) =>
-            asset.primaryMediaId?.replace(/^media\//, "") ===
+            isMediaTile(asset) && asset.primaryMediaId?.replace(/^media\//, "") ===
             id.replace(/^media\//, ""),
         );
-      const reference = mediaReference(flow, tile);
+      const reference = projectReference(flow, tile);
       if (!reference)
         return {
           ok: false as const,
           error: "agent_attachment_unavailable",
           asset_id: id,
         };
-      references.set(reference.mediaId, reference);
+      references.set(referenceKey(reference), reference);
     }
     if (input.files.length > 0 && injector && dispatcher) {
       const consent = injector.get(exports[format.consent]);
@@ -347,12 +376,12 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
         const tile = await uploadFile(flow, dispatcher, input, file);
         uploadedAssetIds.push(tile.id);
         currentFile = undefined;
-        const reference = mediaReference(flow, tile);
-        if (!reference)
+        const reference = projectReference(flow, tile);
+        if (!reference || reference.mediaType === "CHARACTER")
           throw new Error(
             `Flow could not attach ${file.file.name} after upload`,
           );
-        references.set(reference.mediaId, reference);
+        references.set(referenceKey(reference), reference);
       }
     }
     signal.throwIfAborted();

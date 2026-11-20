@@ -218,7 +218,7 @@ Queue a Veo video or Imagen image generation job on `JobQueue`. Returns a `JobVi
 
 Manage Flow Agent settings and chat in a Google Flow project. Each call requires `project_id`. Use `session_id` for an existing session. Flow saves a new session when it accepts the first message.
 
-Use `asset_ids` with `create_session` or `send_message` to attach existing project images or videos. Supply asset IDs or their primary media IDs. Use `files` with local image or video paths to upload and attach files in the same call. Trim local videos to 30 seconds or less. The tool can return `uploaded_asset_ids` after it saves files in the project. Turn results show attached media IDs in `user.attachment_media_ids`.
+Use `asset_ids` with `create_session` or `send_message` to attach existing project images, videos, or characters. Supply asset IDs or primary media IDs for images and videos. Supply the character ID from `flow_characters` for a character. You can mix all three types in one message. Use `files` with local image or video paths to upload and attach files in the same call. Trim local videos to 30 seconds or less. The tool can return `uploaded_asset_ids` after it saves files in the project. Turn results show the references in `user.attachment_media_ids` and `user.attachment_character_ids`.
 
 If an upload times out, the error shows the IDs of files that Flow has confirmed. Check the project for `file_in_progress` before you upload that file again. Flow does not send the message when attachment preparation times out.
 

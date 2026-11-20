@@ -218,7 +218,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 管理 Google Flow 项目中的 Agent 设置和对话。每次调用都传入 `project_id`。操作已有会话时传入 `session_id`。Flow 接收首条消息时保存新会话。
 
-`create_session` 和 `send_message` 都支持附件。用 `asset_ids` 附加当前项目的图片或视频，接受资产 ID 或主媒体 ID。用 `files` 上传并附加本机图片或视频，上传的视频要先裁到 30 秒以内。文件保存到项目后，工具可返回 `uploaded_asset_ids`。轮次结果的 `user.attachment_media_ids` 列出所附媒体 ID。
+`create_session` 和 `send_message` 都支持附件。用 `asset_ids` 附加当前项目的图片、视频或角色。图片和视频接受资产 ID 或主媒体 ID，角色使用 `flow_characters` 返回的角色 ID。同一条消息可混合附加这三类资源。用 `files` 上传并附加本机图片或视频，上传的视频要先裁到 30 秒以内。文件保存到项目后，工具可返回 `uploaded_asset_ids`。轮次结果的 `user.attachment_media_ids` 和 `user.attachment_character_ids` 分别列出所附媒体和角色的 ID。
 
 上传超时时，错误结果会列出已确认保存的文件 ID。如果返回 `file_in_progress`，先在项目里确认该文件的状态再重试。附件准备超时后，工具不会发送该条消息。
 

@@ -442,6 +442,9 @@ function formatTurn(
       attachment_media_ids: user.Gh?.length
         ? user.Gh.map(({ mediaId }) => mediaId)
         : undefined,
+      attachment_character_ids: user.Uy?.length
+        ? user.Uy.map(({ Nc }) => Nc)
+        : undefined,
     },
     assistant: {
       text: reply.text,
@@ -530,7 +533,7 @@ function loadStoredTurns(
 
 /** Attachment data for a user message. */
 interface MessageAttachments {
-  /** Image and video IDs from the project. */
+  /** Image, video, and character IDs from the project. */
   assetIds: string[];
   /** Files to upload before the message is sent. */
   files: File[];
@@ -542,7 +545,7 @@ interface MessageAttachments {
 interface MessageInput {
   /** Text of the user message. */
   text: string;
-  /** Media to attach to the message. */
+  /** Project references and files to attach to the message. */
   attachments?: MessageAttachments;
   /** Response code for the legacy permission transport. */
   permission?: number;

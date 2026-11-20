@@ -37,7 +37,7 @@ export interface AgentRequest {
   session_id?: string;
   /** User message for a new turn. */
   message?: string;
-  /** Project image and video IDs to attach. */
+  /** Project image, video, and character IDs to attach. */
   asset_ids?: string[] | null;
   /** Number of local files assigned by Chrome. */
   file_count?: number;
@@ -199,6 +199,8 @@ interface UserMessage {
   text: string;
   /** Image and video references that Flow stored with the message. */
   Gh?: { mediaId: string }[];
+  /** Character references that Flow stored with the message. */
+  Uy?: { Nc: string }[];
 }
 
 /** Decoded Agent reply from the Flow front end. */

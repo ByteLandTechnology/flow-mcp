@@ -109,7 +109,7 @@ pub(crate) struct AgentParams {
     settings: Option<AgentSettingsPatch>,
     /// Text to send on creation or on a new turn.
     message: Option<String>,
-    /// Existing image or video IDs in the specified project.
+    /// Existing image, video, or character IDs in the specified project.
     asset_ids: Option<Vec<String>>,
     /// Local image or video file paths to upload to the specified project.
     files: Option<Vec<String>>,
