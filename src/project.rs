@@ -19,6 +19,9 @@ use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_a
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
 
+/// Angular error code for a required input that has no value yet.
+const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
+
 /// Parameters for `flow_status`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub(crate) struct StatusParams {
@@ -408,8 +411,12 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         }
     }
 
+    let mut input_pending = false;
     for attempt in 0..10 {
-        let discovery = engine.call_flow_async("discoverStore", json!([])).await?;
+        let discovery =
+            store_loading_result(engine.call_flow_async("discoverStore", json!([])).await)?;
+        input_pending =
+            discovery.get("error").and_then(Value::as_str) == Some(ANGULAR_REQUIRED_INPUT_ERROR);
         let bound = discovery
             .get("bound")
             .and_then(|v| v.as_bool())
@@ -424,7 +431,7 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             }
             return Ok(());
         }
-        if attempt == 2 {
+        if attempt == 2 && !input_pending {
             let pos = eval_project_nav(engine, "first_tile_center")
                 .await
                 .unwrap_or(Value::Null);
@@ -437,10 +444,35 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(350)).await;
     }
+    if input_pending {
+        anyhow::bail!(
+            "The Flow project store is still loading (Angular {ANGULAR_REQUIRED_INPUT_ERROR}).{}",
+            build_suffix(engine).await
+        );
+    }
     anyhow::bail!(
         "Failed to find the Flow project store (lService). Open a Flow project first.{}",
         build_suffix(engine).await
     )
+}
+
+/// Treats an unset Angular input as a loading result for a project store read.
+fn store_loading_result(result: Result<Value>) -> Result<Value> {
+    match result {
+        Err(error)
+            if error.to_string().lines().next().is_some_and(|line| {
+                line.strip_prefix("JavaScript error: ")
+                    .is_some_and(|message| {
+                        message
+                            .split(|ch: char| !ch.is_ascii_alphanumeric())
+                            .any(|part| part == ANGULAR_REQUIRED_INPUT_ERROR)
+                    })
+            }) =>
+        {
+            Ok(json!({ "ok": false, "error": ANGULAR_REQUIRED_INPUT_ERROR }))
+        }
+        result => result,
+    }
 }
 
 /// Returns a message suffix with the front-end build label, or an empty string when the page has no label.
@@ -462,7 +494,7 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
     let mut last_err = "store_not_bound".to_string();
     for _ in 0..25 {
         ensure_flow_store(engine).await?;
-        let snap = engine.call_flow_js("readStoreSnapshot", json!([])).await?;
+        let snap = store_loading_result(engine.call_flow_js("readStoreSnapshot", json!([])).await)?;
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             return Ok(snap);
         }
@@ -471,7 +503,10 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let delay_ms = if last_err == "store_loading" {
+        let delay_ms = if matches!(
+            last_err.as_str(),
+            "store_loading" | ANGULAR_REQUIRED_INPUT_ERROR
+        ) {
             200
         } else {
             150
