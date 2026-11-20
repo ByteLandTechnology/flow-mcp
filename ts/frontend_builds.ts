@@ -239,6 +239,7 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261118.14_p0", {
     projectStore: NOVEMBER_18_STORE,
     operations: {
+      collection_write: { tileId: "Vc", tileChange: "jf", moveTarget: "Wj", moveTiles: "Ab" },
       character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
       agent_chat: NOVEMBER_18_AGENT,
       agent_attachments: NOVEMBER_18_ATTACHMENTS,
