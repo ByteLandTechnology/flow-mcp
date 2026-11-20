@@ -14,6 +14,7 @@ import {
 } from "./angular";
 import {
   closeSettingsAndMenus,
+  ensureManualComposer,
   findLiveBasePromptBox,
   findProjectPageInstance,
   findPromptBoxHost,
@@ -163,7 +164,8 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     if (staleRemoveBtns.length > 0) await delay(100);
   }
 
-  const initialTb = findTextbox(onEditPage);
+  const initialTb = onEditPage ? findTextbox(true) : await ensureManualComposer();
+  if (!onEditPage && !initialTb) return { ok: false, error: "manual_prompt_not_ready" };
   const scope: ParentNode = (() => {
     let cur: Element | null | undefined = initialTb?.parentElement;
     for (let i = 0; i < 6 && cur; i++) {

@@ -3,8 +3,8 @@
 
 // Composer host, prompt textbox, and settings overlay helpers.
 
-import { isLiveLView, resolveLView } from "./angular";
-import { delay, isDisabledProp, isVisibleEnabled } from "./dom";
+import { isLiveLView, resolveLView, withLViewMapCapture } from "./angular";
+import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
 import { runtimeState } from "./state";
 import type {
   BasePromptBoxInstance,
@@ -17,27 +17,71 @@ import type {
 const TEXTBOX_SELECTOR =
   '.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], [contenteditable="true"], textarea';
 
+/** Containers that belong to the Agent composer. */
+const AGENT_COMPOSER = "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+
+/** Finds a visible textbox in a composer root. */
+function composerTextbox(root: ParentNode | null, edit: boolean): HTMLElement | null {
+  return Array.from(root?.querySelectorAll(TEXTBOX_SELECTOR) ?? []).find(
+    (el): el is HTMLElement =>
+      el instanceof HTMLElement && el.getClientRects().length > 0 &&
+      !isDisabledProp(el) && (edit || !el.closest(AGENT_COMPOSER)),
+  ) ?? null;
+}
+
 /** Finds the active visible prompt textbox for generation or edit composers. */
 export function findTextbox(editFlag: boolean): HTMLElement | null {
   const scopedSelector = editFlag
     ? "flow-edit-video-prompt-box, flow-editor-page, flow-scene-builder"
     : "flow-prompt-box flow-base-prompt-box, flow-prompt-box";
-  const pickFrom = (root: ParentNode | null): HTMLElement | null => {
-    if (!root) return null;
-    const candidates = Array.from(root.querySelectorAll(TEXTBOX_SELECTOR));
-    const found = candidates.find(
-      (el): el is HTMLElement =>
-        el instanceof HTMLElement &&
-        el.getClientRects().length > 0 &&
-        !isDisabledProp(el) &&
-        (editFlag ||
-          !el.closest(
-            "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box",
-          )),
+  return composerTextbox(document.querySelector(scopedSelector), editFlag) ||
+    composerTextbox(document, editFlag);
+}
+
+/** Closes the active Agent panel and waits for the manual prompt to become editable. */
+export async function ensureManualComposer(): Promise<HTMLElement | null> {
+  const clicked = new WeakSet<HTMLElement>();
+  const hosts = new WeakSet<PromptBoxHost>();
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const prompt = document.querySelector("flow-prompt-box");
+    const textbox = composerTextbox(prompt, false);
+    if (textbox) return textbox;
+
+    const panel = document.querySelector("flow-agent-panel, .agent-panel-wrapper");
+    const close = Array.from(panel?.querySelectorAll('button, [role="button"]') ?? []).find(
+      (button): button is HTMLElement => isVisibleEnabled(button) &&
+        /^(close(?: (?:agent )?panel)?|switch to manual|exit agent)$/i.test(
+          (button.getAttribute("aria-label") || elText(button)).trim(),
+        ),
     );
-    return found || null;
-  };
-  return pickFrom(document.querySelector(scopedSelector)) || pickFrom(document);
+    const toggle = Array.from(prompt?.querySelectorAll(
+      'flow-agent-mode-toggle-chip button[aria-pressed="true"], flow-agent-mode-switch button[aria-pressed="true"], flow-creative-agent-prompt-box flow-agent-mode-toggle-chip button',
+    ) ?? []).find(isVisibleEnabled);
+    const control = [close, toggle].find(
+      (button): button is HTMLElement => Boolean(button && !clicked.has(button)),
+    );
+    if (control) {
+      clicked.add(control);
+      await withLViewMapCapture(async () => {
+        control.click();
+        await delay(100);
+      });
+      continue;
+    }
+    if (prompt) {
+      const host = findPromptBoxHost(findProjectPageInstance());
+      if (host && !hosts.has(host)) {
+        hosts.add(host);
+        try {
+          if (host.Sk()) host.Tx();
+        } catch {
+          // Wait for the prompt box if its required inputs are still loading.
+        }
+      }
+    }
+    await delay(100);
+  }
+  return null;
 }
 
 /** Finds the live `flow-project-page` Angular component instance. */

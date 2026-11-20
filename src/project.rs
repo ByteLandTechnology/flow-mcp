@@ -160,9 +160,14 @@ pub(crate) fn project_workspace_url(reference_url: &str, project_id: &str) -> St
 /// Navigates back to `/project/<id>` when Chrome is currently on a character, scene, edit, chat, or tools sub-route.
 pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
     let is_subroute = |url: &str| {
-        ["/character/", "/scene/", "/edit/", "/chat/", "/tools"]
-            .iter()
-            .any(|seg| url.contains(seg))
+        let path = url.split(['?', '#']).next().unwrap_or_default();
+        let section = path
+            .split_once("/project/")
+            .and_then(|(_, project)| project.split('/').nth(1));
+        matches!(
+            section,
+            Some("character" | "scene" | "edit" | "chat" | "tool" | "tools")
+        )
     };
     let cur = engine.current_url().await.unwrap_or_default();
     if is_subroute(&cur) {

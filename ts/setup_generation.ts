@@ -3,14 +3,14 @@
 
 // Configure Google Flow generation mode, settings, model, aspect ratio, and count.
 
-import { readOwn, resolveLView, withLViewMapCapture } from "./angular";
+import { resolveLView, withLViewMapCapture } from "./angular";
 import {
   closeModelMenu,
   closeSettingsAndMenus,
+  ensureManualComposer,
   findLiveBasePromptBox,
   findProjectPageInstance,
   findPromptBoxHost,
-  findTextbox,
   settingsOpen,
 } from "./composer";
 import { delay, elText, hoverProbe, isVisibleEnabled } from "./dom";
@@ -170,132 +170,14 @@ export async function setupGeneration(
   const onEditPage = /\/edit\//.test(location.pathname || "");
 
   if (!onEditPage) {
+    const textbox = await ensureManualComposer();
+    if (!textbox) return { ok: false, error: "manual_prompt_not_ready" };
     await ensureLViewCapture(true);
-    let projPage = findProjectPageInstance();
-    let promptBoxHost = findPromptBoxHost(projPage);
-
-    if (document.querySelector("flow-agent-panel, .agent-panel-wrapper")) {
-      if (projPage) {
-        try {
-          projPage.ub?.mutate?.(false);
-          projPage.Ta?.mutate?.(false);
-        } catch {
-          // Fall through to agent panel buttons.
-        }
-      }
-      const agentPanelEl = document.querySelector("flow-agent-panel");
-      if (agentPanelEl) {
-        const apLv = resolveLView(agentPanelEl);
-        if (Array.isArray(apLv)) {
-          for (const cand of apLv) {
-            if (cand && typeof cand === "object" && !(cand instanceof Node)) {
-              try {
-                (readOwn(cand, "d_") as { emit?: () => void } | undefined)?.emit?.();
-              } catch {
-                // Ignore emitter mismatch.
-              }
-              try {
-                (readOwn(cand, "iN") as { emit?: () => void } | undefined)?.emit?.();
-              } catch {
-                // Ignore emitter mismatch.
-              }
-            }
-          }
-        }
-        const exitBtn = Array.from(
-          agentPanelEl.querySelectorAll('button, [role="button"]'),
-        ).find((el): el is HTMLElement => {
-          if (!isVisibleEnabled(el)) return false;
-          const lbl = (
-            el.getAttribute("aria-label") || elText(el)
-          ).trim();
-          return /^(?:switch to manual|exit agent|close(?: panel)?)$/i.test(
-            lbl,
-          );
-        });
-        if (exitBtn) exitBtn.click();
-      }
-    }
-
-    if (
-      Boolean(promptBoxHost?.Sk?.()) === true ||
-      Boolean(
-        document.querySelector(
-          "flow-prompt-box flow-creative-agent-prompt-box, flow-agent-panel, .agent-panel-wrapper",
-        ),
-      ) ||
-      !document.querySelector("flow-prompt-box flow-base-prompt-box")
-    ) {
-      if (promptBoxHost && Boolean(promptBoxHost.Sk()) === true) {
-        const activeHost = promptBoxHost;
-        await withLViewMapCapture(async () => {
-          activeHost.Tx();
-          await delay(100);
-        });
-      } else if (
-        Boolean(
-          document.querySelector(
-            "flow-prompt-box flow-creative-agent-prompt-box",
-          ),
-        )
-      ) {
-        const toggleChip = document.querySelector(
-          'flow-creative-agent-prompt-box flow-agent-mode-toggle-chip button, flow-prompt-box flow-agent-mode-toggle-chip button[aria-pressed="true"], flow-agent-mode-toggle-chip [role="button"]',
-        );
-        if (isVisibleEnabled(toggleChip)) {
-          toggleChip.click();
-          await delay(100);
-        }
-      }
-      for (let i = 0; i < 30; i += 1) {
-        const manualReady =
-          Boolean(promptBoxHost?.Sk?.()) === false &&
-          Boolean(
-            document.querySelector("flow-prompt-box flow-base-prompt-box"),
-          ) &&
-          !document.querySelector(
-            "flow-prompt-box flow-creative-agent-prompt-box",
-          ) &&
-          !document.querySelector(".agent-panel-wrapper");
-        if (manualReady) break;
-        if (i === 10) {
-          projPage = findProjectPageInstance();
-          promptBoxHost = findPromptBoxHost(projPage);
-          if (projPage) {
-            try {
-              projPage.ub?.mutate?.(false);
-              projPage.Ta?.mutate?.(false);
-            } catch {
-              // Fall back to prompt host toggle.
-            }
-          }
-          if (promptBoxHost && Boolean(promptBoxHost.Sk?.()) === true) {
-            const retryHost = promptBoxHost;
-            try {
-              await withLViewMapCapture(async () => {
-                retryHost.Tx();
-                await delay(100);
-              });
-            } catch {
-              // Continue polling manual readiness.
-            }
-          } else {
-            const retryChip = document.querySelector(
-              'flow-creative-agent-prompt-box flow-agent-mode-toggle-chip button, flow-prompt-box flow-agent-mode-toggle-chip button[aria-pressed="true"], flow-agent-mode-toggle-chip [role="button"]',
-            );
-            if (isVisibleEnabled(retryChip)) {
-              retryChip.click();
-            }
-          }
-        }
-        await delay(100);
-      }
-    }
 
     const settingsBtn = document.querySelector(
       'flow-prompt-box button[aria-label="Settings trigger"], button[aria-label="Settings trigger"]',
     );
-    const scope = findComposerRoot(findTextbox(onEditPage));
+    const scope = findComposerRoot(textbox);
 
     if (isVisibleEnabled(settingsBtn) && !settingsOpen()) {
       await withLViewMapCapture(async () => {
