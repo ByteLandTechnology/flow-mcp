@@ -71,7 +71,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ![JobQueue 状態遷移と 45 秒インライン待機タイムライン](../assets/ja/job-queue-lifecycle.svg)
 
-- **`JobView`**（`flow_generate`、`flow_agent_images`、`flow_edit`、`flow_video` `extend`、`flow_character`、`flow_character_edit`、`flow_wait`、`flow_cancel`、`flow_retry`）：
+- **`JobView`**（`flow_generate`、`flow_edit`、`flow_video` `extend`、`flow_character`、`flow_character_edit`、`flow_wait`、`flow_cancel`、`flow_retry`）：
   - フィールド：`id`（8 文字文字列）、`status`（`"queued"`、`"running"`、`"done"`、`"failed"`、`"cancelled"`）、`prompt`、`name?`、`mode?`、`model?`、`created_at?`、`started_at?`、`finished_at?`（Unix ミリ秒）、`progress?`、`files?`、`created?`、`resources?`、`error?`、`retried_from?`。
 - **`DownloadRecord`**（`flow_download`、`flow_downloads`）：
   - フィールド：`id`、`asset_id`、`project_id?`、`project_title?`、`name`、`kind`、`prompt?`、`source_url?`、`file_path`、`file_name`、`mime_type?`、`size_bytes`、`asset_created_at?`、`downloaded_at`（Unix ミリ秒）、`exists`（bool）、`resource_uri`（`flow://downloads/<id>`）。
@@ -214,16 +214,36 @@ Google Flow でキャラクターボイスピッカーを開き、リスト全�
 | `character_role` | `string` | いいえ | SQLite `character_looks` のキー。`prompt` へ `", character {role}: {look}"` を追加します。 |
 | `character_look` | `string` | いいえ | `character_role` の下で外見テキストを SQLite に保存し、`prompt` へ追加します。 |
 
-### `flow_agent_images`
+### `flow_agent`
 
-Flow Agent モードバッチ画像ジョブを登録します（`mode="image"`、`480` 秒待機ウィンドウ、`"agent finished without creating"` で `1x` リトライ）。`JobView` を返します。
+Google Flow プロジェクトで Agent チャットを管理します。すべての操作に `project_id` が必要です。既存のセッションには `session_id` を指定します。Flow は最初のメッセージを受け取るとセッションを保存します。
 
-| パラメータ | 型 | 必須 | 説明 |
-| :--- | :--- | :--- | :--- |
-| `prompt` | `string` | はい | Flow Agent モード用のバッチ画像プロンプト。 |
-| `model` | `string` | いいえ | モデル上書き。既定は `"nano-banana-2"`。 |
-| `aspect` | `string` | いいえ | アスペクト比（既定 `"16:9"`、`"9:16"`、または `"1:1"`）。 |
-| `count` | `integer` | いいえ | 出力数（`1..=4`）。既定は `2`。 |
+`create_session` と `send_message` では、`asset_ids` でプロジェクト内の画像や動画を添付できます。アセット ID またはプライマリメディア ID を指定します。`files` にはアップロードして添付するローカルの画像や動画のパスを指定します。ローカル動画は 30 秒以内にトリミングしてください。ファイルの保存後、ツールは `uploaded_asset_ids` を返すことがあります。ターンの `user.attachment_media_ids` に添付したメディア ID が入ります。
+
+アップロードがタイムアウトすると、確認済みのファイル ID がエラーに含まれます。`file_in_progress` がある場合は、再アップロードの前にプロジェクトでファイルの状態を確認します。添付の準備がタイムアウトした場合、メッセージは送信されません。
+
+| 操作 | その他の必須項目 | 結果 |
+| :--- | :--- | :--- |
+| `list_sessions` | | セッションの ID とタイトル、および送信可否（`can_send`） |
+| `create_session` | `message` | セッション ID と最初のターン |
+| `rename_session` | `session_id`、`title` | 変更後のタイトル |
+| `delete_session` | `session_id` | チャットの削除結果。生成済みのアセットはプロジェクトに残ります。 |
+| `send_message` | `session_id`、`message` | 新しいターン |
+| `list_messages` | `session_id` | 最近のターンを時系列で取得します。以前のターンには `limit`（1〜100、既定値 20）と `before_turn` を指定します。次のページの値は `next_before_turn` に入ります。 |
+| `get_turn` | `session_id`、`turn` | 指定ターンの最新状態と応答 |
+| `respond` | `session_id`、`turn`、`action_id`、`decision` または `answers` | 更新したターン、またはプランを実行する新しいターン |
+| `stop` | `session_id`、`turn` | 停止したターン |
+| `resume` | `session_id`、`turn` | 保存済みで進行中のターンに再接続します |
+
+ターン番号は 1 から始まります。結果には途中の応答、メディア ID、保留中の操作が含まれます。
+
+- ステータスが `in_progress` の間は、`get_turn` で応答を取得します。`connected: false` が返る場合は、`resume` で再接続します。
+- ステータスが `action_required` の場合は、`pending_actions` の `action_id` を指定して `respond` を呼び出します。
+  - 許可の `decision` は `approve`、`approve_and_remember`、`deny` です。
+  - プランの `decision` は `run_full_plan` または `previz` です。
+  - 質問には `answers` で各 `question_id`、`option_ids`、任意の `text` を送ります。
+
+`persisted: false` は、新しいセッションがまだ Flow のセッション一覧に表示されないことを示します。書き込みで `outcome_unknown` が返った場合は、再試行の前にセッションやターンを確認します。フロントエンドのビルドまたはランタイムの確認に失敗すると、`unsupported_front_end` が返ります。
 
 ### `flow_edit`
 

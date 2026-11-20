@@ -46,7 +46,7 @@ Wait for the job to finish:
 
 Each `flow_wait` call blocks for at most `45` seconds and returns `{"pending": true, ...}` while work continues. Call `flow_wait` again until every target job reaches `"done"`.
 
-## 2. Imagen and Agent Mode batch images
+## 2. Generate images and chat with Flow Agent
 
 For standard image generation (`mode="image"` defaults to `nano-banana-2`):
 
@@ -60,14 +60,13 @@ For standard image generation (`mode="image"` defaults to `nano-banana-2`):
 }
 ```
 
-For Flow Agent Mode batch images, call `flow_agent_images`. It uses a `480`-second wait window and adds one retry if an error contains `"agent finished without creating"`:
+To start a conversation, call `flow_agent` with the project ID and the first message. Use the returned `session_id` with `send_message` to continue. Poll `get_turn` with the session ID and turn number to read the reply.
 
 ```json
 {
-  "prompt": "Create four consistent storyboard frames of a paper lantern festival by a canal",
-  "model": "nano-banana-2",
-  "aspect": "16:9",
-  "count": 4
+  "action": "create_session",
+  "project_id": "<project-id>",
+  "message": "Suggest three visual styles for a scene on a rainy street."
 }
 ```
 

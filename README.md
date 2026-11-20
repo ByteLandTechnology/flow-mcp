@@ -84,7 +84,8 @@ Read the guide sections for each task:
 | :--- | :--- | :--- |
 | Session & Projects | `flow_status`, `flow_login`, `flow_new_project`, `flow_projects` | Check session state, sign in with Chrome, and manage projects |
 | Characters & Voices | `flow_voices`, `flow_character`, `flow_character_edit`, `flow_characters`, `flow_voice_preview` | List Flow voices, create or update characters with custom voices, preview voices, and store SQLite profiles |
-| Generation & Batch | `flow_generate`, `flow_agent_images`, `flow_edit` | Queue Veo video or Imagen image jobs, run Agent batches, or edit assets |
+| Generation & Edit | `flow_generate`, `flow_edit` | Queue video and image generation or edit assets |
+| Agent Chat | `flow_agent` | Manage sessions and exchange messages with Flow Agent |
 | Video & Scenes | `flow_video`, `flow_scenes` | Trim videos without source changes, extend clips, and manage scene timelines |
 | Queue Control | `flow_wait`, `flow_cancel`, `flow_retry` | Wait for jobs (`PATIENCE_MS = 45s`), stop jobs, or run failed jobs again |
 | Library & Media | `flow_assets`, `flow_rename`, `flow_collections`, `flow_download`, `flow_downloads`, `flow_trash` | Filter tiles, rename items, group collections, download files, read chunks, or trash items |

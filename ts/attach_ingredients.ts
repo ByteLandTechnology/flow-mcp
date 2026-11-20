@@ -53,7 +53,6 @@ interface IngredientTarget {
 /** Attaches reference ingredients or characters and writes the generation prompt text. */
 export async function attachIngredients(cfg: GenerationConfig): Promise<unknown> {
   const onEditPage = /\/edit\//.test(location.pathname || "");
-  const wantAgent = Boolean(cfg.agent);
 
   const ingredientTargets: IngredientTarget[] = [];
   const tileMap = runtimeState.store?.getTileMap?.();
@@ -146,7 +145,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     }
   }
 
-  if (ingredientTargets.length > 0 && !onEditPage && !wantAgent) {
+  if (ingredientTargets.length > 0 && !onEditPage) {
     const staleRemoveBtns = Array.from(
       document.querySelectorAll(
         'flow-prompt-box button[aria-label*="Remove" i], flow-prompt-box [class*="chip"] button',
@@ -164,7 +163,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     if (staleRemoveBtns.length > 0) await delay(100);
   }
 
-  const initialTb = findTextbox(wantAgent, onEditPage);
+  const initialTb = findTextbox(onEditPage);
   const scope: ParentNode = (() => {
     let cur: Element | null | undefined = initialTb?.parentElement;
     for (let i = 0; i < 6 && cur; i++) {
@@ -180,7 +179,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   })();
 
   for (const target of ingredientTargets) {
-    if (!onEditPage && !wantAgent && target.tile) {
+    if (!onEditPage && target.tile) {
       if (!(runtimeState.ngLViewMap instanceof Map)) {
         const tipEls = Array.from(
           document.querySelectorAll("[mattooltip], button[aria-label]"),
@@ -458,7 +457,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     }
   }
 
-  const tb = findTextbox(wantAgent, onEditPage);
+  const tb = findTextbox(onEditPage);
   if (!tb) return { ok: false, error: "prompt_textbox_not_found" };
   const promptHost = !onEditPage
     ? findPromptBoxHost(findProjectPageInstance())
@@ -470,26 +469,18 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         document.querySelector("flow-scene-builder flow-rich-text-editor"),
         document.querySelector("flow-rich-text-editor"),
       ]
-    : wantAgent
-      ? [
-          document.querySelector(
-            "flow-creative-agent-prompt-box flow-rich-text-editor",
-          ),
-          document.querySelector("flow-creative-agent-prompt-box"),
-          document.querySelector("flow-prompt-box flow-rich-text-editor"),
-        ]
-      : [
-          document.querySelector(
-            "flow-prompt-box flow-base-prompt-box flow-rich-text-editor",
-          ),
-          document.querySelector("flow-prompt-box flow-base-prompt-box"),
-          document.querySelector("flow-prompt-box flow-rich-text-editor"),
-        ];
+    : [
+        document.querySelector(
+          "flow-prompt-box flow-base-prompt-box flow-rich-text-editor",
+        ),
+        document.querySelector("flow-prompt-box flow-base-prompt-box"),
+        document.querySelector("flow-prompt-box flow-rich-text-editor"),
+      ];
   const writeInfo = await writePromptBox(tb, cfg.prompt, {
-    liveUx: findLiveBasePromptBox(wantAgent, onEditPage, promptHost),
+    liveUx: findLiveBasePromptBox(onEditPage, promptHost),
     seeds: composerSeeds,
     excludeSelector:
-      !onEditPage && !wantAgent
+      !onEditPage
         ? "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box"
         : null,
     strictSync: true,
@@ -501,7 +492,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   const finalHost = !onEditPage
     ? findPromptBoxHost(findProjectPageInstance())
     : null;
-  const finalUx = findLiveBasePromptBox(wantAgent, onEditPage, finalHost);
+  const finalUx = findLiveBasePromptBox(onEditPage, finalHost);
   const tbLen =
     (tb instanceof HTMLTextAreaElement || tb instanceof HTMLInputElement
       ? tb.value

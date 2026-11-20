@@ -66,7 +66,6 @@ export async function submitGeneration(): Promise<unknown> {
   }
 
   const onEditPage = /\/edit\//.test(location.pathname || "");
-  const wantAgent = Boolean(runtimeState.wantAgent);
   const scopedSelectors = onEditPage
     ? [
         'flow-edit-video-prompt-box button[aria-label="Start generation"]',
@@ -74,16 +73,10 @@ export async function submitGeneration(): Promise<unknown> {
         'flow-scene-builder button[aria-label="Start generation"]',
         'button[aria-label="Start generation"]',
       ]
-    : wantAgent
-      ? [
-          'flow-creative-agent-prompt-box button[aria-label="Start generation"]',
-          'flow-agent-panel button[aria-label="Start generation"]',
-          'flow-prompt-box button[aria-label="Start generation"]',
-        ]
-      : [
-          'flow-prompt-box flow-base-prompt-box button[aria-label="Start generation"]',
-          'flow-prompt-box button[aria-label="Start generation"]',
-        ];
+    : [
+        'flow-prompt-box flow-base-prompt-box button[aria-label="Start generation"]',
+        'flow-prompt-box button[aria-label="Start generation"]',
+      ];
   const findStartButton = (): HTMLElement | null => {
     for (const sel of scopedSelectors) {
       const match = Array.from(document.querySelectorAll(sel)).find(
@@ -91,7 +84,6 @@ export async function submitGeneration(): Promise<unknown> {
           if (!isVisible(b)) return false;
           if (
             !onEditPage &&
-            !wantAgent &&
             b.closest(
               "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box",
             )
@@ -109,7 +101,6 @@ export async function submitGeneration(): Promise<unknown> {
       if (!isVisible(b)) return false;
       if (
         !onEditPage &&
-        !wantAgent &&
         b.closest(
           "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box",
         )
@@ -118,8 +109,7 @@ export async function submitGeneration(): Promise<unknown> {
       }
       return true;
     });
-    const last = document.querySelector('button[aria-label="Start generation"]');
-    return fallback || (last instanceof HTMLElement ? last : null);
+    return fallback ?? null;
   };
 
   for (let i = 0; i < 120; i += 1) {
@@ -184,6 +174,9 @@ export async function submitGeneration(): Promise<unknown> {
   const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
   const createBtn = btns.find((b): b is HTMLElement => {
     if (b.tagName === "A" || !isVisibleEnabled(b)) return false;
+    if (!onEditPage && b.closest("flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box")) {
+      return false;
+    }
     if (
       b.closest(
         '.cdk-overlay-pane, [role="menu"], [role="listbox"], nav, aside',

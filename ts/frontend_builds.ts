@@ -3,6 +3,9 @@
 
 // Field names in verified builds of the Flow front end.
 
+import type { AgentAttachmentExport } from "./agent_attachments";
+import type { AgentExport } from "./agent_protocol";
+
 /** Field names for the collection write requests of one build. */
 export interface CollectionWriteFormat {
   /** Tile ID in a single-tile request. */
@@ -31,12 +34,58 @@ export interface AssetTrashFormat {
 
 /** Request formats verified for internal Flow operations. */
 export interface FrontendFormats {
+  /** Direct Flow Agent session and turn operations. */
+  agent_chat: AgentChatFormat;
+  /** Agent references and local media uploads. */
+  agent_attachments: AgentAttachmentFormat;
   /** Direct collection writes. */
   collection_write: CollectionWriteFormat;
   /** Asset trash through the project store. */
   asset_trash_store: AssetTrashFormat;
   /** Character personality note update. */
   character_bio: CharacterBioFormat;
+}
+
+/** Project page and browser exports for Agent chat. */
+export interface AgentChatFormat {
+  /** Exported project page component class. */
+  page: string;
+  /** Agent transport service on the project page. */
+  transport: string;
+  /** Angular injector on the project page. */
+  injector: string;
+  /** Exported Agent composer controller. */
+  composer: string;
+  /** Exported permission response service. */
+  permissions: string;
+  /** Exported question response service. */
+  questions: string;
+  /** Signal with the page's project ID. */
+  project: string;
+  /** Lifecycle controller on the project page. */
+  lifecycle: string;
+  /** Destroyed flag on the lifecycle controller. */
+  destroyed: string;
+  /** Browser exports for the native Agent protocol. */
+  exports: Readonly<Record<AgentExport, string>>;
+}
+
+/** Project page fields and exports for Agent attachments. */
+export interface AgentAttachmentFormat {
+  /** Project store on the page component. */
+  store: string;
+  /** Signal with all project tiles. */
+  tiles: string;
+  /** Query that loads the tiles for the active project. */
+  tileQuery: string;
+  /** Project mutation dispatcher. */
+  dispatcher: string;
+  /** Angular injector on the project page. */
+  injector: string;
+  /** Exported upload consent service. */
+  consent: string;
+  /** Functions that the verified build uses for attachments. */
+  exports: Readonly<Record<AgentAttachmentExport, string>>;
 }
 
 /** Field names for a character personality update. */
@@ -93,6 +142,76 @@ const NOVEMBER_18_STORE: ProjectStoreFormat = {
   rows: "Ab",
 };
 
+/** Agent chat format of build 20261118.14. */
+const NOVEMBER_18_AGENT: AgentChatFormat = {
+  page: "ku",
+  transport: "na",
+  injector: "Cb",
+  composer: "q3",
+  permissions: "Q1",
+  questions: "R1",
+  project: "ua",
+  lifecycle: "Ba",
+  destroyed: "Va",
+  exports: {
+    allocate: "yN",
+    init: "b0",
+    sessionList: "Kvc",
+    readSession: "Svc",
+    resume: "Tvc",
+    rows: "NZ",
+    metadata: "PZ",
+    string: "p",
+    turnType: "w_",
+    turns: "bv",
+    decode: "XZ",
+    hydrate: "Muc",
+    reply: "eCc",
+    permission: "yFc",
+    plan: "KEc",
+    newEnvelope: "B1",
+    setContent: "YZ",
+    mutable: "Uq",
+    finish: "Wq",
+    newContent: "wK",
+    setParts: "vK",
+    newPart: "qK",
+    setText: "pK",
+    errors: "uE",
+    legacyDecision: "xFc",
+    clearLegacyRequest: "Nuc",
+    oneOf: "nr",
+    toolEventType: "lZ",
+    toolEventGroup: "nZ",
+    toolResultType: "uZ",
+    resultItems: "qZ",
+    structFields: "hM",
+    valueString: "pZ",
+  },
+};
+
+/** Agent attachment format of build 20261118.14. */
+const NOVEMBER_18_ATTACHMENTS: AgentAttachmentFormat = {
+  store: "Xg",
+  tiles: "la",
+  tileQuery: "Ir",
+  dispatcher: "ie",
+  injector: "Cb",
+  consent: "PR",
+  exports: {
+    reference: "vO",
+    message: "nAc",
+    text: "FI",
+    id: "yN",
+    validateFiles: "uR",
+    isVideo: "sR",
+    mimeType: "jTb",
+    imageSize: "rR",
+    videoInfo: "qTb",
+    confirmUpload: "OR",
+  },
+};
+
 /** Verified operations and store format of one build. */
 interface FrontendBuild {
   /** Layout for the project store. */
@@ -119,7 +238,11 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
   ["boq_labs-ai-sandbox-frontend_20261118.14_p0", {
     projectStore: NOVEMBER_18_STORE,
-    operations: { character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" } },
+    operations: {
+      character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
+      agent_chat: NOVEMBER_18_AGENT,
+      agent_attachments: NOVEMBER_18_ATTACHMENTS,
+    },
   }],
 ]);
 

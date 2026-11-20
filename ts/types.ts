@@ -331,8 +331,6 @@ export interface PromptBoxHost {
   Sk: () => boolean;
   /** Returns the active manual base prompt box instance. */
   mt?: () => BasePromptBoxInstance | null | undefined;
-  /** Returns the active agent prompt box wrapper. */
-  iU?: () => { mt?: () => BasePromptBoxInstance | null | undefined } | null | undefined;
 }
 
 /** Angular project page component instance. */
@@ -557,8 +555,6 @@ export interface GenerationConfig {
   duration?: string | null;
   /** Video resolution label. */
   resolution?: string | null;
-  /** Whether to enable Agent Mode composer. */
-  agent?: boolean | null;
 }
 
 /** Request payload for `sceneOp`. */
@@ -707,6 +703,22 @@ export interface StoreProbeResult {
 
 /** Public browser runtime API exposed at `window.__flowMcp`. */
 export interface FlowMcpRuntime {
+  /** Returns the temporary file input for an Agent upload. */
+  stageAgentFiles: typeof import("./agent_attachments").stageAgentFiles;
+  /** Allocates an ID for a new Agent session. */
+  agentAllocate: typeof import("./agent_chat").agentAllocate;
+  /** Checks the project and lifecycle of the bound Agent. */
+  agentBound: typeof import("./agent_chat").agentBound;
+  /** Checks for a turn that still uses the Agent transport. */
+  agentBusy: typeof import("./agent_chat").agentBusy;
+  /** Runs one operation on the bound Agent. */
+  agentOp: typeof import("./agent_chat").agentOp;
+  /** Returns the project page prototype for CDP instance discovery. */
+  agentPrototype: typeof import("./agent_chat").agentPrototype;
+  /** Checks the Agent build and chat exports. */
+  agentStatus: typeof import("./agent_chat").agentStatus;
+  /** Binds the Agent services of the project page. */
+  bindAgent: typeof import("./agent_chat").bindAgent;
   /** Probes Google Flow authentication shell status. */
   checkAuth: () => AuthCheckResult;
   /** Discovers Angular Ivy store services and binds module state. */

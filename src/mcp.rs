@@ -21,12 +21,13 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::time::Duration;
 
+use crate::agent::AgentParams;
 use crate::assets::{AssetsParams, DownloadParams, RenameParams, TrashParams};
 use crate::auth::LoginParams;
 use crate::characters::{CharacterEditParams, CharacterParams, VoicesParams};
 use crate::collections::CollectionsParams;
 use crate::db::{DOWNLOAD_ASSET_RESOURCE_PREFIX, DOWNLOAD_RESOURCE_PREFIX, DownloadsParams};
-use crate::generation::{AgentImagesParams, EditParams, GenerateParams};
+use crate::generation::{EditParams, GenerateParams};
 use crate::project::{NewProjectParams, ProjectsParams, StatusParams};
 use crate::queue::{JobIdParams, WaitParams};
 use crate::scenes::{ScenesParams, VideoParams};
@@ -253,13 +254,12 @@ impl FlowMcpServer {
         Self::format_result(self.service.generate(req).await)
     }
 
-    /// Queues a Flow Agent Mode batch image job.
-    #[tool(description = "Queue a Flow Agent Mode batch image job.")]
-    async fn flow_agent_images(
-        &self,
-        Parameters(req): Parameters<AgentImagesParams>,
-    ) -> CallToolResult {
-        Self::format_result(self.service.agent_images(req).await)
+    /// Manages Flow Agent sessions and conversation turns.
+    #[tool(
+        description = "Manage Flow Agent chat sessions. Create a session with a first message, list, rename, or delete sessions, send messages, read history, check or resume turns, respond to requests, or stop a turn."
+    )]
+    async fn flow_agent(&self, Parameters(req): Parameters<AgentParams>) -> CallToolResult {
+        Self::format_result(self.service.agent(req).await)
     }
 
     /// Queues an edit job for a matching asset in Google Flow.

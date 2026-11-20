@@ -48,7 +48,7 @@ Running parallel edits on one Google Flow Angular tab causes UI race conditions,
 
 - **Single background worker**: Only one generation, edit, video extend, or character job runs at a time. Finished jobs stay in a FIFO history list with at most `200` items.
 - **Random pauses between jobs**: Before each next job, the worker pauses for a random time in the `--pause` or `FLOW_MCP_PAUSE` range (`25,70` seconds by default).
-- **Automatic Agent Mode retry**: If a job fails with `"agent finished without creating"` and `retried_from` is `None`, `JobQueue` queues one retry job with `retried_from` set to that ID.
+- **Agent turns**: The Agent uses a separate project page. An open response holds the execution lock that media jobs use.
 - **Inline wait window (`PATIENCE_MS = 45_000`)**: Many MCP clients cancel tool calls after `60` seconds. `flow_wait` and `flow_download` wait up to `45` seconds per call, then return `{"pending": true, ...}` so you can poll again with `flow_wait`, `flow_status`, or `flow_downloads`.
 
 ## 4. Storage boundary and dual-path downloads

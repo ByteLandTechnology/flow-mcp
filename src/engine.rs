@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, MutexGuard, broadcast};
 
 use crate::auth::is_signed_in_flow_url;
-use crate::cdp::{CdpConnection, find_or_create_page_target};
+use crate::cdp::{CdpConnection, find_or_create_page_target, page_target_socket};
 use crate::chrome::{LoginChrome, ManagedChrome, inspect_login_profile};
 use crate::cookies::{
     NormalizedCookie, cookie_header_from_normalized, has_google_auth_cookies, normalize_cookies,
@@ -79,6 +79,61 @@ struct ActiveChrome {
     cdp: Arc<CdpConnection>,
 }
 
+/// CDP connection to a separate page in the signed-in Chrome profile.
+pub(crate) struct BackgroundPage {
+    /// Connection to this page only.
+    cdp: CdpConnection,
+}
+
+impl BackgroundPage {
+    /// Returns true while the page connection is open.
+    pub(crate) fn is_alive(&self) -> bool {
+        self.cdp.is_alive()
+    }
+
+    /// Loads the URL in the background page.
+    pub(crate) async fn navigate(&self, url: &str) -> Result<()> {
+        let result = self.cdp.call("Page.navigate", json!({"url": url})).await?;
+        if let Some(error) = result.get("errorText").and_then(Value::as_str) {
+            anyhow::bail!("Chrome could not open the Agent page: {error}");
+        }
+        Ok(())
+    }
+
+    /// Calls a browser runtime method in this page.
+    pub(crate) async fn call(&self, method: &str, args: Value) -> Result<Value> {
+        self.call_with_timeout(method, args, Duration::from_secs(30))
+            .await
+    }
+
+    /// Calls a browser runtime method with a specified time limit.
+    pub(crate) async fn call_with_timeout(
+        &self,
+        method: &str,
+        args: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        ChromeEngine::eval_flow_method_on(&self.cdp, method, args, true, timeout).await
+    }
+
+    /// Assigns local paths to the temporary file input in the Agent page.
+    pub(crate) async fn stage_agent_files(&self, files: &[String]) -> Result<()> {
+        set_local_files(&self.cdp, "window.__flowMcp.stageAgentFiles()", files).await
+    }
+
+    /// Binds the Agent runtime to the specified project page.
+    pub(crate) async fn bind_agent(&self, project_id: &str) -> Result<bool> {
+        let result = bind_browser_instances(
+            &self.cdp,
+            "window.__flowMcp?.agentPrototype()",
+            "bindAgent",
+            project_id,
+        )
+        .await?;
+        Ok(result.and_then(|value| value.as_bool()).unwrap_or(false))
+    }
+}
+
 /// Poll status reported for an open standard interactive Chrome sign-in window.
 pub(crate) struct LoginPollStatus {
     /// True when the user closed the interactive Chrome process.
@@ -91,7 +146,7 @@ pub(crate) struct LoginPollStatus {
     pub(crate) has_google_auth_cookies: bool,
 }
 
-/// Manages one Chrome process and page CDP session per MCP server instance.
+/// Manages the Chrome process and main page for one MCP server instance.
 pub(crate) struct ChromeEngine {
     /// Active background Chrome process and page CDP connection.
     inner: Mutex<Option<ActiveChrome>>,
@@ -322,6 +377,38 @@ impl ChromeEngine {
         cdp.call(method, params).await
     }
 
+    /// Opens a new page in the managed Chrome profile.
+    pub(crate) async fn open_background_page(&self) -> Result<BackgroundPage> {
+        let cdp = self.active_cdp().await?;
+        let endpoint = self
+            .cdp_endpoint()
+            .await
+            .context("Chrome endpoint unavailable")?;
+        let target = cdp
+            .call(
+                "Target.createTarget",
+                json!({"url": "about:blank", "background": true}),
+            )
+            .await?;
+        let id = target["targetId"]
+            .as_str()
+            .context("Chrome did not return a target ID")?;
+        let result = async {
+            let socket = page_target_socket(&endpoint, id).await?;
+            let (network_tx, _) = broadcast::channel(16);
+            Ok(BackgroundPage {
+                cdp: CdpConnection::connect_page(&socket, network_tx).await?,
+            })
+        }
+        .await;
+        if result.is_err() {
+            let _ = cdp
+                .call("Target.closeTarget", json!({"targetId": id}))
+                .await;
+        }
+        result
+    }
+
     /// Locks the direct project store until the current operation ends.
     pub(crate) async fn lock_project_store(&self) -> MutexGuard<'_, ()> {
         self.project_store_lock.lock().await
@@ -332,17 +419,9 @@ impl ChromeEngine {
         let cdp = self.active_cdp().await?;
         let project_id = project_id.to_owned();
         tokio::spawn(async move {
-            let group = format!("flow-project-store-{}", uuid::Uuid::new_v4());
-            let result = bind_from_maps(&cdp, &group, &project_id).await;
-            let released = cdp
-                .call(
-                    "Runtime.releaseObjectGroup",
-                    json!({ "objectGroup": group }),
-                )
-                .await;
-            let value = result?;
-            released?;
-            Ok(value)
+            bind_browser_instances(&cdp, "Map.prototype", "bindProjectStore", &project_id)
+                .await?
+                .context("Chrome did not return the Map prototype")
         })
         .await
         .context("The project store search did not finish")?
@@ -413,6 +492,18 @@ impl ChromeEngine {
         await_promise: bool,
         timeout: Duration,
     ) -> Result<Value> {
+        let cdp = self.active_cdp().await?;
+        Self::eval_flow_method_on(&cdp, method, args, await_promise, timeout).await
+    }
+
+    /// Invokes a runtime method in the specified Chrome page.
+    async fn eval_flow_method_on(
+        cdp: &CdpConnection,
+        method: &str,
+        args: Value,
+        await_promise: bool,
+        timeout: Duration,
+    ) -> Result<Value> {
         anyhow::ensure!(
             args.is_array(),
             "Flow runtime arguments for '{}' must be a JSON array",
@@ -435,19 +526,18 @@ impl ChromeEngine {
             )
         };
 
-        let cdp = self.active_cdp().await?;
-        let probe = eval_runtime(&cdp, &probe_expr, await_promise, timeout).await?;
+        let probe = eval_runtime(cdp, &probe_expr, await_promise, timeout).await?;
         if probe.get("__flowMcpHit").and_then(Value::as_bool) == Some(true) {
             return Ok(probe.get("value").cloned().unwrap_or(Value::Null));
         }
 
-        eval_runtime(&cdp, FLOW_RUNTIME_JS, false, Duration::from_secs(30)).await?;
+        eval_runtime(cdp, FLOW_RUNTIME_JS, false, Duration::from_secs(30)).await?;
         let direct_expr = if await_promise {
             format!("(async () => await window.__flowMcp[{method_json}](...{args_json}))()")
         } else {
             format!("window.__flowMcp[{method_json}](...{args_json})")
         };
-        eval_runtime(&cdp, &direct_expr, await_promise, timeout).await
+        eval_runtime(cdp, &direct_expr, await_promise, timeout).await
     }
 
     /// Dispatches a trusted CDP mouse move event at viewport coordinates `(x, y)`.
@@ -514,38 +604,7 @@ impl ChromeEngine {
     /// Assigns local `files` to the `<input>` element that the JavaScript expression `query_expr` returns.
     pub(crate) async fn upload_files_to(&self, query_expr: &str, files: &[String]) -> Result<()> {
         let cdp = self.active_cdp().await?;
-        let mut object_id: Option<String> = None;
-        for _ in 0..20 {
-            let res = cdp
-                .call(
-                    "Runtime.evaluate",
-                    json!({
-                        "expression": query_expr,
-                        "returnByValue": false,
-                    }),
-                )
-                .await?;
-            if let Some(oid) = res.pointer("/result/objectId").and_then(|v| v.as_str()) {
-                object_id = Some(oid.to_string());
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        let Some(object_id) = object_id else {
-            anyhow::bail!("File input element not found for: {}", query_expr);
-        };
-
-        cdp.call(
-            "DOM.setFileInputFiles",
-            json!({
-                "objectId": object_id,
-                "files": files,
-            }),
-        )
-        .await?;
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        Ok(())
+        set_local_files(&cdp, query_expr, files).await
     }
 
     /// Subscribes to CDP network response events captured from the active page.
@@ -715,6 +774,53 @@ async fn dispatch_mouse_moved(cdp: &CdpConnection, x: f64, y: f64) -> Result<()>
     Ok(())
 }
 
+/// Finds the file input that the expression returns and assigns the local files.
+async fn set_local_files(cdp: &CdpConnection, query_expr: &str, files: &[String]) -> Result<()> {
+    let group = format!("flow-file-input-{}", uuid::Uuid::new_v4());
+    let assignment = async {
+        let mut object_id: Option<String> = None;
+        for _ in 0..20 {
+            let res = cdp
+                .call(
+                    "Runtime.evaluate",
+                    json!({
+                        "expression": query_expr,
+                        "returnByValue": false,
+                        "objectGroup": group,
+                    }),
+                )
+                .await?;
+            if let Some(oid) = res.pointer("/result/objectId").and_then(|v| v.as_str()) {
+                object_id = Some(oid.to_string());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let Some(object_id) = object_id else {
+            anyhow::bail!("File input element not found for: {}", query_expr);
+        };
+
+        cdp.call(
+            "DOM.setFileInputFiles",
+            json!({
+                "objectId": object_id,
+                "files": files,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+    let released = cdp
+        .call("Runtime.releaseObjectGroup", json!({"objectGroup": group}))
+        .await;
+    assignment?;
+    released?;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    Ok(())
+}
+
 /// Evaluates `expr` via CDP `Runtime.evaluate` and propagates JavaScript exception messages.
 async fn eval_runtime(
     cdp: &CdpConnection,
@@ -751,38 +857,70 @@ fn runtime_value(res: &Value) -> Result<Value> {
     Ok(res.pointer("/result/value").cloned().unwrap_or(Value::Null))
 }
 
-/// Queries the Map prototype and runs the project store binder on the result array.
-async fn bind_from_maps(cdp: &CdpConnection, group: &str, project_id: &str) -> Result<Value> {
-    let prototype = cdp
-        .call(
-            "Runtime.evaluate",
-            json!({ "expression": "Map.prototype", "objectGroup": group }),
-        )
-        .await?;
-    let prototype_id = prototype
-        .pointer("/result/objectId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("Chrome did not return the Map prototype"))?;
-    let maps = cdp
-        .call(
-            "Runtime.queryObjects",
-            json!({ "prototypeObjectId": prototype_id, "objectGroup": group }),
-        )
-        .await?;
-    let maps_id = maps
-        .pointer("/objects/objectId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("Chrome did not return the Map objects"))?;
-    let result = cdp
-        .call(
-            "Runtime.callFunctionOn",
-            json!({
-                "objectId": maps_id,
-                "functionDeclaration": "function (project) { return window.__flowMcp?.bindProjectStore(this, project); }",
-                "arguments": [{ "value": project_id }],
-                "returnByValue": true,
-            }),
-        )
-        .await?;
-    runtime_value(&result)
+/// Removes the success flag or returns the error code and details from the page.
+pub(crate) fn checked_runtime_result(mut result: Value) -> Result<Value> {
+    let fields = result
+        .as_object_mut()
+        .context("The browser runtime did not return a result")?;
+    if fields.remove("ok").and_then(|value| value.as_bool()) == Some(true) {
+        return Ok(result);
+    }
+    let error = fields
+        .remove("error")
+        .context("The browser runtime did not return an error code")?;
+    let error = error
+        .as_str()
+        .context("The browser runtime returned an invalid error code")?;
+    if fields.is_empty() {
+        anyhow::bail!("{error}");
+    }
+    anyhow::bail!("{error} {result}");
+}
+
+/// Queries live browser instances and passes them to the specified runtime binder.
+async fn bind_browser_instances(
+    cdp: &CdpConnection,
+    prototype_expression: &str,
+    binder: &str,
+    project_id: &str,
+) -> Result<Option<Value>> {
+    let group = format!("flow-bind-{}", uuid::Uuid::new_v4());
+    let result = async {
+        let prototype = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": prototype_expression, "objectGroup": group }),
+            )
+            .await?;
+        let Some(prototype_id) = prototype.pointer("/result/objectId").and_then(Value::as_str) else {
+            runtime_value(&prototype)?;
+            return Ok(None);
+        };
+        let instances = cdp
+            .call(
+                "Runtime.queryObjects",
+                json!({ "prototypeObjectId": prototype_id, "objectGroup": group }),
+            )
+            .await?;
+        let id = instances.pointer("/objects/objectId").and_then(Value::as_str)
+            .context("Chrome did not return any objects for the binder")?;
+        let result = cdp
+            .call(
+                "Runtime.callFunctionOn",
+                json!({
+                    "objectId": id,
+                    "functionDeclaration": "function (method, project) { return window.__flowMcp?.[method](this, project); }",
+                    "arguments": [{"value": binder}, {"value": project_id}],
+                    "returnByValue": true,
+                }),
+            )
+            .await?;
+        runtime_value(&result).map(Some)
+    }.await;
+    let released = cdp
+        .call("Runtime.releaseObjectGroup", json!({"objectGroup": group}))
+        .await;
+    let value = result?;
+    released?;
+    Ok(value)
 }

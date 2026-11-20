@@ -508,3 +508,20 @@ pub(crate) async fn find_or_create_page_target(endpoint: &str) -> Result<String>
         .to_string();
     Ok(ws)
 }
+
+/// Gets the WebSocket URL for the specified Chrome target.
+pub(crate) async fn page_target_socket(endpoint: &str, target_id: &str) -> Result<String> {
+    let url = format!("{}/json/list", endpoint.trim_end_matches('/'));
+    let list: Vec<Value> = http_client()
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    list.iter()
+        .find(|target| target["id"].as_str() == Some(target_id))
+        .and_then(|target| target["webSocketDebuggerUrl"].as_str())
+        .map(str::to_owned)
+        .context("Chrome did not report the new page target")
+}

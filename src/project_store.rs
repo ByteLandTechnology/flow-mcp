@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use tokio::sync::MutexGuard;
 
 use crate::auth::is_signed_in_flow_url;
-use crate::engine::ChromeEngine;
+use crate::engine::{ChromeEngine, checked_runtime_result};
 use crate::project::project_id_from_url;
 
 /// Holds the browser project store lock and pins the project and runtime session.
@@ -42,7 +42,7 @@ impl<'a> ProjectStoreSession<'a> {
             } else {
                 status
             };
-        let session = checked_result(status)?
+        let session = checked_runtime_result(status)?
             .get("session")
             .and_then(Value::as_str)
             .context("The browser did not return the project store session")?
@@ -74,7 +74,7 @@ impl<'a> ProjectStoreSession<'a> {
             .call_flow_async(method, json!([self.project_id, self.session, request]))
             .await;
         match (response, mutation) {
-            (Ok(result), _) => checked_result(result),
+            (Ok(result), _) => checked_runtime_result(result),
             (Err(error), Some(mutation)) => anyhow::bail!(
                 "outcome_unknown (project {}, {mutation}): {error:#}",
                 self.project_id
@@ -82,24 +82,4 @@ impl<'a> ProjectStoreSession<'a> {
             (Err(error), None) => Err(error),
         }
     }
-}
-
-/// Returns a successful runtime result or reports the error and its details.
-fn checked_result(mut result: Value) -> Result<Value> {
-    let fields = result
-        .as_object_mut()
-        .context("The project store runtime did not return a result")?;
-    if fields.remove("ok").and_then(|value| value.as_bool()) == Some(true) {
-        return Ok(result);
-    }
-    let error = fields
-        .remove("error")
-        .context("The project store runtime did not return an error code")?;
-    let error = error
-        .as_str()
-        .context("The project store runtime returned an invalid error code")?;
-    if fields.is_empty() {
-        anyhow::bail!("{error}");
-    }
-    anyhow::bail!("{error} {result}");
 }

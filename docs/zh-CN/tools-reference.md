@@ -71,7 +71,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ![JobQueue 生命周期与 45 秒内联等待](../assets/zh-CN/job-queue-lifecycle.svg)
 
-- **`JobView`**（`flow_generate`、`flow_agent_images`、`flow_edit`、`flow_video` `extend`、`flow_character`、`flow_character_edit`、`flow_wait`、`flow_cancel`、`flow_retry`）：
+- **`JobView`**（`flow_generate`、`flow_edit`、`flow_video` `extend`、`flow_character`、`flow_character_edit`、`flow_wait`、`flow_cancel`、`flow_retry`）：
   - 字段：`id`（8 位字符串）、`status`（`"queued"`、`"running"`、`"done"`、`"failed"`、`"cancelled"`）、`prompt`、`name?`、`mode?`、`model?`、`created_at?`、`started_at?`、`finished_at?`（Unix 毫秒）、`progress?`、`files?`、`created?`、`resources?`、`error?`、`retried_from?`。
 - **`DownloadRecord`**（`flow_download`、`flow_downloads`）：
   - 字段：`id`、`asset_id`、`project_id?`、`project_title?`、`name`、`kind`、`prompt?`、`source_url?`、`file_path`、`file_name`、`mime_type?`、`size_bytes`、`asset_created_at?`、`downloaded_at`（Unix 毫秒）、`exists`（布尔值）、`resource_uri`（`flow://downloads/<id>`）。
@@ -214,16 +214,36 @@ flow-mcp [OPTIONS] <COMMAND>
 | `character_role` | `string` | 否 | SQLite `character_looks` 键，用于向 `prompt` 追加 `", character {role}: {look}"`。 |
 | `character_look` | `string` | 否 | 在 SQLite 中以 `character_role` 保存外观文本并追加到 `prompt`。 |
 
-### `flow_agent_images`
+### `flow_agent`
 
-入队 Flow Agent 模式批量出图任务（`mode="image"`、`480` 秒等待窗口、遇到 `"agent finished without creating"` 时重试 `1` 次）。返回 `JobView`。
+管理 Google Flow 项目中的 Agent 对话。每次调用都传入 `project_id`。操作已有会话时传入 `session_id`。Flow 接收首条消息时保存新会话。
 
-| 参数 | 类型 | 必填 | 说明 |
-| :--- | :--- | :--- | :--- |
-| `prompt` | `string` | 是 | Flow Agent 模式的批量生图提示词。 |
-| `model` | `string` | 否 | 模型覆盖。默认 `"nano-banana-2"`。 |
-| `aspect` | `string` | 否 | 画面比例（默认 `"16:9"`、`"9:16"` 或 `"1:1"`）。 |
-| `count` | `integer` | 否 | 输出数量，范围 `1..=4`。默认 `2`。 |
+`create_session` 和 `send_message` 都支持附件。用 `asset_ids` 附加当前项目的图片或视频，接受资产 ID 或主媒体 ID。用 `files` 上传并附加本机图片或视频，上传的视频要先裁到 30 秒以内。文件保存到项目后，工具可返回 `uploaded_asset_ids`。轮次结果的 `user.attachment_media_ids` 列出所附媒体 ID。
+
+上传超时时，错误结果会列出已确认保存的文件 ID。如果返回 `file_in_progress`，先在项目里确认该文件的状态再重试。附件准备超时后，工具不会发送该条消息。
+
+| 操作 | 其他必填参数 | 返回 |
+| :--- | :--- | :--- |
+| `list_sessions` | | 会话 ID、标题和项目是否允许发送消息（`can_send`） |
+| `create_session` | `message` | 会话 ID 和首轮消息 |
+| `rename_session` | `session_id`、`title` | 更新后的会话标题 |
+| `delete_session` | `session_id` | 会话删除结果。生成的资产保留在项目中。 |
+| `send_message` | `session_id`、`message` | 新一轮消息 |
+| `list_messages` | `session_id` | 按顺序返回最近的消息轮次。用 `limit`（1 至 100，默认 20）和 `before_turn` 查询更早的轮次，下一页参数由 `next_before_turn` 返回。 |
+| `get_turn` | `session_id`、`turn` | 指定轮次的最新状态和回复 |
+| `respond` | `session_id`、`turn`、`action_id`、`decision` 或 `answers` | 更新后的轮次，或执行计划的新轮次 |
+| `stop` | `session_id`、`turn` | 已停止的轮次 |
+| `resume` | `session_id`、`turn` | 重新连接已保存且仍在进行的轮次 |
+
+轮次编号从 1 开始。结果可包含部分文字回复、媒体 ID 和待处理操作。
+
+- 状态为 `in_progress` 时，用 `get_turn` 查询当前回复。如果同时返回 `connected: false`，用 `resume` 重新连接。
+- 状态为 `action_required` 时，从 `pending_actions` 取出 `action_id`，再调用 `respond`。
+  - 权限请求的 `decision` 可设为 `approve`、`approve_and_remember` 或 `deny`。
+  - 计划的 `decision` 可设为 `run_full_plan` 或 `previz`。
+  - 回答问题时，在 `answers` 中为每项提供 `question_id`、`option_ids` 和可选的 `text`。
+
+`persisted: false` 表示新会话暂未出现在 Flow 会话列表中。如果写入返回 `outcome_unknown`，请先查会话或轮次再重试。前端构建或运行时检查失败时，工具返回 `unsupported_front_end`。
 
 ### `flow_edit`
 

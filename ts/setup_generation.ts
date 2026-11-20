@@ -168,144 +168,79 @@ export async function setupGeneration(
   cfg: GenerationConfig,
 ): Promise<{ ok: boolean; error?: string }> {
   const onEditPage = /\/edit\//.test(location.pathname || "");
-  const wantAgent = Boolean(cfg.agent);
-  runtimeState.wantAgent = wantAgent;
 
   if (!onEditPage) {
-    await ensureLViewCapture(!wantAgent);
+    await ensureLViewCapture(true);
     let projPage = findProjectPageInstance();
     let promptBoxHost = findPromptBoxHost(projPage);
 
-    if (!wantAgent) {
-      if (document.querySelector("flow-agent-panel, .agent-panel-wrapper")) {
-        if (projPage) {
-          try {
-            projPage.ub?.mutate?.(false);
-            projPage.Ta?.mutate?.(false);
-          } catch {
-            // Fall through to agent panel buttons.
-          }
+    if (document.querySelector("flow-agent-panel, .agent-panel-wrapper")) {
+      if (projPage) {
+        try {
+          projPage.ub?.mutate?.(false);
+          projPage.Ta?.mutate?.(false);
+        } catch {
+          // Fall through to agent panel buttons.
         }
-        const agentPanelEl = document.querySelector("flow-agent-panel");
-        if (agentPanelEl) {
-          const apLv = resolveLView(agentPanelEl);
-          if (Array.isArray(apLv)) {
-            for (const cand of apLv) {
-              if (cand && typeof cand === "object" && !(cand instanceof Node)) {
-                try {
-                  (readOwn(cand, "d_") as { emit?: () => void } | undefined)?.emit?.();
-                } catch {
-                  // Ignore emitter mismatch.
-                }
-                try {
-                  (readOwn(cand, "iN") as { emit?: () => void } | undefined)?.emit?.();
-                } catch {
-                  // Ignore emitter mismatch.
-                }
+      }
+      const agentPanelEl = document.querySelector("flow-agent-panel");
+      if (agentPanelEl) {
+        const apLv = resolveLView(agentPanelEl);
+        if (Array.isArray(apLv)) {
+          for (const cand of apLv) {
+            if (cand && typeof cand === "object" && !(cand instanceof Node)) {
+              try {
+                (readOwn(cand, "d_") as { emit?: () => void } | undefined)?.emit?.();
+              } catch {
+                // Ignore emitter mismatch.
+              }
+              try {
+                (readOwn(cand, "iN") as { emit?: () => void } | undefined)?.emit?.();
+              } catch {
+                // Ignore emitter mismatch.
               }
             }
           }
-          const exitBtn = Array.from(
-            agentPanelEl.querySelectorAll('button, [role="button"]'),
-          ).find((el): el is HTMLElement => {
-            if (!isVisibleEnabled(el)) return false;
-            const lbl = (
-              el.getAttribute("aria-label") || elText(el)
-            ).trim();
-            return /^(?:switch to manual|exit agent|close(?: panel)?)$/i.test(
-              lbl,
-            );
-          });
-          if (exitBtn) exitBtn.click();
         }
-      }
-
-      if (
-        Boolean(promptBoxHost?.Sk?.()) === true ||
-        Boolean(
-          document.querySelector(
-            "flow-prompt-box flow-creative-agent-prompt-box, flow-agent-panel, .agent-panel-wrapper",
-          ),
-        ) ||
-        !document.querySelector("flow-prompt-box flow-base-prompt-box")
-      ) {
-        if (promptBoxHost && Boolean(promptBoxHost.Sk()) === true) {
-          const activeHost = promptBoxHost;
-          await withLViewMapCapture(async () => {
-            activeHost.Tx();
-            await delay(100);
-          });
-        } else if (
-          Boolean(
-            document.querySelector(
-              "flow-prompt-box flow-creative-agent-prompt-box",
-            ),
-          )
-        ) {
-          const toggleChip = document.querySelector(
-            'flow-creative-agent-prompt-box flow-agent-mode-toggle-chip button, flow-prompt-box flow-agent-mode-toggle-chip button[aria-pressed="true"], flow-agent-mode-toggle-chip [role="button"]',
+        const exitBtn = Array.from(
+          agentPanelEl.querySelectorAll('button, [role="button"]'),
+        ).find((el): el is HTMLElement => {
+          if (!isVisibleEnabled(el)) return false;
+          const lbl = (
+            el.getAttribute("aria-label") || elText(el)
+          ).trim();
+          return /^(?:switch to manual|exit agent|close(?: panel)?)$/i.test(
+            lbl,
           );
-          if (isVisibleEnabled(toggleChip)) {
-            toggleChip.click();
-            await delay(100);
-          }
-        }
-        for (let i = 0; i < 30; i += 1) {
-          const manualReady =
-            Boolean(promptBoxHost?.Sk?.()) === false &&
-            Boolean(
-              document.querySelector("flow-prompt-box flow-base-prompt-box"),
-            ) &&
-            !document.querySelector(
-              "flow-prompt-box flow-creative-agent-prompt-box",
-            ) &&
-            !document.querySelector(".agent-panel-wrapper");
-          if (manualReady) break;
-          if (i === 10) {
-            projPage = findProjectPageInstance();
-            promptBoxHost = findPromptBoxHost(projPage);
-            if (projPage) {
-              try {
-                projPage.ub?.mutate?.(false);
-                projPage.Ta?.mutate?.(false);
-              } catch {
-                // Fall back to prompt host toggle.
-              }
-            }
-            if (promptBoxHost && Boolean(promptBoxHost.Sk?.()) === true) {
-              const retryHost = promptBoxHost;
-              try {
-                await withLViewMapCapture(async () => {
-                  retryHost.Tx();
-                  await delay(100);
-                });
-              } catch {
-                // Continue polling manual readiness.
-              }
-            } else {
-              const retryChip = document.querySelector(
-                'flow-creative-agent-prompt-box flow-agent-mode-toggle-chip button, flow-prompt-box flow-agent-mode-toggle-chip button[aria-pressed="true"], flow-agent-mode-toggle-chip [role="button"]',
-              );
-              if (isVisibleEnabled(retryChip)) {
-                retryChip.click();
-              }
-            }
-          }
-          await delay(100);
-        }
+        });
+        if (exitBtn) exitBtn.click();
       }
-    } else if (
-      !document.querySelector("flow-creative-agent-prompt-box, flow-agent-panel")
+    }
+
+    if (
+      Boolean(promptBoxHost?.Sk?.()) === true ||
+      Boolean(
+        document.querySelector(
+          "flow-prompt-box flow-creative-agent-prompt-box, flow-agent-panel, .agent-panel-wrapper",
+        ),
+      ) ||
+      !document.querySelector("flow-prompt-box flow-base-prompt-box")
     ) {
-      if (promptBoxHost && Boolean(promptBoxHost.Sk()) === false) {
+      if (promptBoxHost && Boolean(promptBoxHost.Sk()) === true) {
         const activeHost = promptBoxHost;
         await withLViewMapCapture(async () => {
           activeHost.Tx();
           await delay(100);
         });
-      } else {
+      } else if (
+        Boolean(
+          document.querySelector(
+            "flow-prompt-box flow-creative-agent-prompt-box",
+          ),
+        )
+      ) {
         const toggleChip = document.querySelector(
-          'flow-agent-mode-toggle-chip button, flow-agent-mode-toggle-chip [role="button"], flow-agent-entrypoint button',
+          'flow-creative-agent-prompt-box flow-agent-mode-toggle-chip button, flow-prompt-box flow-agent-mode-toggle-chip button[aria-pressed="true"], flow-agent-mode-toggle-chip [role="button"]',
         );
         if (isVisibleEnabled(toggleChip)) {
           toggleChip.click();
@@ -313,12 +248,45 @@ export async function setupGeneration(
         }
       }
       for (let i = 0; i < 30; i += 1) {
-        if (
-          document.querySelector(
-            "flow-creative-agent-prompt-box, flow-agent-panel",
-          )
-        ) {
-          break;
+        const manualReady =
+          Boolean(promptBoxHost?.Sk?.()) === false &&
+          Boolean(
+            document.querySelector("flow-prompt-box flow-base-prompt-box"),
+          ) &&
+          !document.querySelector(
+            "flow-prompt-box flow-creative-agent-prompt-box",
+          ) &&
+          !document.querySelector(".agent-panel-wrapper");
+        if (manualReady) break;
+        if (i === 10) {
+          projPage = findProjectPageInstance();
+          promptBoxHost = findPromptBoxHost(projPage);
+          if (projPage) {
+            try {
+              projPage.ub?.mutate?.(false);
+              projPage.Ta?.mutate?.(false);
+            } catch {
+              // Fall back to prompt host toggle.
+            }
+          }
+          if (promptBoxHost && Boolean(promptBoxHost.Sk?.()) === true) {
+            const retryHost = promptBoxHost;
+            try {
+              await withLViewMapCapture(async () => {
+                retryHost.Tx();
+                await delay(100);
+              });
+            } catch {
+              // Continue polling manual readiness.
+            }
+          } else {
+            const retryChip = document.querySelector(
+              'flow-creative-agent-prompt-box flow-agent-mode-toggle-chip button, flow-prompt-box flow-agent-mode-toggle-chip button[aria-pressed="true"], flow-agent-mode-toggle-chip [role="button"]',
+            );
+            if (isVisibleEnabled(retryChip)) {
+              retryChip.click();
+            }
+          }
         }
         await delay(100);
       }
@@ -327,13 +295,9 @@ export async function setupGeneration(
     const settingsBtn = document.querySelector(
       'flow-prompt-box button[aria-label="Settings trigger"], button[aria-label="Settings trigger"]',
     );
-    const scope = findComposerRoot(findTextbox(wantAgent, onEditPage));
+    const scope = findComposerRoot(findTextbox(onEditPage));
 
-    if (
-      !wantAgent &&
-      isVisibleEnabled(settingsBtn) &&
-      !settingsOpen()
-    ) {
+    if (isVisibleEnabled(settingsBtn) && !settingsOpen()) {
       await withLViewMapCapture(async () => {
         settingsBtn.click();
         await delay(180);
@@ -490,66 +454,63 @@ export async function setupGeneration(
       // Optional resolution and length controls may be unavailable.
     }
 
-    if (!wantAgent) {
-      try {
-        const liveUx = findLiveBasePromptBox(
-          false,
-          false,
-          findPromptBoxHost(findProjectPageInstance()),
-        );
-        const curMode = String(liveUx?.Qa?.config?.mode?.() || "");
-        const wantImageMode =
-          mode === "image" || mode === "character" || mode === "scene";
-        if (wantImageMode && curMode && curMode !== "IMAGE") {
-          clickInsideGroup("Mode", /\bimage\b/i, settingsScope());
-          await delay(140);
-        } else if (!wantImageMode && curMode && !curMode.startsWith("VIDEO")) {
-          clickInsideGroup("Mode", /\bvideo\b/i, settingsScope());
-          await delay(140);
-          if (cfg.video_type) {
-            const vt = String(cfg.video_type).trim();
-            const vtRe = /ingredient/i.test(vt)
-              ? /\bingredients?\b/i
-              : /\bframes?\b/i;
-            if (clickInsideGroup("Video type", vtRe, settingsScope())) {
-              await delay(120);
-            }
+    try {
+      const liveUx = findLiveBasePromptBox(
+        false,
+        findPromptBoxHost(findProjectPageInstance()),
+      );
+      const curMode = String(liveUx?.Qa?.config?.mode?.() || "");
+      const wantImageMode =
+        mode === "image" || mode === "character" || mode === "scene";
+      if (wantImageMode && curMode && curMode !== "IMAGE") {
+        clickInsideGroup("Mode", /\bimage\b/i, settingsScope());
+        await delay(140);
+      } else if (!wantImageMode && curMode && !curMode.startsWith("VIDEO")) {
+        clickInsideGroup("Mode", /\bvideo\b/i, settingsScope());
+        await delay(140);
+        if (cfg.video_type) {
+          const vt = String(cfg.video_type).trim();
+          const vtRe = /ingredient/i.test(vt)
+            ? /\bingredients?\b/i
+            : /\bframes?\b/i;
+          if (clickInsideGroup("Video type", vtRe, settingsScope())) {
+            await delay(120);
           }
         }
-        if (
-          cfg.count != null &&
-          typeof liveUx?.Qa?.config?.outputCount === "function" &&
-          Number(liveUx.Qa.config.outputCount()) !== Number(cfg.count)
-        ) {
-          const settingsEl = document.querySelector("flow-prompt-box-settings");
-          if (settingsEl) {
-            let lv: NgLView | null = resolveLView(settingsEl);
-            for (let d = 0; d < 4 && Array.isArray(lv); d += 1) {
-              const iw = lv.find(
-                (c): c is { Ula: (count: number) => void } =>
-                  Boolean(
-                    c &&
-                      typeof c === "object" &&
-                      !(c instanceof Node) &&
-                      typeof (c as { Ula?: unknown }).Ula === "function",
-                  ),
-              );
-              if (iw) {
-                iw.Ula(Number(cfg.count));
-                await delay(100);
-                break;
-              }
-              lv = Array.isArray(lv[3])
-                ? lv[3]
-                : Array.isArray(lv[15])
-                  ? lv[15]
-                  : null;
-            }
-          }
-        }
-      } catch {
-        // Ignore non-fatal post-settings sync check.
       }
+      if (
+        cfg.count != null &&
+        typeof liveUx?.Qa?.config?.outputCount === "function" &&
+        Number(liveUx.Qa.config.outputCount()) !== Number(cfg.count)
+      ) {
+        const settingsEl = document.querySelector("flow-prompt-box-settings");
+        if (settingsEl) {
+          let lv: NgLView | null = resolveLView(settingsEl);
+          for (let d = 0; d < 4 && Array.isArray(lv); d += 1) {
+            const iw = lv.find(
+              (c): c is { Ula: (count: number) => void } =>
+                Boolean(
+                  c &&
+                    typeof c === "object" &&
+                    !(c instanceof Node) &&
+                    typeof (c as { Ula?: unknown }).Ula === "function",
+                ),
+            );
+            if (iw) {
+              iw.Ula(Number(cfg.count));
+              await delay(100);
+              break;
+            }
+            lv = Array.isArray(lv[3])
+              ? lv[3]
+              : Array.isArray(lv[15])
+                ? lv[15]
+                : null;
+          }
+        }
+      }
+    } catch {
+      // Ignore non-fatal post-settings sync check.
     }
 
     if (settingsOpen()) {

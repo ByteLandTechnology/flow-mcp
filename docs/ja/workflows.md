@@ -46,7 +46,7 @@
 
 `flow_wait` の各呼び出しは最大 `45` 秒までブロックし、処理継続中は `{"pending": true, ...}` を返します。すべての対象ジョブが `"done"` に到達するまで再度 `flow_wait` を呼び出してください。
 
-## 2. Imagen および Agent モードバッチ画像生成
+## 2. 画像生成と Flow Agent チャット
 
 標準的な画像生成（`mode="image"` の既定は `nano-banana-2`）：
 
@@ -60,14 +60,13 @@
 }
 ```
 
-Flow Agent モードのバッチ画像生成には `flow_agent_images` を呼び出します。`480` 秒の待機ウィンドウを使用し、エラーに `"agent finished without creating"` が含まれる場合はリトライを 1 回追加します：
+`flow_agent` にプロジェクト ID と最初のメッセージを渡します。返された `session_id` を使って `send_message` で会話を続けます。応答はセッション ID とターン番号を指定して `get_turn` で読み取ります。
 
 ```json
 {
-  "prompt": "Create four consistent storyboard frames of a paper lantern festival by a canal",
-  "model": "nano-banana-2",
-  "aspect": "16:9",
-  "count": 4
+  "action": "create_session",
+  "project_id": "<project-id>",
+  "message": "Suggest three visual styles for a scene on a rainy street."
 }
 ```
 

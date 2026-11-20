@@ -1,7 +1,7 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-//! Google Flow media generation, agent-mode batching, and asset editing.
+//! Google Flow media generation and asset editing.
 //!
 //! Drives the Flow generation form through the browser TypeScript runtime and defines MCP
 //! request parameter structs for [`crate::queue::JobQueue`] tasks.
@@ -63,20 +63,6 @@ pub(crate) struct GenerateParams {
     pub(crate) resolution: Option<String>,
 }
 
-/// Parameters for `flow_agent_images`.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub(crate) struct AgentImagesParams {
-    /// Batch image prompt for Flow Agent Mode.
-    pub(crate) prompt: String,
-    /// Model name override (defaults to "nano-banana-2").
-    pub(crate) model: Option<String>,
-    /// Output aspect ratio: "16:9" (default), "9:16", or "1:1".
-    pub(crate) aspect: Option<String>,
-    /// Image count from 1 to 4 (default 2).
-    #[schemars(range(min = 1, max = 4))]
-    pub(crate) count: Option<u32>,
-}
-
 /// Parameters for `flow_edit`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub(crate) struct EditParams {
@@ -132,7 +118,6 @@ async fn apply_generation_controls(
         "video_type": scene.video_type,
         "duration": scene.duration,
         "resolution": scene.resolution,
-        "agent": scene.agent,
     });
 
     let setup_res = engine
@@ -599,56 +584,6 @@ pub(crate) async fn run_generation(
         &on_progress,
     )
     .await)
-}
-
-/// Runs a Flow Agent Mode batch image job and downloads/indexes produced assets.
-pub(crate) async fn run_agent_batch(
-    engine: &ChromeEngine,
-    db: &FlowDb,
-    scene: &SceneParams,
-    on_progress: ProgressCallback,
-) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
-    ensure_project_workspace_root(engine).await?;
-    ensure_flow_store(engine).await?;
-    let snap = list_assets_with_project(engine).await?;
-    let before: HashSet<String> = snap.assets.into_iter().map(|a| a.id).collect();
-    let expected_count = scene.count.unwrap_or(2).clamp(1, 4) as usize;
-
-    on_progress("invoking Flow agent mode".to_string());
-    let mut net_rx = engine.subscribe_network().await?;
-    let submit_res = apply_generation_controls(engine, scene).await?;
-    let submit_summary = format_submit_progress("submitted agent batch", &submit_res);
-    on_progress(submit_summary.clone());
-
-    match wait_for_new_assets(
-        engine,
-        AssetWaitSpec {
-            before_ids: &before,
-            watch_updated: None,
-            expected_count,
-            timeout_secs: 480,
-            submit_summary: &submit_summary,
-        },
-        &mut net_rx,
-        &on_progress,
-    )
-    .await
-    {
-        Ok((new_assets, project_id, project_title)) => {
-            let should_dl = scene.download.unwrap_or(true);
-            Ok(collect_created_assets(
-                engine,
-                db,
-                new_assets,
-                project_id,
-                project_title,
-                should_dl,
-                &on_progress,
-            )
-            .await)
-        }
-        Err(e) => anyhow::bail!("agent finished without creating: {}", e),
-    }
 }
 
 /// Opens an edit flow for an asset that matches `match_str`, submits `prompt`, and downloads/indexes outputs.

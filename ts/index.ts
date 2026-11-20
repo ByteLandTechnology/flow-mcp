@@ -3,7 +3,17 @@
 
 // Browser runtime bundle entrypoint registering window.__flowMcp once per document.
 
+import { stageAgentFiles } from "./agent_attachments";
 import { assetOps } from "./asset_ops";
+import {
+  agentAllocate,
+  agentBound,
+  agentBusy,
+  agentOp,
+  agentPrototype,
+  agentStatus,
+  bindAgent,
+} from "./agent_chat";
 import { attachIngredients } from "./attach_ingredients";
 import { characterBioOp } from "./character_bio";
 import { characterExtraOp } from "./character_extra";
@@ -42,6 +52,14 @@ if (!window.__flowMcp) {
     projectNav,
     projectsOp,
     assetOps,
+    stageAgentFiles,
+    agentAllocate,
+    agentBound,
+    agentBusy,
+    agentOp,
+    agentPrototype,
+    agentStatus,
+    bindAgent,
     collectionOps,
     bindProjectStore,
     projectStoreStatus,

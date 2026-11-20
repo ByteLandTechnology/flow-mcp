@@ -25,8 +25,6 @@ export interface RuntimeState {
   store: FlowStoreHandle | null;
   /** Cached resolved media URLs keyed by primary media identifier. */
   mediaInfoCache: Map<string, CachedMediaInfo>;
-  /** Tracks whether the last generation setup enabled Agent Mode. */
-  wantAgent: boolean;
   /** Most recently captured prompt validation and submission state controller. */
   promptState: PromptStateController | null;
 }
@@ -39,7 +37,6 @@ export const runtimeState: RuntimeState = {
   routePath: null,
   store: null,
   mediaInfoCache: new Map<string, CachedMediaInfo>(),
-  wantAgent: false,
   promptState: null,
 };
 

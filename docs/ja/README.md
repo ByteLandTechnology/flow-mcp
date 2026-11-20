@@ -84,7 +84,8 @@ MCP stdio クライアント設定（`mcpServers`）へ `@flow-mcp/cli` を追�
 | :--- | :--- | :--- |
 | セッション・プロジェクト | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | セッション状態確認、Chrome サインイン、プロジェクト管理 |
 | キャラクター・ボイス | `flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters`、`flow_voice_preview` | Flow ボイス一覧取得、キャラクターとカスタムボイスの作成・更新、ボイス試聴、SQLite プロファイル保存 |
-| 生成・バッチ | `flow_generate`、`flow_agent_images`、`flow_edit` | Veo 動画・Imagen 画像ジョブ登録、Agent バッチ実行、アセット編集 |
+| 生成と編集 | `flow_generate`、`flow_edit` | 動画と画像を生成し、アセットを編集 |
+| Agent チャット | `flow_agent` | セッションの管理と Flow Agent とのメッセージ送受信 |
 | 動画・シーン | `flow_video`、`flow_scenes` | 元ファイルを変更しない動画トリム、クリップ延長、シーンタイムライン管理 |
 | キュー制御 | `flow_wait`、`flow_cancel`、`flow_retry` | ジョブ完了待機（`PATIENCE_MS = 45s`）、ジョブ停止、失敗ジョブ再実行 |
 | ライブラリ・メディア | `flow_assets`、`flow_rename`、`flow_collections`、`flow_download`、`flow_downloads`、`flow_trash` | タイル絞り込み、名前変更、コレクション分類、ダウンロード、チャンク読取、ゴミ箱移動 |

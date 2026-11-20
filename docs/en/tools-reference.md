@@ -71,7 +71,7 @@ If a value is not valid, `flow-mcp` writes an error to standard error and stops 
 
 ![JobQueue lifecycle and 45-second inline wait](../assets/en/job-queue-lifecycle.svg)
 
-- **`JobView`** (`flow_generate`, `flow_agent_images`, `flow_edit`, `flow_video` extend, `flow_character`, `flow_character_edit`, `flow_wait`, `flow_cancel`, `flow_retry`):
+- **`JobView`** (`flow_generate`, `flow_edit`, `flow_video` extend, `flow_character`, `flow_character_edit`, `flow_wait`, `flow_cancel`, `flow_retry`):
   - Fields: `id` (`8`-char string), `status` (`"queued"`, `"running"`, `"done"`, `"failed"`, `"cancelled"`), `prompt`, `name?`, `mode?`, `model?`, `created_at?`, `started_at?`, `finished_at?` (Unix ms), `progress?`, `files?`, `created?`, `resources?`, `error?`, `retried_from?`.
 - **`DownloadRecord`** (`flow_download`, `flow_downloads`):
   - Fields: `id`, `asset_id`, `project_id?`, `project_title?`, `name`, `kind`, `prompt?`, `source_url?`, `file_path`, `file_name`, `mime_type?`, `size_bytes`, `asset_created_at?`, `downloaded_at` (Unix ms), `exists` (bool), `resource_uri` (`flow://downloads/<id>`).
@@ -214,16 +214,36 @@ Queue a Veo video or Imagen image generation job on `JobQueue`. Returns a `JobVi
 | `character_role` | `string` | No | Key in SQLite `character_looks` that appends `", character {role}: {look}"` to `prompt`. |
 | `character_look` | `string` | No | Saves look text under `character_role` in SQLite and appends it to `prompt`. |
 
-### `flow_agent_images`
+### `flow_agent`
 
-Queue a Flow Agent Mode batch image job (`mode="image"`, `480`-second wait window, `1x` retry on `"agent finished without creating"`). Returns a `JobView`.
+Manage Flow Agent chat in a Google Flow project. Each call requires `project_id`. Use `session_id` for an existing session. Flow saves a new session when it accepts the first message.
 
-| Parameter | Type | Required | Description |
-| :--- | :--- | :--- | :--- |
-| `prompt` | `string` | Yes | Batch image prompt for Flow Agent Mode. |
-| `model` | `string` | No | Model override. Default `"nano-banana-2"`. |
-| `aspect` | `string` | No | Aspect ratio (`"16:9"` default, `"9:16"`, or `"1:1"`). |
-| `count` | `integer` | No | Output count in `1..=4`. Default `2`. |
+Use `asset_ids` with `create_session` or `send_message` to attach existing project images or videos. Supply asset IDs or their primary media IDs. Use `files` with local image or video paths to upload and attach files in the same call. Trim local videos to 30 seconds or less. The tool can return `uploaded_asset_ids` after it saves files in the project. Turn results show attached media IDs in `user.attachment_media_ids`.
+
+If an upload times out, the error shows the IDs of files that Flow has confirmed. Check the project for `file_in_progress` before you upload that file again. Flow does not send the message when attachment preparation times out.
+
+| Action | Other required fields | Result |
+| :--- | :--- | :--- |
+| `list_sessions` | | Session IDs, titles, and `can_send` for the project |
+| `create_session` | `message` | Session ID and first turn |
+| `rename_session` | `session_id`, `title` | Updated session title |
+| `delete_session` | `session_id` | Confirmation of chat deletion. Generated project assets stay in the project. |
+| `send_message` | `session_id`, `message` | New turn |
+| `list_messages` | `session_id` | Recent turns in order. Use `limit` (1 to 100, default 20) and `before_turn` to get earlier turns. The result gives `next_before_turn` for the next page. |
+| `get_turn` | `session_id`, `turn` | Latest state and response of the specified turn |
+| `respond` | `session_id`, `turn`, `action_id`, `decision` or `answers` | Updated turn or new plan execution turn |
+| `stop` | `session_id`, `turn` | Stopped turn |
+| `resume` | `session_id`, `turn` | Reconnects to a saved turn that is still in progress |
+
+Turn numbers start at 1. A turn can contain partial text, media IDs, and pending actions.
+
+- While the status is `in_progress`, use `get_turn` to read the current response. If the result shows `connected: false`, use `resume` to reconnect.
+- When the status is `action_required`, use `respond` with the `action_id` in `pending_actions`.
+  - For a permission request, set `decision` to `approve`, `approve_and_remember`, or `deny`.
+  - For a plan, set `decision` to `run_full_plan` or `previz`.
+  - For a question, set `answers` to a list of objects with a `question_id`, `option_ids`, and optional `text`.
+
+`persisted: false` shows that the new session is still absent from the Flow session list. If the result of a change is `outcome_unknown`, read the session or turn before you repeat the operation. The tool returns `unsupported_front_end` if the Flow build or its runtime checks fail.
 
 ### `flow_edit`
 

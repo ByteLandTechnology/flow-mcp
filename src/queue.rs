@@ -7,8 +7,7 @@
 //! worker task so concurrent commands never drive the Chrome page together.
 //!
 //! Between pending jobs, the worker sleeps for a random interval within
-//! [`crate::config::pause_bounds_ms`]. If a job fails with `"agent finished without creating"`
-//! and `retried_from` is `None`, the worker enqueues one automatic retry.
+//! [`crate::config::pause_bounds_ms`].
 
 use anyhow::Result;
 use schemars::JsonSchema;
@@ -18,7 +17,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::sync::{Mutex, OwnedMutexGuard, mpsc, oneshot, watch};
 use tokio::time::Instant;
 
 use crate::config::pause_bounds_ms;
@@ -119,9 +118,6 @@ pub(crate) struct SceneParams {
     /// Character look description to save in `character_looks`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) character_look: Option<String>,
-    /// Run through Flow Agent Mode when true.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) agent: Option<bool>,
     /// Existing Flow asset IDs to attach as generation ingredients or reference frames.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) asset_ids: Option<Vec<String>>,
@@ -395,6 +391,8 @@ pub(crate) struct JobQueue {
     state_tx: watch::Sender<u64>,
     /// Executor closure invoked sequentially for each queued job.
     runner: JobRunner,
+    /// Serializes media jobs and active Agent turns.
+    execution: Arc<Mutex<()>>,
 }
 
 impl JobQueue {
@@ -411,12 +409,20 @@ impl JobQueue {
             })),
             state_tx,
             runner,
+            execution: Arc::new(Mutex::new(())),
         });
         let worker_q = Arc::clone(&q);
         tokio::spawn(async move {
             worker_q.worker_loop().await;
         });
         q
+    }
+
+    /// Reserves execution for a chat turn if no media job or other turn holds it.
+    pub(crate) fn try_lock_execution(&self) -> Result<OwnedMutexGuard<()>> {
+        Arc::clone(&self.execution).try_lock_owned().map_err(|_| {
+            anyhow::anyhow!("A media job or Agent turn is active. Wait for it to finish")
+        })
     }
 
     /// Increments the watch state version to wake the worker and waiting callers.
@@ -605,7 +611,10 @@ impl JobQueue {
                 let _ = prog_tx.send(msg);
             });
 
-            let mut fut = (self.runner)(scene, progress_cb);
+            let mut fut = Box::pin(async {
+                let _execution = self.execution.lock().await;
+                (self.runner)(scene, progress_cb).await
+            });
             let mut prog_open = true;
             let run_outcome = loop {
                 tokio::select! {
@@ -652,7 +661,6 @@ impl JobQueue {
                 if was_cancelled {
                     st.cancelled_running = None;
                 }
-                let mut retry_scene: Option<SceneParams> = None;
                 if let Some(job) = st.jobs.get_mut(&id) {
                     if was_cancelled || job.status == JobStatus::Cancelled || run_outcome.is_none()
                     {
@@ -674,23 +682,13 @@ impl JobQueue {
                                 }
                             }
                             Err(e) => {
-                                let msg = e.to_string();
-                                if msg.contains("agent finished without creating")
-                                    && !msg.to_ascii_lowercase().contains("recaptcha")
-                                    && job.retried_from.is_none()
-                                {
-                                    retry_scene = Some(job.scene.clone());
-                                }
                                 job.status = JobStatus::Failed;
                                 job.finished_at = Some(now_ms());
-                                job.error = Some(msg);
+                                job.error = Some(e.to_string());
                                 job.progress = Some("failed".to_string());
                             }
                         }
                     }
-                }
-                if let Some(scene_to_retry) = retry_scene {
-                    st.enqueue_job(scene_to_retry, Some(id));
                 }
                 st.prune_finished();
             }

@@ -4,7 +4,14 @@
 // Check the build and runtime requirements of internal Flow operations.
 
 import { frontendBuild, readBuildLabel } from "./frontend_builds";
-import type { AssetTrashFormat, CharacterBioFormat, CollectionWriteFormat, FrontendFormats } from "./frontend_builds";
+import type {
+  AgentAttachmentFormat,
+  AgentChatFormat,
+  AssetTrashFormat,
+  CharacterBioFormat,
+  CollectionWriteFormat,
+  FrontendFormats,
+} from "./frontend_builds";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
 import { runtimeState } from "./state";
@@ -50,6 +57,28 @@ function checkOperation<Operation extends keyof FrontendFormats>(
     });
   }
   return { ok: false, error: "unsupported_front_end", build, operation, failed_checks: failed };
+}
+
+/** Returns the Agent layout when the build and runtime checks pass. */
+export function agentChatCompatibility(
+  checks: StoreProbeCheck[] = [],
+): FrontendCompatibility<AgentChatFormat> {
+  return checkOperation("agent_chat", readBuildLabel(), checks);
+}
+
+/** Returns the Agent attachment format when the build and runtime checks pass. */
+export function agentAttachmentCompatibility(
+  checks: StoreProbeCheck[] = [],
+): FrontendCompatibility<AgentAttachmentFormat> {
+  const build = readBuildLabel();
+  const format = frontendBuild(build)?.operations.agent_attachments;
+  const namespace = Reflect.get(window, "default_AiSandboxAngularFrontend") ?? {};
+  const exports = Object.entries(format?.exports ?? {}).map(([name, key]) => ({
+    name,
+    ok: typeof namespace[key] === "function",
+    detail: "Agent attachment export",
+  }));
+  return checkOperation("agent_attachments", build, [...exports, ...checks]);
 }
 
 /** Returns the collection format for the active project when its checks pass. */
@@ -136,6 +165,8 @@ export function probeStore(): StoreProbeResult {
     ok: checks.every(({ ok }) => ok),
     checks,
     operations: {
+      agent_chat: operationStatus(agentChatCompatibility()),
+      agent_attachments: operationStatus(agentAttachmentCompatibility()),
       collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
       character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
       asset_trash_store: operationStatus(checkOperation("asset_trash_store", build, trashChecks)),

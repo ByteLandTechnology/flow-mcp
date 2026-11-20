@@ -48,7 +48,7 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 
 - **单后台工作器**：同一时刻仅运行一个生成、编辑、视频续写或角色任务。已完成的任务留在最多保存 `200` 条记录的 FIFO 历史列表中。
 - **任务之间随机暂停**：在开始下一条任务前，工作器会在 `--pause` 或 `FLOW_MCP_PAUSE` 指定的范围内（默认 `25,70` 秒）随机暂停一段时间。
-- **Agent 模式自动重试**：如果任务因 `"agent finished without creating"` 失败且 `retried_from` 为 `None`，`JobQueue` 会将 `retried_from` 设为该任务 ID 并自动追加一次重试任务。
+- **Agent 对话轮次**：Agent 在独立的项目页面中运行。回复期间，Agent 与媒体任务共用同一把执行锁。
 - **内联等待窗口（`PATIENCE_MS = 45_000`）**：许多 MCP 客户端会在 `60` 秒后取消工具调用。`flow_wait` 与 `flow_download` 每次最多等待 `45` 秒，随后返回 `{"pending": true, ...}`，以便你使用 `flow_wait`、`flow_status` 或 `flow_downloads` 继续轮询。
 
 ## 4. 存储边界与双路径下载

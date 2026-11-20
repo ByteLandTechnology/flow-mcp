@@ -9,6 +9,7 @@ use rmcp::model::{Resource, ResourceContents};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+use crate::agent::{AgentChat, AgentParams};
 use crate::assets::{self, AssetsParams, DownloadParams, RenameEntry};
 use crate::auth::{self, LoginParams};
 use crate::characters::{self, CharacterEditParams, CharacterParams, VoicesParams};
@@ -20,7 +21,7 @@ use crate::db::{
 };
 use crate::download;
 use crate::engine::{ChromeEngine, ENGINE_NAME};
-use crate::generation::{self, AgentImagesParams, EditParams, GenerateParams};
+use crate::generation::{self, EditParams, GenerateParams};
 use crate::media_files;
 use crate::project::{self, ProjectsParams};
 use crate::queue::{JobQueue, JobResult, JobRunner, JobView, SceneParams, WaitParams};
@@ -60,6 +61,8 @@ pub(crate) fn record_to_mcp_resource(rec: &DownloadRecord) -> Resource {
 pub(crate) struct FlowService {
     /// Managed Chrome CDP browser engine.
     engine: Arc<ChromeEngine>,
+    /// Browser session for Flow Agent conversations.
+    agent: Arc<AgentChat>,
     /// Single-worker serial automation queue.
     queue: Arc<JobQueue>,
     /// SQLite handle for downloads and character metadata.
@@ -78,34 +81,33 @@ impl FlowService {
             Box::pin(async move {
                 // A menu operation must not click the page or change its route while this job runs.
                 let _page = PageHold::new();
-                let (files, created, resources) = if scene.agent.unwrap_or(false) {
-                    generation::run_agent_batch(&engine, &db, &scene, on_progress).await?
-                } else if let Some(ref extend_from) = scene.video_extend_from {
-                    scenes::run_video_extend(
-                        &engine,
-                        &db,
-                        extend_from,
-                        &scene.prompt,
-                        scene.scene_id.as_deref(),
-                        on_progress,
-                    )
-                    .await?
-                } else if let Some(ref edit_from) = scene.edit_from {
-                    generation::run_edit(&engine, &db, edit_from, &scene.prompt, on_progress)
+                let (files, created, resources) =
+                    if let Some(ref extend_from) = scene.video_extend_from {
+                        scenes::run_video_extend(
+                            &engine,
+                            &db,
+                            extend_from,
+                            &scene.prompt,
+                            scene.scene_id.as_deref(),
+                            on_progress,
+                        )
                         .await?
-                } else if scene.character.is_some() {
-                    let is_edit = scene.character_edit.unwrap_or(false);
-                    characters::create_or_update_character_job(
-                        &engine,
-                        &db,
-                        &scene,
-                        is_edit,
-                        on_progress,
-                    )
-                    .await?
-                } else {
-                    generation::run_generation(&engine, &db, &scene, on_progress).await?
-                };
+                    } else if let Some(ref edit_from) = scene.edit_from {
+                        generation::run_edit(&engine, &db, edit_from, &scene.prompt, on_progress)
+                            .await?
+                    } else if scene.character.is_some() {
+                        let is_edit = scene.character_edit.unwrap_or(false);
+                        characters::create_or_update_character_job(
+                            &engine,
+                            &db,
+                            &scene,
+                            is_edit,
+                            on_progress,
+                        )
+                        .await?
+                    } else {
+                        generation::run_generation(&engine, &db, &scene, on_progress).await?
+                    };
                 Ok(JobResult {
                     files,
                     created,
@@ -115,7 +117,12 @@ impl FlowService {
         });
 
         let queue = JobQueue::new(runner);
-        Arc::new(Self { engine, queue, db })
+        Arc::new(Self {
+            engine,
+            queue,
+            db,
+            agent: Arc::new(AgentChat::new()),
+        })
     }
 
     /// Returns Flow browser state, jobs, engine capabilities, saved looks, download count, and paths.
@@ -176,18 +183,14 @@ impl FlowService {
         Ok(self.queue.enqueue(scene).await)
     }
 
-    /// Queues a Flow Agent Mode batch image job.
-    pub(crate) async fn agent_images(&self, req: AgentImagesParams) -> Result<JobView> {
-        let scene = SceneParams {
-            prompt: req.prompt,
-            mode: Some("image".to_string()),
-            model: req.model,
-            aspect: req.aspect,
-            count: req.count,
-            agent: Some(true),
-            ..Default::default()
-        };
-        Ok(self.queue.enqueue(scene).await)
+    /// Manages Flow Agent sessions and turns.
+    pub(crate) async fn agent(&self, req: AgentParams) -> Result<Value> {
+        let (agent, engine, queue) = (
+            Arc::clone(&self.agent),
+            Arc::clone(&self.engine),
+            Arc::clone(&self.queue),
+        );
+        tokio::spawn(async move { agent.run(&engine, &queue, req).await }).await?
     }
 
     /// Queues an asset edit job that matches `req.match`.

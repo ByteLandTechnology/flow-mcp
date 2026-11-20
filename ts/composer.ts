@@ -17,13 +17,11 @@ import type {
 const TEXTBOX_SELECTOR =
   '.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], [contenteditable="true"], textarea';
 
-/** Finds the active visible prompt textbox for generation, agent, or edit composers. */
-export function findTextbox(wantAgentFlag: boolean, editFlag: boolean): HTMLElement | null {
+/** Finds the active visible prompt textbox for generation or edit composers. */
+export function findTextbox(editFlag: boolean): HTMLElement | null {
   const scopedSelector = editFlag
     ? "flow-edit-video-prompt-box, flow-editor-page, flow-scene-builder"
-    : wantAgentFlag
-      ? "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box, flow-prompt-box"
-      : "flow-prompt-box flow-base-prompt-box, flow-prompt-box";
+    : "flow-prompt-box flow-base-prompt-box, flow-prompt-box";
   const pickFrom = (root: ParentNode | null): HTMLElement | null => {
     if (!root) return null;
     const candidates = Array.from(root.querySelectorAll(TEXTBOX_SELECTOR));
@@ -33,7 +31,6 @@ export function findTextbox(wantAgentFlag: boolean, editFlag: boolean): HTMLElem
         el.getClientRects().length > 0 &&
         !isDisabledProp(el) &&
         (editFlag ||
-          wantAgentFlag ||
           !el.closest(
             "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box",
           )),
@@ -158,36 +155,20 @@ function scanElementForBasePromptBox(startEl: Element | null): BasePromptBoxInst
   return null;
 }
 
-/** Resolves the active manual, agent, or edit `BasePromptBoxInstance`. */
+/** Resolves the active manual or edit `BasePromptBoxInstance`. */
 export function findLiveBasePromptBox(
-  wantAgentFlag: boolean,
   editFlag: boolean,
   promptBoxHost: PromptBoxHost | null,
 ): BasePromptBoxInstance | null {
   if (!editFlag) {
-    if (!wantAgentFlag) {
-      try {
-        const direct = promptBoxHost?.mt?.();
-        if (isBasePromptBoxInst(direct)) return direct;
-      } catch {
-        // Fall through to DOM scan.
-      }
-      return scanElementForBasePromptBox(
-        document.querySelector("flow-prompt-box flow-base-prompt-box"),
-      );
-    }
     try {
-      const agentBox = promptBoxHost?.iU?.();
-      const agentBase = agentBox?.mt?.();
-      if (isBasePromptBoxInst(agentBase)) return agentBase;
-      if (isBasePromptBoxInst(agentBox)) return agentBox;
+      const direct = promptBoxHost?.mt?.();
+      if (isBasePromptBoxInst(direct)) return direct;
     } catch {
       // Fall through to DOM scan.
     }
     return scanElementForBasePromptBox(
-      document.querySelector(
-        "flow-creative-agent-prompt-box flow-base-prompt-box, flow-agent-panel flow-base-prompt-box, flow-creative-agent-prompt-box",
-      ),
+      document.querySelector("flow-prompt-box flow-base-prompt-box"),
     );
   }
   return scanElementForBasePromptBox(

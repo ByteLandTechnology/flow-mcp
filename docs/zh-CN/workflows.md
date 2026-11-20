@@ -46,7 +46,7 @@
 
 每次 `flow_wait` 调用最多阻塞 `45` 秒，任务仍在执行时返回 `{"pending": true, ...}`。请再次调用 `flow_wait`，直到所有目标任务到达 `"done"` 状态。
 
-## 2. Imagen 与 Agent 模式批量生图
+## 2. 生图与 Flow Agent 对话
 
 标准生图（`mode="image"` 默认模型为 `nano-banana-2`）：
 
@@ -60,14 +60,13 @@
 }
 ```
 
-如需运行 Flow Agent 模式批量出图，请调用 `flow_agent_images`。它使用 `480` 秒等待窗口，当错误包含 `"agent finished without creating"` 时会自动重试一次：
+创建对话时，调用 `flow_agent` 并提供项目 ID 和首条消息。使用返回的 `session_id` 调用 `send_message` 继续对话，使用会话 ID 和轮次编号调用 `get_turn` 读取回复。
 
 ```json
 {
-  "prompt": "Create four consistent storyboard frames of a paper lantern festival by a canal",
-  "model": "nano-banana-2",
-  "aspect": "16:9",
-  "count": 4
+  "action": "create_session",
+  "project_id": "<project-id>",
+  "message": "Suggest three visual styles for a scene on a rainy street."
 }
 ```
 
