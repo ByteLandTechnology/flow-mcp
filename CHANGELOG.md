@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.0.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.4.0...v2.0.0) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* add Flow Agent conversations with attachments
+
+### Features
+
+* add Flow Agent conversations with attachments ([765b0a9](https://github.com/ByteLandTechnology/flow-mcp/commit/765b0a9edab42f24c021d22ec3b354d6b261eb85))
+* add Flow Agent project settings ([9cd663e](https://github.com/ByteLandTechnology/flow-mcp/commit/9cd663e8146a6e34e783f5ae3eee6d94246ade84))
+
+
+### Bug Fixes
+
+* **flow:** restore the manual prompt for generation ([9ddc30c](https://github.com/ByteLandTechnology/flow-mcp/commit/9ddc30ca9b644772d200b5fa57d4b9726a7c92df))
+* **flow:** retry project reads during initialization ([6f29768](https://github.com/ByteLandTechnology/flow-mcp/commit/6f29768d92dc97f94ee446d7e2ee3a20010e8738))
+* **flow:** support collection writes on build 20261118.14 ([024d2cd](https://github.com/ByteLandTechnology/flow-mcp/commit/024d2cdd71405f17ce2297aa0f4c369cfead9b44))
+* limit media URL lookups for asset lists ([865d2db](https://github.com/ByteLandTechnology/flow-mcp/commit/865d2db279e5b32d5be0043142f3a10ba589dbb1))
+* save character notes through the shared project store ([c4f61ef](https://github.com/ByteLandTechnology/flow-mcp/commit/c4f61ef583d36f09bad9051839ae3e87cf1329d4))
+
 ## [1.4.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.3.0...v1.4.0) (2026-11-19)
 
 
