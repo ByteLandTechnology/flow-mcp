@@ -13,11 +13,12 @@ use std::collections::HashMap;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Duration, Instant};
 
-use crate::collections::{CollectionSession, FlowCollection, find_collection};
+use crate::collections::{FlowCollection, find_collection};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
 use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
+use crate::project_store::ProjectStoreSession;
 use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu, wait_trashed};
 
 /// Media asset or scene item inside a Google Flow project.
@@ -328,7 +329,7 @@ fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
 
 /// Renames collections through the collection store and other tiles through the page or store.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
-    let collections = CollectionSession::open(engine).await?;
+    let collections = ProjectStoreSession::open(engine).await?;
     let total = items.len();
     let mut renamed = Vec::new();
     let mut failed = Vec::new();
@@ -529,13 +530,15 @@ pub(crate) async fn trash_asset(
     db: &FlowDb,
     match_str: &str,
 ) -> Result<Value> {
-    let collections = CollectionSession::open(engine).await?;
+    let collections = ProjectStoreSession::open(engine).await?;
     let query = match_str.trim();
     if collections.is_collection(query).await? {
         return collections.delete(query).await;
     }
 
-    let mut tiles = collections.run(json!({ "action": "assets" })).await?;
+    let mut tiles = collections
+        .run_collections(json!({ "action": "assets" }))
+        .await?;
     let assets: Vec<FlowAsset> = serde_json::from_value(tiles["assets"].take())?;
     let Some(asset) = match_asset(&assets, query, true) else {
         let summaries: Vec<FlowCollection> = serde_json::from_value(tiles["collections"].take())?;

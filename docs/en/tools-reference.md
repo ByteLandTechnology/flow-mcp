@@ -90,7 +90,7 @@ Check Google Flow authentication state, active project, `JobQueue`, SQLite index
 
 Returns `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`. Does not open or create projects.
 
-When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project. The `operations` field reports whether `collection_write` and `asset_trash_store` can run with the active build and store. Each operation has `ok` and `failed_checks`.
+When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project. The `operations` field reports whether `collection_write`, `character_bio`, and `asset_trash_store` can run with the active build and store. Each operation has `ok` and `failed_checks`.
 
 ### `flow_login`
 
@@ -174,6 +174,8 @@ Queue an update job for `/character/<id>` and update SQLite character metadata. 
 ### `flow_characters`
 
 List characters in the active project. Merges live Flow tiles with stored SQLite `bio`, `voice`, and `ref_asset_ids` fields. Takes no parameters.
+
+Set `bio` to an empty string to clear the notes. To edit only the notes, open the project first. The tool writes and checks the notes through the project store.
 
 ### `flow_voice_preview`
 

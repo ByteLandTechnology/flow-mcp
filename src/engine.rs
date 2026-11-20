@@ -99,8 +99,8 @@ pub(crate) struct ChromeEngine {
     login_chrome: Mutex<Option<LoginChrome>>,
     /// Serializes Chrome process launches, shutdowns, and session promotions.
     ensure_lock: Mutex<()>,
-    /// Serializes collection operations on the browser page.
-    collection_lock: Mutex<()>,
+    /// Serializes direct project store operations.
+    project_store_lock: Mutex<()>,
     /// True while a visible interactive sign-in window is open.
     visible: AtomicBool,
     /// Broadcast channel for captured CDP `Network` responses.
@@ -117,7 +117,7 @@ impl ChromeEngine {
             inner: Mutex::new(None),
             login_chrome: Mutex::new(None),
             ensure_lock: Mutex::new(()),
-            collection_lock: Mutex::new(()),
+            project_store_lock: Mutex::new(()),
             visible: AtomicBool::new(false),
             network_tx,
             user_agent: Mutex::new(None),
@@ -322,17 +322,17 @@ impl ChromeEngine {
         cdp.call(method, params).await
     }
 
-    /// Locks the collection path until the current operation ends.
-    pub(crate) async fn lock_collections(&self) -> MutexGuard<'_, ()> {
-        self.collection_lock.lock().await
+    /// Locks the direct project store until the current operation ends.
+    pub(crate) async fn lock_project_store(&self) -> MutexGuard<'_, ()> {
+        self.project_store_lock.lock().await
     }
 
-    /// Passes live Map objects to the collection binder in the same JavaScript context.
-    pub(crate) async fn bind_collection_store(&self, project_id: &str) -> Result<Value> {
+    /// Passes live Map objects to the project store binder in the same JavaScript context.
+    pub(crate) async fn bind_project_store(&self, project_id: &str) -> Result<Value> {
         let cdp = self.active_cdp().await?;
         let project_id = project_id.to_owned();
         tokio::spawn(async move {
-            let group = format!("flow-collections-{}", uuid::Uuid::new_v4());
+            let group = format!("flow-project-store-{}", uuid::Uuid::new_v4());
             let result = bind_from_maps(&cdp, &group, &project_id).await;
             let released = cdp
                 .call(
@@ -345,7 +345,7 @@ impl ChromeEngine {
             Ok(value)
         })
         .await
-        .context("The collection store search did not finish")?
+        .context("The project store search did not finish")?
     }
 
     /// Returns the Flow front-end build label that the active page publishes, or `None` when it is unavailable.
@@ -751,7 +751,7 @@ fn runtime_value(res: &Value) -> Result<Value> {
     Ok(res.pointer("/result/value").cloned().unwrap_or(Value::Null))
 }
 
-/// Queries the Map prototype and runs the collection binder on the result array.
+/// Queries the Map prototype and runs the project store binder on the result array.
 async fn bind_from_maps(cdp: &CdpConnection, group: &str, project_id: &str) -> Result<Value> {
     let prototype = cdp
         .call(
@@ -778,7 +778,7 @@ async fn bind_from_maps(cdp: &CdpConnection, group: &str, project_id: &str) -> R
             "Runtime.callFunctionOn",
             json!({
                 "objectId": maps_id,
-                "functionDeclaration": "function (project) { return window.__flowMcp?.bindCollectionStore(this, project); }",
+                "functionDeclaration": "function (project) { return window.__flowMcp?.bindProjectStore(this, project); }",
                 "arguments": [{ "value": project_id }],
                 "returnByValue": true,
             }),

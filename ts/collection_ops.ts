@@ -3,16 +3,19 @@
 
 // Read and change collections in the active project without page controls.
 
+import { isTrashedTile } from "./dom";
+import { readBuildLabel } from "./frontend_builds";
+import type { CollectionWriteFormat } from "./frontend_builds";
+import { collectionWriteCompatibility } from "./frontend_compatibility";
 import {
-  collectionStore,
-  readCollectionStore,
-  refreshCollectionStore,
-  submitCollectionMutation,
-} from "./collection_store";
-import type { CollectionStore } from "./collection_store";
-import { delay, isTrashedTile } from "./dom";
-import { collectionWriteCompatibility, readBuildLabel } from "./frontend_compatibility";
-import type { CollectionWriteFormat } from "./frontend_compatibility";
+  mutateAndVerify,
+  projectMutationPending,
+  projectsToRefresh,
+  projectStore,
+  readProjectStore,
+  refreshAfterUnknown,
+} from "./project_store";
+import type { ProjectStore } from "./project_store";
 import { readStoreTiles } from "./read_store_snapshot";
 import type { FlowTile, SnapshotCollectionItem } from "./types";
 
@@ -29,17 +32,10 @@ export type CollectionRequest =
 /** Project and request format for a verified collection write. */
 interface CollectionWriter {
   /** Store bound to the active project. */
-  store: CollectionStore;
+  store: ProjectStore;
   /** Format for the active build. */
   format: CollectionWriteFormat;
 }
-
-/** Time limit for one submission and its confirmation. */
-const MUTATION_TIMEOUT_MS = 10_000;
-/** True until the previous collection submission settles. */
-let mutationPending = false;
-/** Projects that need a new query result after a mutation. */
-const projectsToRefresh = new Set<string>();
 
 /** Returns a tile that is present, ready, and out of the trash. */
 function available(tile: FlowTile | undefined): tile is FlowTile {
@@ -79,68 +75,9 @@ function summarize(tiles: Map<string, FlowTile>): SnapshotCollectionItem[] {
   return [...collections.values()];
 }
 
-/** Sends one mutation and confirms it from a new server result. */
-async function mutateAndVerify(
-  store: CollectionStore,
-  payload: Record<string, unknown>,
-  verified: (tiles: Map<string, FlowTile>) => boolean,
-): Promise<Map<string, FlowTile> | null> {
-  mutationPending = true;
-  projectsToRefresh.add(store.projectId);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      resolve(null);
-    }, MUTATION_TIMEOUT_MS);
-  });
-  const work = (async () => {
-    try {
-      await submitCollectionMutation(store, payload);
-      for (let attempt = 0; attempt < 3 && !timedOut; attempt++) {
-        const tiles = await refreshCollectionStore(store);
-        if (!tiles || timedOut) return null;
-        if (verified(tiles)) {
-          projectsToRefresh.delete(store.projectId);
-          return tiles;
-        }
-        await delay(250);
-      }
-      return null;
-    } catch {
-      return null;
-    } finally {
-      mutationPending = false;
-    }
-  })();
-  try {
-    return await Promise.race([work, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Refreshes the project before the next operation after an unknown result. */
-async function refreshAfterUnknown(store: CollectionStore): Promise<Map<string, FlowTile> | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), MUTATION_TIMEOUT_MS);
-  });
-  try {
-    const tiles = await Promise.race([refreshCollectionStore(store), timeout]);
-    if (tiles) projectsToRefresh.delete(store.projectId);
-    return tiles;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /** Reports a submission whose result the store did not confirm. */
 function outcomeUnknown(
-  store: CollectionStore,
+  store: ProjectStore,
   stage: string,
   ids: string[],
   collectionId?: string | null,
@@ -157,7 +94,7 @@ async function rename(
   id: string,
   name: string,
 ): Promise<Map<string, FlowTile> | null> {
-  if (!readCollectionStore(store)) return null;
+  if (!readProjectStore(store)) return null;
   return mutateAndVerify(
     store,
     {
@@ -240,11 +177,11 @@ export async function collectionOps(
   session: string,
   request: CollectionRequest,
 ): Promise<unknown> {
-  const store = collectionStore(projectId, session);
-  let tiles = store && readCollectionStore(store);
+  const store = projectStore(projectId, session);
+  let tiles = store && readProjectStore(store);
   if (!store || !tiles) return { ok: false, error: "collection_project_changed" };
   if (projectsToRefresh.has(projectId) && request.action !== "delete") {
-    if (mutationPending) return { ok: false, error: "collection_mutation_pending" };
+    if (projectMutationPending) return { ok: false, error: "collection_mutation_pending" };
     tiles = await refreshAfterUnknown(store);
     if (!tiles) return { ok: false, error: "collection_refresh_failed", project_id: projectId };
   }
@@ -265,7 +202,7 @@ export async function collectionOps(
   }
   const support = collectionWriteCompatibility();
   if (!support.ok) return support;
-  if (mutationPending) return { ok: false, error: "collection_mutation_pending" };
+  if (projectMutationPending) return { ok: false, error: "collection_mutation_pending" };
   const writer = { store, format: support.format };
 
   switch (request.action) {

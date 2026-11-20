@@ -90,7 +90,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 返回 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`。不会自动打开或创建项目。
 
-当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。 `operations` 报告当前构建和 store 是否支持 `collection_write` 与 `asset_trash_store`，每项均包含 `ok` 和 `failed_checks`。
+当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。 `operations` 报告当前构建和 store 是否支持 `collection_write`、`character_bio` 和 `asset_trash_store`，每项均包含 `ok` 和 `failed_checks`。
 
 ### `flow_login`
 
@@ -174,6 +174,8 @@ flow-mcp [OPTIONS] <COMMAND>
 ### `flow_characters`
 
 列出活动项目中的角色。将实时 Flow 卡片与 SQLite 中存储的 `bio`、`voice` 与 `ref_asset_ids` 字段合并返回。不接受参数。
+
+将 `bio` 设为空字符串可清空备注。仅修改备注时，请先打开项目。工具通过项目 store 写入并核验备注。
 
 ### `flow_voice_preview`
 

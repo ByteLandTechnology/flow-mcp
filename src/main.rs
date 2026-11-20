@@ -6,6 +6,7 @@
 mod assets;
 mod auth;
 mod cdp;
+mod character_bio;
 mod characters;
 mod chrome;
 mod cli;
@@ -22,6 +23,7 @@ mod mcp;
 mod media_files;
 mod platform;
 mod project;
+mod project_store;
 mod queue;
 mod scenes;
 mod service;

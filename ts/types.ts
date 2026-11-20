@@ -601,8 +601,6 @@ export interface CharacterOpRequest {
   character_id?: string | null;
   /** Character display name. */
   name?: string | null;
-  /** Character personality notes. */
-  bio?: string | null;
   /** Optional voice name triggering editor navigation after create. */
   voice?: string | null;
   /** Optional project reference asset IDs triggering editor navigation after create. */
@@ -721,10 +719,10 @@ export interface FlowMcpRuntime {
   projectsOp: (req: ProjectsOpRequest) => Promise<unknown>;
   /** Renames or moves asset tiles to trash. */
   assetOps: (action: string, id: string, extra: AssetRenameExtra | null) => Promise<unknown>;
-  /** Reports the collection store status for one project. */
-  collectionStoreStatus: (projectId: string) => unknown;
+  /** Reports the project store status for one project. */
+  projectStoreStatus: (projectId: string) => unknown;
   /** Finds the active project store in the Angular view registry. */
-  bindCollectionStore: (maps: unknown[], projectId: string) => unknown;
+  bindProjectStore: (maps: unknown[], projectId: string) => unknown;
   /** Reads or changes tiles in the pinned project store. */
   collectionOps: (
     projectId: string,
@@ -751,6 +749,12 @@ export interface FlowMcpRuntime {
   videoOp: (req: VideoOpRequest) => Promise<unknown>;
   /** Opens/exits the character editor and creates or updates character fields. */
   characterOp: (req: CharacterOpRequest) => Promise<unknown>;
+  /** Reads or changes character notes in the pinned project. */
+  characterBioOp: (
+    projectId: string,
+    session: string,
+    request: import("./character_bio").CharacterBioRequest,
+  ) => Promise<unknown>;
   /** Lists available character voices and sets a voice on the character form. */
   characterVoiceOp: (req: CharacterVoiceOpRequest) => Promise<unknown>;
   /** Opens character uploads, attaches project references, and generates looks. */

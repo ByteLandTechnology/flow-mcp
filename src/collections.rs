@@ -7,11 +7,9 @@ use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::MutexGuard;
 
-use crate::auth::is_signed_in_flow_url;
 use crate::engine::ChromeEngine;
-use crate::project::project_id_from_url;
+use crate::project_store::ProjectStoreSession;
 
 /// Collection summary in the active Flow project.
 #[derive(Debug, Serialize, Deserialize)]
@@ -41,99 +39,42 @@ pub(crate) struct CollectionsParams {
     pub(crate) ids: Option<Vec<String>>,
 }
 
-/// Holds the browser collection lock and pins the project and runtime session.
-pub(crate) struct CollectionSession<'a> {
-    /// Browser engine for the active page.
-    engine: &'a ChromeEngine,
-    /// Locked collection path.
-    _guard: MutexGuard<'a, ()>,
-    /// Project ID in the active Flow route.
-    project_id: String,
-    /// Identifier of the browser runtime that owns the bound project store.
-    session: String,
-}
-
-impl<'a> CollectionSession<'a> {
-    /// Binds the store in the open Flow project without changing the page.
-    pub(crate) async fn open(engine: &'a ChromeEngine) -> Result<Self> {
-        let url = engine.current_url().await?;
-        let project_id = url::Url::parse(&url)
-            .ok()
-            .filter(|_| is_signed_in_flow_url(&url))
-            .and_then(|url| project_id_from_url(url.path()))
-            .context("Open a Google Flow project before you use this tool")?;
-        let guard = engine.lock_collections().await;
-        let status = engine
-            .call_flow_js("collectionStoreStatus", json!([project_id]))
-            .await?;
-        let status =
-            if status.get("error").and_then(Value::as_str) == Some("collection_store_not_bound") {
-                engine.bind_collection_store(&project_id).await?
-            } else {
-                status
-            };
-        let session = checked_result(status)?
-            .get("session")
-            .and_then(Value::as_str)
-            .context("The browser did not return the collection session")?
-            .to_owned();
-        Ok(Self {
-            engine,
-            _guard: guard,
-            project_id,
-            session,
-        })
-    }
-
+impl ProjectStoreSession<'_> {
     /// Calls the collection runtime for the pinned project and document.
-    pub(crate) async fn run(&self, request: Value) -> Result<Value> {
-        let response = self
-            .engine
-            .call_flow_async(
-                "collectionOps",
-                json!([self.project_id, self.session, request]),
-            )
-            .await;
-        let response = match response {
-            Ok(value) => value,
-            Err(error)
-                if matches!(
-                    request.get("action").and_then(Value::as_str),
-                    Some("create" | "rename" | "move")
-                ) =>
-            {
-                anyhow::bail!(
-                    "outcome_unknown (project {}, request {}): {error:#}",
-                    self.project_id,
-                    request,
-                )
-            }
-            Err(error) => return Err(error),
-        };
-        checked_result(response)
+    pub(crate) async fn run_collections(&self, request: Value) -> Result<Value> {
+        let mutation = matches!(
+            request.get("action").and_then(Value::as_str),
+            Some("create" | "rename" | "move")
+        )
+        .then(|| format!("request {request}"));
+        self.call("collectionOps", request, mutation.as_deref())
+            .await
     }
 
     /// Reads the active collections from the bound store.
     async fn list(&self) -> Result<Vec<FlowCollection>> {
-        let mut value = self.run(json!({ "action": "list" })).await?;
+        let mut value = self.run_collections(json!({ "action": "list" })).await?;
         Ok(serde_json::from_value(value["collections"].take())?)
     }
 
     /// Returns true when the tile ID belongs to a collection.
     pub(crate) async fn is_collection(&self, id: &str) -> Result<bool> {
-        let res = self.run(json!({ "action": "inspect", "id": id })).await?;
+        let res = self
+            .run_collections(json!({ "action": "inspect", "id": id }))
+            .await?;
         Ok(res.get("collection").and_then(Value::as_bool) == Some(true))
     }
 
     /// Requests a verified rename for a collection ID.
     pub(crate) async fn rename(&self, id: &str, name: &str) -> Result<Value> {
-        self.run(json!({ "action": "rename", "id": id, "name": name }))
+        self.run_collections(json!({ "action": "rename", "id": id, "name": name }))
             .await
     }
 
     /// Requests deletion of a collection ID through the collection path.
     pub(crate) async fn delete(&self, id: &str) -> Result<Value> {
-        self.run(json!({ "action": "delete", "id": id })).await
+        self.run_collections(json!({ "action": "delete", "id": id }))
+            .await
     }
 
     /// Resolves an existing collection or creates and verifies a new one.
@@ -152,7 +93,7 @@ impl<'a> CollectionSession<'a> {
             );
         }
         let id = uuid::Uuid::new_v4();
-        self.run(json!({ "action": "create", "id": id.to_string(), "name": name }))
+        self.run_collections(json!({ "action": "create", "id": id.to_string(), "name": name }))
             .await
     }
 
@@ -160,7 +101,7 @@ impl<'a> CollectionSession<'a> {
     async fn move_assets(&self, ids: Vec<String>, target: Option<&str>) -> Result<Value> {
         let Some(target) = target else {
             return self
-                .run(json!({ "action": "move", "ids": ids, "target": null }))
+                .run_collections(json!({ "action": "move", "ids": ids, "target": null }))
                 .await;
         };
         let target = target.trim();
@@ -169,7 +110,7 @@ impl<'a> CollectionSession<'a> {
         let id = if let Some(collection) = find_collection(&collections, target, false)? {
             collection.id.clone()
         } else {
-            self.run(json!({ "action": "check_assets", "ids": ids }))
+            self.run_collections(json!({ "action": "check_assets", "ids": ids }))
                 .await?;
             let value = self.create(target).await?;
             value
@@ -179,29 +120,9 @@ impl<'a> CollectionSession<'a> {
                 .context("The store did not return the collection ID")?
                 .to_owned()
         };
-        self.run(json!({ "action": "move", "ids": ids, "target": id }))
+        self.run_collections(json!({ "action": "move", "ids": ids, "target": id }))
             .await
     }
-}
-
-/// Returns a successful runtime result or reports the error and its details.
-fn checked_result(mut result: Value) -> Result<Value> {
-    let fields = result
-        .as_object_mut()
-        .context("The collection runtime did not return a result")?;
-    if fields.remove("ok").and_then(|value| value.as_bool()) == Some(true) {
-        return Ok(result);
-    }
-    let error = fields
-        .remove("error")
-        .context("The collection runtime did not return an error code")?;
-    let error = error
-        .as_str()
-        .context("The collection runtime returned an invalid error code")?;
-    if fields.is_empty() {
-        anyhow::bail!("{error}");
-    }
-    anyhow::bail!("{error} {result}");
 }
 
 /// Returns the only collection in a set of matches, if one exists.
@@ -248,7 +169,7 @@ pub(crate) fn find_collection<'a>(
 }
 
 /// Returns the requested collection or reports a missing target.
-async fn require_collection(session: &CollectionSession<'_>, query: &str) -> Result<String> {
+async fn require_collection(session: &ProjectStoreSession<'_>, query: &str) -> Result<String> {
     let collections = session.list().await?;
     Ok(find_collection(&collections, query.trim(), false)?
         .with_context(|| format!("Collection not found: {query}"))?
@@ -268,7 +189,7 @@ pub(crate) async fn handle_collections(
     engine: &ChromeEngine,
     req: CollectionsParams,
 ) -> Result<Value> {
-    let session = CollectionSession::open(engine).await?;
+    let session = ProjectStoreSession::open(engine).await?;
     match req.action.as_str() {
         "list" => Ok(json!({ "collections": session.list().await? })),
         "create" => {

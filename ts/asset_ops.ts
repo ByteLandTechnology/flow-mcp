@@ -4,9 +4,10 @@
 // Asset rename and trash mutations through the bound store.
 
 import { readOwn } from "./angular";
-import { assetTrashCompatibility, readBuildLabel } from "./frontend_compatibility";
+import { readBuildLabel } from "./frontend_builds";
+import type { AssetTrashFormat } from "./frontend_builds";
+import { assetTrashCompatibility } from "./frontend_compatibility";
 import { runtimeState } from "./state";
-import type { AssetTrashFormat } from "./frontend_compatibility";
 import type { AssetRenameExtra, FlowTile } from "./types";
 
 /** Returns true when a scene tile contains the given workflow. */

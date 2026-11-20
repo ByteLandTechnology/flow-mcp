@@ -5,16 +5,18 @@
 
 import { assetOps } from "./asset_ops";
 import { attachIngredients } from "./attach_ingredients";
+import { characterBioOp } from "./character_bio";
 import { characterExtraOp } from "./character_extra";
 import { characterMediaOp } from "./character_media";
 import { characterOp } from "./character_ops";
 import { characterVoiceOp } from "./character_voices";
 import { checkAuth } from "./check_auth";
 import { collectionOps } from "./collection_ops";
-import { bindCollectionStore, collectionStoreStatus } from "./collection_store";
+import { bindProjectStore, projectStoreStatus } from "./project_store";
 import { discoverStore } from "./discover_store";
 import { fetchMedia } from "./fetch_media";
-import { probeStore, readBuildLabel } from "./frontend_compatibility";
+import { readBuildLabel } from "./frontend_builds";
+import { probeStore } from "./frontend_compatibility";
 import { openEditAsset } from "./open_edit_asset";
 import { uploadUiAction } from "./open_upload_trigger";
 import { tileDomOp } from "./tile_dom";
@@ -41,8 +43,8 @@ if (!window.__flowMcp) {
     projectsOp,
     assetOps,
     collectionOps,
-    bindCollectionStore,
-    collectionStoreStatus,
+    bindProjectStore,
+    projectStoreStatus,
     fetchMedia,
     resolveVideoUrl,
     setupGeneration,
@@ -53,6 +55,7 @@ if (!window.__flowMcp) {
     sceneOp,
     videoOp,
     characterOp,
+    characterBioOp,
     characterVoiceOp,
     characterMediaOp,
     characterExtraOp,

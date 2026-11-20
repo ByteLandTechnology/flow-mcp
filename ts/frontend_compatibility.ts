@@ -3,58 +3,12 @@
 
 // Check the build and runtime requirements of internal Flow operations.
 
-import { collectionWriteChecks } from "./collection_store";
+import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import type { AssetTrashFormat, CharacterBioFormat, CollectionWriteFormat, FrontendFormats } from "./frontend_builds";
+import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
 import { runtimeState } from "./state";
 import type { FlowTile, StoreProbeCheck, StoreProbeResult } from "./types";
-
-/** Field names for the collection write requests of one build. */
-export interface CollectionWriteFormat {
-  /** Tile ID in a single-tile request. */
-  tileId: string;
-  /** Change in a single-tile request. */
-  tileChange: string;
-  /** Destination in a collection move request. */
-  moveTarget: string;
-  /** Tiles in a collection move request. */
-  moveTiles: string;
-}
-
-/** Field names for the asset trash requests of one build. */
-export interface AssetTrashFormat {
-  /** Entries in a batch trash request. */
-  entries: string;
-  /** Trash destination in a batch entry. */
-  destination: string;
-  /** Workflow IDs in a scene clip deletion request. */
-  sceneWorkflows: string;
-  /** Clip array on a scene tile. */
-  sceneClips: string;
-  /** Workflow history map on a scene tile. */
-  sceneHistory: string;
-}
-
-/** Request formats verified for internal Flow operations. */
-interface FrontendFormats {
-  /** Direct collection writes. */
-  collection_write: CollectionWriteFormat;
-  /** Asset trash through the project store. */
-  asset_trash_store: AssetTrashFormat;
-}
-
-/** Request formats by exact build label. Include only verified operations. */
-const VERIFIED_BUILDS: ReadonlyMap<string, Partial<FrontendFormats>> = new Map([
-  ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
-    collection_write: { tileId: "Uc", tileChange: "df", moveTarget: "Sj", moveTiles: "Bb" },
-    asset_trash_store: {
-      entries: "Kv",
-      destination: "Dm",
-      sceneWorkflows: "qg",
-      sceneClips: "Tc",
-      sceneHistory: "tg",
-    },
-  }],
-]);
 
 /** Compatibility failure returned before a request is sent. */
 interface UnsupportedFrontend {
@@ -73,12 +27,6 @@ interface UnsupportedFrontend {
 /** Result of checking a build and runtime for an operation. */
 type FrontendCompatibility<Format> = { ok: true; format: Format } | UnsupportedFrontend;
 
-/** Returns the exact label published by the active page. */
-export function readBuildLabel(): string | null {
-  const label = window.WIZ_global_data?.cfb2h;
-  return typeof label === "string" ? label.trim() || null : null;
-}
-
 /** Adds the known tile-change aliases used by the general project store. */
 export function withTileChangeAliases(payload: Record<string, unknown>): Record<string, unknown> {
   if (payload.type !== "single_tile" || !payload.Ve) return payload;
@@ -91,7 +39,7 @@ function checkOperation<Operation extends keyof FrontendFormats>(
   build: string | null,
   checks: StoreProbeCheck[],
 ): FrontendCompatibility<FrontendFormats[Operation]> {
-  const format = build === null ? undefined : VERIFIED_BUILDS.get(build)?.[operation];
+  const format = frontendBuild(build)?.operations[operation];
   const failed = checks.filter(({ ok }) => !ok);
   if (format && failed.length === 0) return { ok: true, format };
   if (!format) {
@@ -106,7 +54,12 @@ function checkOperation<Operation extends keyof FrontendFormats>(
 
 /** Returns the collection format for the active project when its checks pass. */
 export function collectionWriteCompatibility(): FrontendCompatibility<CollectionWriteFormat> {
-  return checkOperation("collection_write", readBuildLabel(), collectionWriteChecks());
+  return checkOperation("collection_write", readBuildLabel(), projectWriteChecks("collection"));
+}
+
+/** Returns the personality update format when the project store can submit and confirm it. */
+export function characterBioCompatibility(): FrontendCompatibility<CharacterBioFormat> {
+  return checkOperation("character_bio", readBuildLabel(), projectWriteChecks("project"));
 }
 
 /** Returns the asset trash format when its checks pass. */
@@ -183,7 +136,8 @@ export function probeStore(): StoreProbeResult {
     ok: checks.every(({ ok }) => ok),
     checks,
     operations: {
-      collection_write: operationStatus(checkOperation("collection_write", build, collectionWriteChecks())),
+      collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
+      character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
       asset_trash_store: operationStatus(checkOperation("asset_trash_store", build, trashChecks)),
     },
   };

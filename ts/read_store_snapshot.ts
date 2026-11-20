@@ -3,6 +3,8 @@
 
 // Read all project tiles, scene clips, and collections from the bound store map.
 
+import { characterPersonalityNotes } from "./character_bio";
+
 import {
   characterLooksOf,
   collectionIdOf,
@@ -307,6 +309,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     const mediaUrl = mediaNotReady ? null : rawMediaUrl;
 
     const bio =
+      (ttype === "CHARACTER" ? characterPersonalityNotes(t) : null) ??
       t.personalityNotes ??
       t.Mv ??
       t.description ??
@@ -365,7 +368,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       url: mediaUrl ? normalizeFlowMediaUrl(String(mediaUrl), kind) : null,
       collection_id: cid,
       primary_media_id: primaryMediaId ? String(primaryMediaId) : null,
-      personality_notes: bio ? String(bio) : null,
+      personality_notes: bio == null ? null : String(bio),
       voice: voiceRaw != null ? voiceRaw : null,
       trim_start_seconds: trimStart,
       trim_end_seconds: trimEnd,

@@ -90,7 +90,7 @@ Google Flow 認証状態、アクティブプロジェクト、`JobQueue`、SQLi
 
 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }` を返します。プロジェクトを自動的に開いたり作成したりしません。
 
-アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。 `operations` には、現在のビルドと store で `collection_write` と `asset_trash_store` が使えるかが表示されます。各操作には `ok` と `failed_checks` が含まれます。
+アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。 `operations` には、現在のビルドと store で `collection_write`、`character_bio`、`asset_trash_store` が使えるかが表示されます。各操作には `ok` と `failed_checks` が含まれます。
 
 ### `flow_login`
 
@@ -174,6 +174,8 @@ Google Flow でキャラクターボイスピッカーを開き、リスト全�
 ### `flow_characters`
 
 アクティブプロジェクト内のキャラクターを一覧表示します。ライブ Flow タイルと SQLite に保存された `bio`、`voice`、`ref_asset_ids` フィールドを統合します。パラメータは不要です。
+
+`bio` に空文字列を指定すると、メモを消去します。メモのみを編集するときは、先にプロジェクトを開いてください。ツールはプロジェクトの store を使用して保存し、結果を確認します。
 
 ### `flow_voice_preview`
 

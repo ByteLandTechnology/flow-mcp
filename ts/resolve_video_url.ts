@@ -4,7 +4,7 @@
 // Resolve stream and download media URLs for a primary media ID via batchexecute RPC.
 
 import { fifeEnv as getFifeEnv } from "./dom";
-import { readBuildLabel } from "./frontend_compatibility";
+import { readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { ResolvedMediaResult } from "./types";
 

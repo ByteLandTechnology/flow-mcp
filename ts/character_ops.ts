@@ -215,25 +215,11 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       };
     }
 
-    const appliedCreate = ["create_entity"];
-    if (req?.bio != null) {
-      await helper.mutate({
-        type: "single_tile",
-        Xc: charId,
-        Uc: charId,
-        Ve: {
-          type: "set_character_personality_notes",
-          Mv: String(req.bio),
-          Bw: String(req.bio),
-        },
-      });
-      appliedCreate.push("store_bio");
-    }
     return {
       ok: true,
       id: charId,
       name: charName,
-      applied: appliedCreate,
+      applied: ["create_entity"],
     };
   }
 
@@ -252,7 +238,7 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     for (let i = 0; i < 50; i++) {
       if (
         document.querySelector(
-          'flow-character-form, flow-character-image-preview, input[aria-label="Character name"], textarea[aria-label="Character personality"]',
+          'flow-character-form, flow-character-image-preview, input[aria-label="Character name"]',
         )
       ) {
         break;
@@ -275,28 +261,6 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       if (charId && helper?.rename) {
         await helper.rename(charId, nameStr);
         applied.push("store_name");
-      }
-    }
-
-    if (req?.bio != null) {
-      const bioStr = String(req.bio);
-      const bioInput = document.querySelector(
-        'textarea[aria-label="Character personality"]',
-      );
-      if (bioInput instanceof HTMLTextAreaElement) {
-        bioInput.focus();
-        setNativeValue(bioInput, bioStr, true);
-        applied.push("ui_bio");
-        await delay(150);
-      }
-      if (charId && helper?.mutate) {
-        await helper.mutate({
-          type: "single_tile",
-          Xc: charId,
-          Uc: charId,
-          Ve: { type: "set_character_personality_notes", Mv: bioStr, Bw: bioStr },
-        });
-        applied.push("store_bio");
       }
     }
 
