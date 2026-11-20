@@ -327,6 +327,7 @@ Flow Angular `lService` スナップショットから読み取ったプロジ�
 | `kind` | `string` | いいえ | `"image"`、`"video"`、`"scene"`、`"character"`、または `"all"`（既定）で絞り込みます。 |
 | `collection` | `string` | いいえ | コレクション ID、名前部分文字列、`"all"`、`"none"`、または `"uncollected"` で絞り込みます。 |
 | `limit` | `integer` | いいえ | 返す最大項目数（`>= 1`）。 |
+| `resolve_urls` | `boolean` | いいえ | 絞り込みと件数制限の後、不足しているメディア URL を取得します。既定値は `true` で、待機時間は最大 10 秒です。 |
 
 ### `flow_rename`
 

@@ -11,8 +11,8 @@ use std::collections::HashSet;
 use tokio::time::{Duration, Instant};
 
 use crate::assets::{
-    FlowAsset, RenameEntry, list_assets, list_assets_with_project, match_asset, rename_assets,
-    resolve_asset, trash_asset,
+    AssetsParams, FlowAsset, RenameEntry, list_assets, list_assets_with_project, match_asset,
+    rename_assets, resolve_asset, trash_asset,
 };
 use crate::db::FlowDb;
 use crate::engine::ChromeEngine;
@@ -64,7 +64,14 @@ pub(crate) async fn handle_scenes(
     let action = req.action.as_deref().unwrap_or("list").trim();
     match action {
         "list" => {
-            let scenes = list_assets(engine, None, Some("scene"), None, None).await?;
+            let scenes = list_assets(
+                engine,
+                &AssetsParams {
+                    kind: Some("scene".to_string()),
+                    ..AssetsParams::default()
+                },
+            )
+            .await?;
             Ok(json!({ "count": scenes.len(), "scenes": scenes }))
         }
         "create" => {

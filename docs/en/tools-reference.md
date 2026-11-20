@@ -327,6 +327,7 @@ List project tiles read from the Flow Angular `lService` snapshot.
 | `kind` | `string` | No | Filter by `"image"`, `"video"`, `"scene"`, `"character"`, or `"all"` (default). |
 | `collection` | `string` | No | Filter by collection ID, name substring, `"all"`, `"none"`, or `"uncollected"`. |
 | `limit` | `integer` | No | Maximum items to return (`>= 1`). |
+| `resolve_urls` | `boolean` | No | Resolve missing media URLs after the filters and limit. Default is `true`. The lookup has a 10-second limit. |
 
 ### `flow_rename`
 

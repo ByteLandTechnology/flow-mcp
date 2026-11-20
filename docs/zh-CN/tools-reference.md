@@ -327,6 +327,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | `kind` | `string` | 否 | 按 `"image"`、`"video"`、`"scene"`、`"character"` 或 `"all"`（默认）筛选。 |
 | `collection` | `string` | 否 | 按集合 ID、名称子串、`"all"`、`"none"` 或 `"uncollected"` 筛选。 |
 | `limit` | `integer` | 否 | 返回的最大条目数（`>= 1`）。 |
+| `resolve_urls` | `boolean` | 否 | 应用筛选和条数限制后，补齐返回项缺失的媒体 URL。默认 `true`，最多等待 10 秒。 |
 
 ### `flow_rename`
 

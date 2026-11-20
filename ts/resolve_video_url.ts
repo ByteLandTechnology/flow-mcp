@@ -18,10 +18,12 @@ interface MediaExtractState {
   candidates: string[];
 }
 
-/** Resolves prioritized media stream and download URLs for `primaryMediaId`. */
+/** Resolves media stream and download URLs within the optional request budget. */
 export async function resolveVideoUrl(
   primaryMediaId: string,
+  timeoutMs?: number | null,
 ): Promise<ResolvedMediaResult> {
+  const signal = timeoutMs == null ? undefined : AbortSignal.timeout(timeoutMs);
   const cacheKey = primaryMediaId ? String(primaryMediaId) : "";
   const wiz = window.WIZ_global_data || {};
   const at = typeof wiz.SNlM0e === "string" ? wiz.SNlM0e : "";
@@ -246,6 +248,7 @@ export async function resolveVideoUrl(
         {
           method: "POST",
           credentials: "include",
+          signal,
           headers: {
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
           },
@@ -300,7 +303,7 @@ export async function resolveVideoUrl(
   };
   let lastErr = await fetchAs29s([cacheKey], state);
   const hasSigned = state.candidates.some(isSignedUrl);
-  if (!hasSigned || !state.streamUrl) {
+  if (!signal?.aborted && (!hasSigned || !state.streamUrl)) {
     const secondErr = await fetchAs29s([cacheKey, null, [1]], state);
     if (secondErr && !lastErr) {
       lastErr = secondErr;

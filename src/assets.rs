@@ -6,6 +6,7 @@
 //! Reads the active project store through [`crate::project::read_snapshot`].
 
 use anyhow::{Context, Result};
+use futures_util::{StreamExt, stream};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -20,6 +21,12 @@ use crate::engine::ChromeEngine;
 use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
 use crate::project_store::ProjectStoreSession;
 use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu, wait_trashed};
+
+/// Maximum number of URL lookups that can run at the same time.
+const MEDIA_URL_LOOKUPS: usize = 4;
+
+/// Time to resolve missing URLs in one asset list response.
+const ASSET_LIST_URL_BUDGET: Duration = Duration::from_secs(10);
 
 /// Media asset or scene item inside a Google Flow project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +105,7 @@ pub(crate) struct RenameEntry {
 }
 
 /// Parameters for `flow_assets`.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub(crate) struct AssetsParams {
     /// Case-insensitive substring that matches asset ID, name, or prompt.
     pub(crate) query: Option<String>,
@@ -109,6 +116,8 @@ pub(crate) struct AssetsParams {
     /// Maximum number of assets to return (at least 1).
     #[schemars(range(min = 1))]
     pub(crate) limit: Option<usize>,
+    /// Resolve missing media URLs when true. Default is true.
+    pub(crate) resolve_urls: Option<bool>,
 }
 
 /// Parameters for `flow_rename`.
@@ -135,9 +144,13 @@ pub(crate) struct TrashParams {
 }
 
 /// Resolves missing direct media URLs on finished image or video tiles through `as29s` RPCs.
-async fn populate_missing_media_urls(engine: &ChromeEngine, assets: &mut [FlowAsset]) {
-    let mut cache: HashMap<String, Option<String>> = HashMap::new();
-    for asset in assets.iter_mut() {
+async fn populate_missing_media_urls(
+    engine: &ChromeEngine,
+    assets: &mut [FlowAsset],
+    deadline: Option<Instant>,
+) {
+    let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, asset) in assets.iter().enumerate() {
         if !matches!(asset.kind.as_str(), "video" | "image")
             || asset.url.is_some()
             || asset.media_error.is_some()
@@ -156,21 +169,32 @@ async fn populate_missing_media_urls(engine: &ChromeEngine, assets: &mut [FlowAs
         else {
             continue;
         };
-        if let Some(cached) = cache.get(media_id) {
-            asset.url = cached.clone();
-            continue;
-        }
-        let resolved = eval_resolve_media_url(engine, media_id)
-            .await
-            .and_then(|val| {
-                val.get("url")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|u| u.starts_with("http"))
-                    .map(str::to_string)
+        missing.entry(media_id.to_string()).or_default().push(index);
+    }
+    let mut groups: Vec<_> = missing.into_iter().collect();
+    groups.sort_unstable_by_key(|(_, indices)| indices.first().copied());
+    let lookups = stream::iter(groups)
+        .map(|(media_id, indices)| async move {
+            let timeout_ms = deadline.and_then(|at| {
+                u64::try_from(at.saturating_duration_since(Instant::now()).as_millis()).ok()
             });
-        cache.insert(media_id.to_string(), resolved.clone());
-        asset.url = resolved;
+            let resolved = eval_resolve_media_url(engine, &media_id, timeout_ms)
+                .await
+                .and_then(|val| {
+                    val.get("url")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|u| u.starts_with("http"))
+                        .map(str::to_string)
+                });
+            (indices, resolved)
+        })
+        .buffer_unordered(MEDIA_URL_LOOKUPS);
+    futures_util::pin_mut!(lookups);
+    while let Some((indices, url)) = lookups.next().await {
+        for index in indices {
+            assets[index].url = url.clone();
+        }
     }
 }
 
@@ -178,6 +202,13 @@ async fn populate_missing_media_urls(engine: &ChromeEngine, assets: &mut [FlowAs
 pub(crate) async fn list_assets_with_project(
     engine: &ChromeEngine,
 ) -> Result<ProjectAssetsSnapshot> {
+    let mut snapshot = read_project_assets(engine).await?;
+    populate_missing_media_urls(engine, &mut snapshot.assets, None).await;
+    Ok(snapshot)
+}
+
+/// Reads project metadata and assets without requesting media URLs.
+async fn read_project_assets(engine: &ChromeEngine) -> Result<ProjectAssetsSnapshot> {
     let snap = read_snapshot(engine).await?;
     let project_id = snap
         .get("projectId")
@@ -191,12 +222,11 @@ pub(crate) async fn list_assets_with_project(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let mut assets: Vec<FlowAsset> = serde_json::from_value(
+    let assets = serde_json::from_value(
         snap.get("assets")
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new())),
     )?;
-    populate_missing_media_urls(engine, &mut assets).await;
     Ok(ProjectAssetsSnapshot {
         project_id,
         project_title,
@@ -264,19 +294,21 @@ pub(crate) async fn resolve_asset(
 /// Lists assets in the active Flow project matching optional query, kind, collection, and limit filters.
 pub(crate) async fn list_assets(
     engine: &ChromeEngine,
-    query: Option<&str>,
-    kind: Option<&str>,
-    collection: Option<&str>,
-    limit: Option<usize>,
+    request: &AssetsParams,
 ) -> Result<Vec<FlowAsset>> {
-    let snap = list_assets_with_project(engine).await?;
+    let snap = read_project_assets(engine).await?;
     let all = snap.assets;
 
-    let q_lower = query
+    let q_lower = request
+        .query
+        .as_deref()
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
-    let k_filter = kind.unwrap_or("all");
-    let col_filter = collection.map(|s| s.trim().to_lowercase());
+    let k_filter = request.kind.as_deref().unwrap_or("all");
+    let col_filter = request
+        .collection
+        .as_deref()
+        .map(|s| s.trim().to_lowercase());
 
     let mut filtered: Vec<FlowAsset> = all
         .into_iter()
@@ -309,8 +341,16 @@ pub(crate) async fn list_assets(
         })
         .collect();
 
-    if let Some(lim) = limit {
+    if let Some(lim) = request.limit {
         filtered.truncate(lim);
+    }
+    if request.resolve_urls.unwrap_or(true) {
+        let deadline = Instant::now() + ASSET_LIST_URL_BUDGET;
+        let _ = tokio::time::timeout_at(
+            deadline,
+            populate_missing_media_urls(engine, &mut filtered, Some(deadline)),
+        )
+        .await;
     }
     Ok(filtered)
 }

@@ -349,14 +349,7 @@ impl FlowService {
 
     /// Lists assets in the active Google Flow project.
     pub(crate) async fn assets(&self, req: AssetsParams) -> Result<Value> {
-        let list = assets::list_assets(
-            &self.engine,
-            req.query.as_deref(),
-            req.kind.as_deref(),
-            req.collection.as_deref(),
-            req.limit,
-        )
-        .await?;
+        let list = assets::list_assets(&self.engine, &req).await?;
         Ok(json!({ "count": list.len(), "assets": list }))
     }
 

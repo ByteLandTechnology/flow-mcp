@@ -227,10 +227,14 @@ fn push_fife_candidates(out: &mut Vec<String>, raw_url: &str, is_video: bool) {
     }
 }
 
-/// Evaluates the media URL resolver RPC for `media_id` inside Chrome and returns the `ok` payload.
-pub(crate) async fn eval_resolve_media_url(engine: &ChromeEngine, media_id: &str) -> Option<Value> {
+/// Gets the media URLs from Chrome within the optional browser request budget.
+pub(crate) async fn eval_resolve_media_url(
+    engine: &ChromeEngine,
+    media_id: &str,
+    timeout_ms: Option<u64>,
+) -> Option<Value> {
     let val = engine
-        .call_flow_async("resolveVideoUrl", json!([media_id]))
+        .call_flow_async("resolveVideoUrl", json!([media_id, timeout_ms]))
         .await
         .ok()?;
     (val.get("ok").and_then(|v| v.as_bool()) == Some(true)).then_some(val)
@@ -243,7 +247,7 @@ async fn query_resolved_media_urls(
     is_video: bool,
 ) -> Vec<String> {
     let mut out = Vec::new();
-    let Some(val) = eval_resolve_media_url(engine, media_id).await else {
+    let Some(val) = eval_resolve_media_url(engine, media_id, None).await else {
         return out;
     };
     if let Some(cands) = val.get("candidates").and_then(|v| v.as_array()) {
