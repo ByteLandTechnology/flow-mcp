@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.0.0...v2.1.0) (2026-11-21)
+
+
+### Features
+
+* attach project characters to Flow Agent messages ([3fb9052](https://github.com/ByteLandTechnology/flow-mcp/commit/3fb9052569af74683804325852f79ad238d9c393))
+
+
+### Bug Fixes
+
+* **flow:** retry reads during project write confirmation ([83df6fd](https://github.com/ByteLandTechnology/flow-mcp/commit/83df6fd7439813dc1cede0f08571351043a1e39c))
+* support Flow front end build 20261120.00 ([6b7d747](https://github.com/ByteLandTechnology/flow-mcp/commit/6b7d7470a25f2d157415423aa97fe2a4f0c63ba5))
+
 ## [2.0.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v1.4.0...v2.0.0) (2026-11-20)
 
 
