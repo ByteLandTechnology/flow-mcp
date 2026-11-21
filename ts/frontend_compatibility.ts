@@ -35,10 +35,24 @@ interface UnsupportedFrontend {
 /** Result of checking a build and runtime for an operation. */
 type FrontendCompatibility<Format> = { ok: true; format: Format } | UnsupportedFrontend;
 
-/** Adds the known tile-change aliases used by the general project store. */
-export function withTileChangeAliases(payload: Record<string, unknown>): Record<string, unknown> {
-  if (payload.type !== "single_tile" || !payload.Ve) return payload;
-  return { ...payload, We: payload.We ?? payload.Ve, df: payload.df ?? payload.Ve };
+/** Adds the native fields used by the general project store. */
+export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
+  const format = frontendBuild(readBuildLabel())?.projectStore.mutations;
+  if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
+    if (!format) return { ...payload, We: payload.We ?? payload.Ve, df: payload.df ?? payload.Ve };
+    const change = payload.Ve as Record<string, unknown>;
+    const native = change.type === "set_video_trim_seconds" ? {
+      ...change, [format.trimStart]: change.Cg, [format.trimEnd]: change.Rf,
+    } : change;
+    return { ...payload, [format.tileId]: payload.Xc ?? payload.Uc, [format.tileChange]: native };
+  }
+  if (format && payload.type === "create_scene") {
+    return { ...payload, [format.sceneWorkflows]: payload.rg, [format.sceneCollection]: payload.Fc };
+  }
+  if (format && payload.type === "add_workflows_to_scene") {
+    return { ...payload, [format.sceneId]: payload.Lc, [format.sceneWorkflows]: payload.rg };
+  }
+  return payload;
 }
 
 /** Returns the verified format when the build and runtime checks pass. */
@@ -100,10 +114,8 @@ export function characterBioCompatibility(): FrontendCompatibility<CharacterBioF
 }
 
 /** Returns the asset trash format when its checks pass. */
-export function assetTrashCompatibility(
-  tiles: Map<string, FlowTile>,
-): FrontendCompatibility<AssetTrashFormat> {
-  return checkOperation("asset_trash_store", readBuildLabel(), assetTrashChecks(tiles));
+export function assetTrashCompatibility(): FrontendCompatibility<AssetTrashFormat> {
+  return checkOperation("asset_trash_store", readBuildLabel(), projectWriteChecks("project"));
 }
 
 /** Counts readable image and video tiles in the first 200 tiles. */
@@ -178,7 +190,7 @@ export function probeStore(): StoreProbeResult {
       agent_settings: operationStatus(agentSettingsCompatibility()),
       collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
       character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
-      asset_trash_store: operationStatus(checkOperation("asset_trash_store", build, trashChecks)),
+      asset_trash_store: operationStatus(assetTrashCompatibility()),
     },
   };
 }

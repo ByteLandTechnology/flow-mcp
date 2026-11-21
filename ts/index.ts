@@ -5,6 +5,7 @@
 
 import { stageAgentFiles } from "./agent_attachments";
 import { assetOps } from "./asset_ops";
+import { trashAssetOp } from "./asset_trash";
 import {
   agentAllocate,
   agentBound,
@@ -52,6 +53,7 @@ if (!window.__flowMcp) {
     projectNav,
     projectsOp,
     assetOps,
+    trashAssetOp,
     stageAgentFiles,
     agentAllocate,
     agentBound,

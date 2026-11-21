@@ -110,13 +110,20 @@ export function legacyTile<T extends FlowTile | null | undefined>(t: T): T {
   return { ...t, Fb: legacyMedia(media), hc: t.hc ?? created };
 }
 
+/** Reads the parent collection ID from the known project tile fields. */
+export function parentCollectionId(tile: FlowTile): string | null {
+  if (typeof tile.Dc === "string" && tile.Dc) return tile.Dc;
+  return typeof tile.Cc === "string" && tile.Cc ? tile.Cc : null;
+}
+
 /** Returns the ID of the collection that holds tile `t`, or null. It accepts the old `Fc` field, or any other string field that names a collection tile, because the key name changes with each front-end build. */
 export function collectionIdOf(
   t: FlowTile | null | undefined,
   isCollectionId: (id: string) => boolean,
 ): string | null {
   if (!t || typeof t !== "object") return null;
-  if (typeof t.Cc === "string" && isCollectionId(t.Cc)) return t.Cc;
+  const parent = parentCollectionId(t);
+  if (parent && isCollectionId(parent)) return parent;
   if (t.Fc) return String(t.Fc);
   for (const [k, v] of ownEntries(t)) {
     if (k === "id" || typeof v !== "string" || v === "") continue;
@@ -127,7 +134,8 @@ export function collectionIdOf(
 
 /** Returns true when the project store marks the tile as trashed. */
 export function isTrashedTile(t: FlowTile): boolean {
-  return t.trashed === true || t.isTrashed === true || t.yb === true || t.Ab === true;
+  return t.trashed === true || t.isTrashed === true || t.Cb === true ||
+    t.yb === true || t.Ab === true;
 }
 
 /** Returns the look map of character tile `t`, or null. It accepts the old `oi` field, or any other `Map` field whose entries hold a `primaryMediaId` or a `history`, because the key name changes with each front-end build. */
@@ -191,6 +199,24 @@ export function setNativeValue(
   if (withBlur) {
     el.dispatchEvent(new Event("blur", { bubbles: true }));
   }
+}
+
+/** Returns the first visible snackbar element whose text matches `regex`. */
+export function findSnackbarMatch(
+  regex: RegExp,
+): { text: string; bar: Element } | null {
+  for (const el of document.querySelectorAll(
+    "flow-snackbar, simple-snack-bar, mat-snack-bar-container, [matsnackbarlabel]",
+  )) {
+    const text = elText(el);
+    if (text && regex.test(text)) {
+      const bar =
+        el.closest("flow-snackbar, simple-snack-bar, mat-snack-bar-container") ||
+        el;
+      return { text, bar };
+    }
+  }
+  return null;
 }
 
 /** Dispatches hover pointer and mouse events to nudge lazy Angular tooltips or templates. */

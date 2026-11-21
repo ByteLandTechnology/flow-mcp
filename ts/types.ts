@@ -88,6 +88,10 @@ export interface FlowMediaPayload {
   Ic?: number;
   /** Alternative trim end timestamp in seconds. */
   Rf?: number;
+  /** Video trim start in build 20261120.00. */
+  Jc?: number;
+  /** Video trim end in build 20261120.00. */
+  Pc?: number;
   /** Rendered media pixel width. */
   width?: number;
   /** Rendered media pixel height. */
@@ -154,6 +158,12 @@ export interface SceneClipItem {
   Eh?: number;
   /** Clip duration in seconds. */
   rc?: number;
+  /** Scene clip start in build 20261120.00. */
+  Ji?: number;
+  /** Scene clip end in build 20261120.00. */
+  Ci?: number;
+  /** Scene clip duration in build 20261120.00. */
+  nc?: number;
 }
 
 /** Project tile model stored inside the Angular tile map. */
@@ -176,6 +186,8 @@ export interface FlowTile extends FlowMediaPayload {
   Fc?: string | number;
   /** Parent collection identifier in the current project store. */
   Cc?: string;
+  /** Parent collection identifier in build 20261120.00. */
+  Dc?: string;
   /** Soft-trash flag variants. */
   trashed?: boolean;
   /** Secondary trash flag. */
@@ -184,6 +196,8 @@ export interface FlowTile extends FlowMediaPayload {
   yb?: boolean;
   /** Minified trash flag of the 2026-11-15 front end. */
   Ab?: boolean;
+  /** Trash flag in build 20261120.00. */
+  Cb?: boolean;
   /** Primary uppercase media container. */
   Fb?: FlowMediaPayload;
   /** Legacy lowercase media container. */
@@ -731,6 +745,8 @@ export interface FlowMcpRuntime {
   projectsOp: (req: ProjectsOpRequest) => Promise<unknown>;
   /** Renames or moves asset tiles to trash. */
   assetOps: (action: string, id: string, extra: AssetRenameExtra | null) => Promise<unknown>;
+  /** Moves one asset to trash in the pinned project store. */
+  trashAssetOp: (projectId: string, session: string, id: string) => Promise<unknown>;
   /** Reports the project store status for one project. */
   projectStoreStatus: (projectId: string) => unknown;
   /** Finds the active project store in the Angular view registry. */

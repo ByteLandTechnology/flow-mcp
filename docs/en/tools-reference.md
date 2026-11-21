@@ -151,7 +151,7 @@ Queue a character creation job on `JobQueue` and save metadata (`id`, `project_i
 | `refs` | `string[]` | No | Local reference image file paths to upload as looks. |
 | `prompt` | `string` | No | Prompt to generate a character look inside the editor. |
 
-When you set `voice_sample` or `voice_performance`, `flow-mcp` selects the base `voice`, fills the Sample dialogue and Customize performance fields, saves a custom voice, and adds it to the character. Google Flow generates the voice preview first, so this step can take 30 to 60 seconds.
+When you set `voice_sample` or `voice_performance`, `flow-mcp` selects the base `voice`, fills the Sample dialogue and Customize performance fields, saves a custom voice, and adds it to the character. Google Flow generates the voice preview first, so this step can take 30 to 60 seconds. If you give sample dialogue only, the tool uses a neutral instruction to read naturally in the selected voice.
 
 ### `flow_character_edit`
 
@@ -367,7 +367,7 @@ Open a Google Flow project first. The tool uses the project store for all collec
 
 The tool checks the result of each write in a new read of the same project. The supported Flow build creates a collection with a default name, then the tool sets the requested name. If the tool cannot verify a write, it returns `outcome_unknown` with the operation and IDs. It returns `unsupported_front_end` when the Flow build has an unverified write format.
 
-`"delete"` returns `collection_delete_unavailable` before it moves any member. The current Flow build sends separate requests to move members and delete the collection.
+`"delete"` moves the members to the parent collection or to the project root. It deletes the collection after it confirms the move. If Flow does not confirm a request, the tool returns `outcome_unknown` with the stage. For a build without a verified deletion request, the tool returns `collection_delete_unavailable` before it moves any member.
 
 ### `flow_download`
 
@@ -403,4 +403,4 @@ Move a matching asset, character, scene, or collection to trash in Google Flow.
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | Yes | Case-insensitive asset or collection ID, name, or prompt substring. |
 
-`flow-mcp` first clicks **Move to trash** in the tile menu of the page. If the page does not show the tile or its menu, `flow-mcp` uses the store for builds with a verified trash request format. It returns `unsupported_front_end` when the build or store checks fail. The result has `method` and `confirmed`. `confirmed` is `true` when the project store shows the item as trashed or removed. `confirmed` is `null` when the tile map of the store did not contain the item before the operation, for example a scene clip. For collections, the tool uses the same deletion check as `flow_collections` and returns `collection_delete_unavailable`.
+`flow-mcp` first uses **Move to trash** in the tile menu. It uses the project store if it cannot confirm the result from the menu. The store path requires a verified request format and confirms the result with a fresh read. On success, the result includes `method` and `confirmed`. For a collection, the tool uses the same deletion procedure as `flow_collections`.

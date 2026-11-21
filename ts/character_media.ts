@@ -17,6 +17,7 @@ import {
   delay,
   dismissOverlay,
   elText,
+  findSnackbarMatch,
   fifeBase,
   isVisibleEnabled,
   pickTileUrl,
@@ -139,24 +140,6 @@ function readPreviewSlotState(slot: "portrait" | "body"): PreviewSlotState {
       ),
     ) || Boolean(previewComp?.zy?.());
   return { previewComp, slotMedia, slotMediaId, compSrc, imgSrc, isAreaBusy };
-}
-
-/** Returns the first visible snackbar element whose text matches `regex`. */
-function findSnackbarMatch(
-  regex: RegExp,
-): { text: string; bar: Element } | null {
-  for (const el of document.querySelectorAll(
-    "flow-snackbar, simple-snack-bar, mat-snack-bar-container, [matsnackbarlabel]",
-  )) {
-    const text = elText(el);
-    if (text && regex.test(text)) {
-      const bar =
-        el.closest("flow-snackbar, simple-snack-bar, mat-snack-bar-container") ||
-        el;
-      return { text, bar };
-    }
-  }
-  return null;
 }
 
 /** Dismisses active Flow snackbars so stale notifications do not mask results. */

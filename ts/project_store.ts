@@ -138,7 +138,7 @@ export function bindProjectStore(maps: unknown[], projectId: string): ReturnType
         consider(slot);
         // The project shell holds the store in its component instance.
         if (!slot || typeof slot !== "object") continue;
-        for (const key of ["ha", "Eu", "oa", "ka"]) {
+        for (const key of ["ha", "Eu", "oa", "ka", "fh"]) {
           consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
         }
       }

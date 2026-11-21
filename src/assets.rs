@@ -20,7 +20,7 @@ use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
 use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
 use crate::project_store::ProjectStoreSession;
-use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu, wait_trashed};
+use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu};
 
 /// Maximum number of URL lookups that can run at the same time.
 const MEDIA_URL_LOOKUPS: usize = 4;
@@ -495,73 +495,35 @@ fn rename_error(entry: &RenameEntry, err: &anyhow::Error) -> Value {
     json!({ "id": entry.id, "name": entry.name, "error": format!("{err:#}") })
 }
 
-/// Builds a trash error message from a failed `assetOps` result, with the build label and each rejected attempt.
-fn trash_error_message(res: &Value) -> String {
-    let mut msg = res
-        .get("error")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown trash error")
-        .to_string();
-    if let Some(build) = res.get("build").and_then(|v| v.as_str()) {
-        msg.push_str(&format!(" (Flow front end build: {build})"));
-    }
-    if let Some(attempts) = res.get("attempts").and_then(|v| v.as_array()) {
-        let parts: Vec<String> = attempts
-            .iter()
-            .map(|a| {
-                let field = |k: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or("?");
-                format!("{}: {}", field("method"), field("error"))
-            })
-            .collect();
-        msg.push_str(&format!("; attempts: {}", parts.join("; ")));
-    }
-    if let Some(checks) = res.get("failed_checks").and_then(|v| v.as_array()) {
-        let names: Vec<&str> = checks
-            .iter()
-            .filter_map(|c| c.get("name").and_then(|v| v.as_str()))
-            .collect();
-        msg.push_str(&format!("; failed checks: {}", names.join(", ")));
-    }
-    msg
-}
-
-/// Moves an asset into Google Flow trash and returns the method and whether the store confirms it.
-///
-/// Uses the tile menu of the page first. If the page does not show the tile or its menu, sends the store mutation.
-/// `confirmed` is null when the tile map did not show the item as present before the operation, for example for a scene clip.
-async fn invoke_trash_tile(engine: &ChromeEngine, id: &str) -> Result<Value> {
-    let confirmable = tile_state(engine, id).await.is_present();
-    let menu_error = if confirmable {
-        match trash_through_menu(engine, id).await {
-            Ok(true) => {
-                return Ok(
-                    json!({ "ok": true, "method": "menu:move_to_trash", "confirmed": true }),
-                );
+/// Moves an asset to trash through the tile menu or the pinned project store.
+async fn invoke_trash_tile(
+    engine: &ChromeEngine,
+    session: &ProjectStoreSession<'_>,
+    id: &str,
+) -> Result<Value> {
+    let menu_error =
+        if ensure_flow_store(engine).await.is_ok() && tile_state(engine, id).await.is_present() {
+            match trash_through_menu(engine, id).await {
+                Ok(true) => {
+                    return Ok(
+                        json!({ "ok": true, "method": "menu:move_to_trash", "confirmed": true }),
+                    );
+                }
+                Ok(false) => None,
+                Err(err) => Some(format!("{err:#}")),
             }
-            Ok(false) => None,
-            Err(err) => Some(format!("{err:#}")),
-        }
-    } else {
-        None
-    };
-    let mut res = engine
-        .call_flow_async("assetOps", json!(["trash", id, Value::Null]))
+        } else {
+            None
+        };
+    let mut result = session
+        .call("trashAssetOp", json!(id), Some("trash asset"))
         .await?;
-    if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        anyhow::bail!("{}", trash_error_message(&res));
+    if let Some(object) = result.as_object_mut()
+        && let Some(error) = menu_error
+    {
+        object.insert("menu_error".to_string(), Value::String(error));
     }
-    let confirmed = if confirmable {
-        Value::Bool(wait_trashed(engine, id, 20).await)
-    } else {
-        Value::Null
-    };
-    if let Some(obj) = res.as_object_mut() {
-        obj.insert("confirmed".to_string(), confirmed);
-        if let Some(err) = menu_error {
-            obj.insert("menu_error".to_string(), Value::String(err));
-        }
-    }
-    Ok(res)
+    Ok(result)
 }
 
 /// Moves a matching asset, character, scene, or collection to trash through the Flow store.
@@ -589,8 +551,7 @@ pub(crate) async fn trash_asset(
 
     let id = &asset.id;
     let is_character = asset.kind == "character";
-    ensure_flow_store(engine).await?;
-    let res = invoke_trash_tile(engine, id)
+    let res = invoke_trash_tile(engine, &collections, id)
         .await
         .map_err(|err| anyhow::anyhow!("Failed to trash '{id}': {err:#}"))?;
     if is_character {

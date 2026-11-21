@@ -261,7 +261,7 @@ interface LiveSession {
 /** Project-scoped Flow signal store for conversations. */
 interface TurnStore {
   /** Returns all turns that this page has read or started. */
-  ha(): Map<string, LiveSession>;
+  ha(): Pick<Map<string, LiveSession>, "get">;
   /** Clears a deleted session. */
   yL(id: string): void;
   /** Returns outstanding requests from the original Agent transport. */

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
 use crate::assets::{
@@ -18,7 +18,8 @@ use crate::db::FlowDb;
 use crate::engine::ChromeEngine;
 use crate::generation::{collect_created_assets, inspect_generation_network};
 use crate::project::{
-    ensure_flow_store, project_id_from_url, project_workspace_url, wait_flow_mutation_rpc,
+    ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_workspace_url,
+    wait_flow_mutation_rpc,
 };
 use crate::queue::ProgressCallback;
 
@@ -173,12 +174,16 @@ pub(crate) async fn run_video_extend(
     scene_id: Option<&str>,
     on_progress: ProgressCallback,
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+    ensure_project_workspace_root(engine).await?;
     let snap = list_assets_with_project(engine).await?;
     let target = match_asset(&snap.assets, match_str, true)
         .cloned()
         .with_context(|| format!("No asset matches '{}' for video extend", match_str))?;
-    let before_ids: HashSet<String> = snap.assets.iter().map(|a| a.id.clone()).collect();
-    let before_target_sig = (target.primary_media_id.clone(), target.url.clone());
+    anyhow::ensure!(
+        target.kind == "video",
+        "Asset '{}' is not a video",
+        target.id
+    );
     let project_id = snap.project_id.clone();
     let mut net_rx = engine.subscribe_network().await?;
 
@@ -220,9 +225,21 @@ pub(crate) async fn run_video_extend(
                 .unwrap_or("unknown")
         );
     }
-    if let Some(pt) = res.get("submit_point") {
-        engine.click_point(pt).await?;
-    }
+    let point = res
+        .get("submit_point")
+        .context("Video extend did not return a submit point")?;
+    // Scene creation can copy the input clip to a new workflow before submission.
+    let prepared = list_assets_with_project(engine).await?;
+    anyhow::ensure!(
+        prepared.project_id == project_id,
+        "The Flow project changed"
+    );
+    let before: HashMap<_, _> = prepared
+        .assets
+        .into_iter()
+        .map(|asset| (asset.id.clone(), asset))
+        .collect();
+    engine.click_point(point).await?;
 
     on_progress("extending video in Flow scene editor".to_string());
     let deadline = Instant::now() + Duration::from_secs(420);
@@ -253,11 +270,17 @@ pub(crate) async fn run_video_extend(
                 .filter(|a| {
                     a.kind == "video"
                         && a.url.is_some()
-                        && (!before_ids.contains(&a.id)
-                            || (a.id == target.id
-                                && ((a.primary_media_id.is_some()
-                                    && a.primary_media_id != before_target_sig.0)
-                                    || a.url != before_target_sig.1)))
+                        && before.get(&a.id).is_none_or(|prior| {
+                            a.primary_media_id.as_ref().map_or_else(
+                                || a.url != prior.url,
+                                |media_id| {
+                                    prior
+                                        .primary_media_id
+                                        .as_ref()
+                                        .is_some_and(|id| id != media_id)
+                                },
+                            )
+                        })
                 })
                 .cloned()
                 .collect();
@@ -267,7 +290,7 @@ pub(crate) async fn run_video_extend(
             }
             if let Some(failed_tile) = cur_snap.assets.iter().find(|a| {
                 a.kind == "video"
-                    && !before_ids.contains(&a.id)
+                    && !before.contains_key(&a.id)
                     && matches!(a.media_status.as_deref(), Some("failed" | "canceled"))
             }) {
                 extend_err = Some(anyhow::anyhow!(

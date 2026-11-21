@@ -4,6 +4,7 @@
 // Read all project tiles, scene clips, and collections from the bound store map.
 
 import { characterPersonalityNotes } from "./character_bio";
+import { sceneContents } from "./scene_tiles";
 
 import {
   characterLooksOf,
@@ -330,6 +331,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       null;
 
     const trimStart =
+      kind === "video" && typeof t.Fb?.Jc === "number" ? t.Fb.Jc :
       typeof t.trimStartSeconds === "number"
         ? t.trimStartSeconds
         : typeof t.Fb?.Ac === "number"
@@ -342,6 +344,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
                 ? t.Fb.Cg
                 : null;
     const trimEnd =
+      kind === "video" && typeof t.Fb?.Pc === "number" ? t.Fb.Pc :
       typeof t.trimEndSeconds === "number"
         ? t.trimEndSeconds
         : typeof t.Fb?.Ic === "number"
@@ -421,35 +424,25 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
 
   for (const st of sceneTiles) {
     const sceneCid = collectionIdOf(st, isCollectionId);
-    const yfEntries: Array<[string, FlowMediaPayload[]]> =
-      st.Yf instanceof Map
-        ? Array.from(st.Yf.entries())
-        : st.Yf && typeof st.Yf === "object"
-          ? Object.entries(st.Yf)
-          : [];
-    const yfMap = new Map<string, FlowMediaPayload[]>(
-      yfEntries.map(([k, v]) => [String(k), v]),
-    );
+    const { clips, history } = sceneContents(st);
     const candidates: Array<
       [string, SceneClipItem | null, FlowMediaPayload | null]
     > = [];
-    if (Array.isArray(st.Oc)) {
-      for (const clip of st.Oc) {
-        const wfId = clip?.workflowId ? String(clip.workflowId) : null;
-        if (!wfId) continue;
-        const hist = yfMap.get(wfId);
-        const primaryId = clip?.primaryMediaId
-          ? String(clip.primaryMediaId)
-          : null;
-        const mObj = Array.isArray(hist)
-          ? hist.find((x) => x && String(x.id || "") === primaryId) ||
-            hist[0] ||
-            null
-          : null;
-        candidates.push([wfId, clip, mObj]);
-      }
+    for (const clip of clips) {
+      const wfId = clip?.workflowId ? String(clip.workflowId) : null;
+      if (!wfId) continue;
+      const hist = history.get(wfId);
+      const primaryId = clip?.primaryMediaId
+        ? String(clip.primaryMediaId)
+        : null;
+      const mObj = Array.isArray(hist)
+        ? hist.find((x) => x && String(x.id || "") === primaryId) ||
+          hist[0] ||
+          null
+        : null;
+      candidates.push([wfId, clip, mObj]);
     }
-    for (const [wfId, hist] of yfMap.entries()) {
+    for (const [wfId, hist] of history) {
       const mObj = Array.isArray(hist) ? hist[0] || null : null;
       candidates.push([wfId, null, mObj]);
     }
@@ -493,6 +486,8 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         null;
       const clipUrl = mNotReady ? null : rawClipUrl;
       const trimStartVal =
+        typeof clip?.Ji === "number" ? clip.Ji :
+        typeof mObj?.Jc === "number" ? mObj.Jc :
         typeof mObj?.Ac === "number"
           ? mObj.Ac
           : typeof mObj?.Cg === "number"
@@ -501,6 +496,8 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               ? clip.Mh
               : null;
       const trimEndVal =
+        typeof clip?.Ci === "number" ? clip.Ci :
+        typeof mObj?.Pc === "number" ? mObj.Pc :
         typeof mObj?.Ic === "number"
           ? mObj.Ic
           : typeof mObj?.Rf === "number"
@@ -509,6 +506,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               ? clip.Eh
               : null;
       const durVal =
+        typeof clip?.nc === "number" ? clip.nc :
         typeof clip?.rc === "number"
           ? clip.rc
           : typeof mObj?.durationSeconds === "number"

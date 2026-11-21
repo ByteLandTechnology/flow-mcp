@@ -4,6 +4,7 @@
 // Shared Angular Ivy LView traversal, router lookup, and scene creation helpers.
 
 import { delay, elText, fifeBase } from "./dom";
+import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
@@ -196,106 +197,59 @@ export function findRouter(): AngularRouter | null {
   return null;
 }
 
-/** Dispatches a `create_scene` mutation through `helper` and waits for the resolved scene ID. */
+/** Maximum time to confirm scene creation and the initial clip load. */
+const SCENE_CREATE_TIMEOUT_MS = 30_000;
+
+/** Reads the ID from a native scene creation result. */
+function readSceneId(scene: unknown): string | undefined {
+  if (typeof scene === "string" && scene) return scene;
+  const id = readOwn(scene, "id");
+  return typeof id === "string" && id ? id : undefined;
+}
+
+/** Returns the IDs of the confirmed scenes in the store. */
+function sceneIds(tiles: Map<string, FlowTile> | null | undefined): string[] {
+  return [...(tiles?.entries() ?? [])].flatMap(([id, tile]) =>
+    tile.type === "SCENE" && !tile.isPending ? [String(tile.id ?? id)] : []);
+}
+
+/** Creates a scene and waits for its ID from Flow. */
 export async function createScene(
   helper: FlowStoreHandle,
   getMap: () => Map<string, FlowTile> | null | undefined,
   workflowIds: string[],
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
-  const tileMap = getMap();
-  const before = new Set<string>();
-  if (tileMap instanceof Map) {
-    for (const [k, v] of tileMap.entries()) {
-      if (String(v?.type || "").toUpperCase() === "SCENE") {
-        before.add(String(v?.id ?? k));
-      }
-    }
-  }
-  let resolveDe: (v: unknown) => void = () => {};
-  let rejectDe: (e: unknown) => void = () => {};
-  let resolvedScene: unknown = null;
-  let mutateErr: string | null = null;
-  const dePromise = new Promise<unknown>((res, rej) => {
-    resolveDe = res;
-    rejectDe = rej;
-  });
-  dePromise.then(
-    (v) => {
-      resolvedScene = v;
+  const before = new Set(sceneIds(getMap()));
+  const resultField = frontendBuild(readBuildLabel())?.projectStore.mutations?.sceneCreated ?? "VWa";
+  let confirmedId: string | undefined;
+  let failure: string | undefined;
+  const completion = {
+    resolve: (scene: unknown) => { confirmedId ??= readSceneId(scene); },
+    reject: (error: unknown) => {
+      failure ??= error instanceof Error ? error.message : String(error ?? "create_scene_failed");
     },
-    (e) => {
-      const errObj = e as { message?: unknown } | null;
-      mutateErr = String(errObj?.message || e || "create_scene_failed");
-    },
-  );
-  const mutatePromise = Promise.resolve(
-    helper.mutate({
-      type: "create_scene",
-      rg: workflowIds,
-      Fc: undefined,
-      wc: undefined,
-      aspectRatio: 1,
-      De: { resolve: resolveDe, reject: rejectDe },
-      ve: { resolve: resolveDe, reject: rejectDe },
-    }),
-  ).then(
-    (v) => {
-      const vObj = v as { VWa?: unknown } | null;
-      if (vObj?.VWa && !resolvedScene) resolvedScene = vObj.VWa;
-    },
-    (e) => {
-      if (!mutateErr) {
-        const errObj = e as { message?: unknown } | null;
-        mutateErr = String(errObj?.message || e || "create_scene_failed");
-      }
-    },
-  );
-
-  const readSceneId = (val: unknown): string | null => {
-    if (typeof val === "string" && val) return val;
-    if (val && typeof val === "object") {
-      const objId = (val as { id?: unknown }).id;
-      if (objId) return String(objId);
-    }
-    return null;
   };
+  const deadline = performance.now() + SCENE_CREATE_TIMEOUT_MS;
+  void Promise.resolve().then(() => helper.mutate({
+    type: "create_scene",
+    rg: workflowIds,
+    Fc: undefined,
+    wc: undefined,
+    aspectRatio: 1,
+    De: completion,
+    ve: completion,
+  })).then((response) => {
+    completion.resolve(readOwn(response, resultField));
+  }, completion.reject);
 
-  let sceneId: string | null = null;
-  for (let i = 0; i < 80; i++) {
-    if (mutateErr) {
-      return { ok: false, error: mutateErr };
-    }
-    const directId = readSceneId(resolvedScene);
-    if (directId) {
-      sceneId = directId;
-      break;
-    }
-    const mNow = getMap();
-    if (mNow instanceof Map) {
-      for (const [k, v] of mNow.entries()) {
-        if (String(v?.type || "").toUpperCase() === "SCENE" && !v?.isPending) {
-          const sid = String(v?.id ?? k);
-          if (!before.has(sid)) {
-            sceneId = sid;
-            break;
-          }
-        }
-      }
-    }
-    if (sceneId) break;
-    await delay(100);
+  while (performance.now() < deadline) {
+    if (confirmedId) return { ok: true, id: confirmedId };
+    if (failure) return { ok: false, error: failure };
+    const added = sceneIds(getMap()).filter((id) => !before.has(id));
+    if (added.length === 1) return { ok: true, id: added[0] };
+    await delay(200);
   }
-  if (!sceneId && !mutateErr) {
-    await Promise.race([mutatePromise, delay(200)]).catch(() => {});
-    sceneId = readSceneId(resolvedScene);
-  }
-  if (mutateErr) {
-    return { ok: false, error: mutateErr };
-  }
-  if (!sceneId) {
-    return { ok: false, error: "created_scene_id_not_found" };
-  }
-  return { ok: true, id: sceneId };
+  return { ok: false, error: "scene_creation_outcome_unknown" };
 }
 
 /** Matching descriptor used when picking an existing tile in Flow overlay pickers. */

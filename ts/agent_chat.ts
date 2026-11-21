@@ -24,6 +24,7 @@ import type {
 } from "./agent_protocol";
 import { agentSettingsOp, settingsWritePending } from "./agent_settings";
 import type { AgentInjector } from "./agent_settings";
+import { adaptAgentWire } from "./agent_wire";
 import { agentChatCompatibility } from "./frontend_compatibility";
 import { readBuildLabel } from "./frontend_builds";
 import type { AgentChatFormat } from "./frontend_builds";
@@ -190,7 +191,7 @@ export function bindAgent(
       continue;
     try {
       if (project.call(page) !== projectId) continue;
-      const transport = page[format.transport] as Transport | undefined;
+      const nativeTransport = page[format.transport] as Transport | undefined;
       const ns = namespace();
       const injector = page[format.injector] as AgentInjector | undefined;
       const composer = injector?.get?.(ns[format.composer]) as
@@ -199,11 +200,20 @@ export function bindAgent(
       const permissions = injector?.get?.(ns[format.permissions]) as
         | object
         | undefined;
-      const questions = injector?.get?.(ns[format.questions]) as
+      const nativeQuestions = injector?.get?.(ns[format.questions]) as
         | Binding["questions"]
         | undefined;
+      if (!nativeTransport || !nativeQuestions) continue;
+      const exports = Object.fromEntries(
+        Object.entries(format.exports).map(([key, name]) => [key, ns[name]]),
+      ) as unknown as FlowAgentExports;
+      const services = adaptAgentWire({
+        flow: exports, transport: nativeTransport, questions: nativeQuestions,
+      }, format.wire);
+      if (!services) continue;
+      const { transport, questions, flow } = services;
       if (
-        !injector || !transport ||
+        !injector ||
         !(transport.ha instanceof Map) ||
         typeof transport.ka?.ha !== "function" ||
         typeof transport.ka.Ma !== "function" ||
@@ -218,9 +228,6 @@ export function bindAgent(
         typeof composer?.wb !== "function"
       )
         continue;
-      const flow = Object.fromEntries(
-        Object.entries(format.exports).map(([key, name]) => [key, ns[name]]),
-      ) as unknown as FlowAgentExports;
       binding = {
         projectId,
         format,

@@ -5,6 +5,7 @@
 
 import type { AgentAttachmentExport } from "./agent_attachments";
 import type { AgentExport } from "./agent_protocol";
+import type { AgentWireFormat } from "./agent_wire";
 import type { AgentSettingsExport } from "./agent_settings_protocol";
 
 /** Field names for the collection write requests of one build. */
@@ -17,20 +18,24 @@ export interface CollectionWriteFormat {
   moveTarget: string;
   /** Tiles in a collection move request. */
   moveTiles: string;
+  /** Collection IDs in a verified deletion request. */
+  deleteCollections?: string;
 }
 
 /** Field names for the asset trash requests of one build. */
 export interface AssetTrashFormat {
   /** Entries in a batch trash request. */
   entries: string;
+  /** Tile in a batch trash entry. */
+  tile: string;
+  /** Trash flag in a batch entry. */
+  trashed: string;
+  /** Timestamp in the batch request. */
+  date: string;
   /** Trash destination in a batch entry. */
   destination: string;
   /** Workflow IDs in a scene clip deletion request. */
   sceneWorkflows: string;
-  /** Clip array on a scene tile. */
-  sceneClips: string;
-  /** Workflow history map on a scene tile. */
-  sceneHistory: string;
 }
 
 /** Request formats verified for internal Flow operations. */
@@ -57,6 +62,34 @@ export interface AgentSettingsFormat {
   requestClient: string;
   /** Browser exports for native settings requests. */
   exports: Readonly<Record<AgentSettingsExport, string>>;
+  /** New names for project settings methods and catalogue fields. */
+  wire?: AgentSettingsWireFormat;
+}
+
+/** Methods and fields used to read and encode one build's Agent settings. */
+export interface AgentSettingsWireFormat {
+  /** Method that gets the settings from the metadata response. */
+  metadata: string;
+  /** Method that encodes the request descriptor and message. */
+  encode: string;
+  /** New names of the settings message methods. */
+  methods: Readonly<Record<string, string>>;
+  /** Model group in the catalogue. */
+  groups: string;
+  /** Image model group. */
+  imageModels: string;
+  /** Video model group. */
+  videoModels: string;
+  /** Account tier defaults in the catalogue. */
+  tierDefaults: string;
+  /** Model list in the options request. */
+  families: string;
+  /** Usage codes in the options filter. */
+  usages: string;
+  /** Model ID in an option. */
+  modelId: string;
+  /** Preferred model ID in the selection request. */
+  preferredModel: string;
 }
 
 /** Project page and browser exports for Agent chat. */
@@ -81,6 +114,8 @@ export interface AgentChatFormat {
   destroyed: string;
   /** Browser exports for the native Agent protocol. */
   exports: Readonly<Record<AgentExport, string>>;
+  /** Changes to the native Agent fields and methods. */
+  wire?: AgentWireFormat;
 }
 
 /** Project page fields and exports for Agent attachments. */
@@ -99,6 +134,36 @@ export interface AgentAttachmentFormat {
   consent: string;
   /** Functions that the verified build uses for attachments. */
   exports: Readonly<Record<AgentAttachmentExport, string>>;
+  /** Fields in the native reference, message, and upload formats. */
+  fields: AgentAttachmentFields;
+}
+
+/** Field names in the Agent attachment protocol. */
+export interface AgentAttachmentFields {
+  /** Character ID in a native reference. */
+  character: string;
+  /** Text content in the message request. */
+  text: string;
+  /** Attachment references in the message request. */
+  references: string;
+  /** Accepted files in the validation result. */
+  accepted: string;
+  /** Error messages in the validation result. */
+  errors: string;
+  /** Duration in the video metadata. */
+  duration: string;
+  /** Workflow ID in the upload request. */
+  workflow: string;
+  /** Media ID in the upload request. */
+  media: string;
+  /** Local file in the upload request. */
+  file: string;
+  /** Date in the upload request. */
+  date: string;
+  /** Image dimensions in the upload request. */
+  dimensions: string;
+  /** Completion callbacks in the upload request. */
+  completion: string;
 }
 
 /** Field names for a character personality update. */
@@ -129,6 +194,38 @@ export interface ProjectStoreFormat {
   dispatcher: string;
   /** Tile rows in the query result. */
   rows: string;
+  /** Field names of a scene tile and its workflow history. */
+  scene?: SceneTileFormat;
+  /** Native names for mutations that use the general store adapter. */
+  mutations?: ProjectMutationFormat;
+}
+
+/** Fields that identify the contents of a scene tile. */
+export interface SceneTileFormat {
+  /** Clip array on a scene tile. */
+  clips: string;
+  /** Workflow history map on a scene tile. */
+  history: string;
+}
+
+/** Names of fields used by the general project mutations. */
+export interface ProjectMutationFormat {
+  /** Tile ID in a single-tile request. */
+  tileId: string;
+  /** Change in a single-tile request. */
+  tileChange: string;
+  /** Workflow IDs used to create a scene or add clips. */
+  sceneWorkflows: string;
+  /** Collection ID in a scene creation request. */
+  sceneCollection: string;
+  /** Scene tile in a successful creation response. */
+  sceneCreated: string;
+  /** Scene ID in a request to add workflows. */
+  sceneId: string;
+  /** Start time in a video trim request. */
+  trimStart: string;
+  /** End time in a video trim request. */
+  trimEnd: string;
 }
 
 /** Project store format of build 20261117.10. */
@@ -141,6 +238,7 @@ const NOVEMBER_17_STORE: ProjectStoreFormat = {
   queryClient: "Xa",
   dispatcher: "VI",
   rows: "Bb",
+  scene: { clips: "Tc", history: "tg" },
 };
 
 /** Project store format of build 20261118.14. */
@@ -153,6 +251,23 @@ const NOVEMBER_18_STORE: ProjectStoreFormat = {
   queryClient: "Wa",
   dispatcher: "sJ",
   rows: "Ab",
+};
+
+/** Project store format of build 20261120.00. */
+const NOVEMBER_20_STORE: ProjectStoreFormat = {
+  storeClass: "GO",
+  lifecycle: "Ba",
+  destroyed: "Va",
+  projectId: "ua",
+  tilesService: "ma",
+  queryClient: "Wa",
+  dispatcher: "YJ",
+  rows: "yb",
+  scene: { clips: "Uc", history: "Cg" },
+  mutations: {
+    tileId: "Xc", tileChange: "mf", sceneWorkflows: "ng", sceneCollection: "Dc",
+    sceneCreated: "t6a", sceneId: "yc", trimStart: "dh", trimEnd: "ug",
+  },
 };
 
 /** Agent settings format of build 20261118.14. */
@@ -190,6 +305,31 @@ const NOVEMBER_18_AGENT_SETTINGS: AgentSettingsFormat = {
     boolean: "Zs",
     setCards: "csc",
     setMemoryEnabled: "bsc",
+  },
+};
+
+/** Agent settings format of build 20261120.00. */
+const NOVEMBER_20_AGENT_SETTINGS: AgentSettingsFormat = {
+  queryClient: "Wa",
+  requestClient: "ka",
+  exports: {
+    projectService: "$N", projectKey: "pM", modelService: "UN", modelKey: "wGb",
+    fetchModels: "yGb", serviceTier: "EG", locale: "nh", modelOptions: "UO",
+    defaultModel: "OO", selectModel: "NZ", aspectLabels: "NE", videoAspects: "$O",
+    imageAspect: "rmc", videoAspect: "smc", request: "$y", settings: "Q_",
+    mask: "gr", card: "AM", rpc: "kx", updateMethod: "jEb", finish: "cc",
+    message: "al", maskPaths: "er", string: "wv", strings: "yv", enumValue: "Ot",
+    integer: "uv", boolean: "ht", setCards: "Jsc", setMemoryEnabled: "Isc",
+  },
+  wire: {
+    metadata: "Kn", encode: "Eb",
+    methods: {
+      NL: "wM", PH: "uI", QH: "vI", rR: "gS", sR: "hS", Pg: "Vg", bz: "rz",
+      QY: "NZ", ZY: "WZ", YN: "HO", cO: "KO", ML: "vM", Ww: "vx", xl: "Jl",
+      Vl: "tm", mB: "MB", KH: "pI", MH: "rI",
+    },
+    groups: "yg", imageModels: "BI", videoModels: "No", tierDefaults: "sy",
+    families: "jx", usages: "Xl", modelId: "hg", preferredModel: "fda",
   },
 };
 
@@ -241,6 +381,80 @@ const NOVEMBER_18_AGENT: AgentChatFormat = {
   },
 };
 
+/** Agent chat format of build 20261120.00. */
+const NOVEMBER_20_AGENT: AgentChatFormat = {
+  page: "uu",
+  transport: "na",
+  injector: "Ab",
+  composer: "z3",
+  permissions: "f2",
+  questions: "g2",
+  project: "ua",
+  lifecycle: "Ba",
+  destroyed: "Va",
+  exports: {
+    allocate: "VN",
+    init: "twc",
+    sessionList: "swc",
+    readSession: "Bwc",
+    resume: "Cwc",
+    rows: "s_",
+    metadata: "u_",
+    string: "p",
+    turnType: "b0",
+    turns: "lv",
+    decode: "C_",
+    hydrate: "rvc",
+    reply: "hDc",
+    permission: "DGc",
+    plan: "PFc",
+    newEnvelope: "S1",
+    setContent: "D_",
+    mutable: "br",
+    finish: "dr",
+    newContent: "TK",
+    setParts: "SK",
+    newPart: "NK",
+    setText: "MK",
+    errors: "HE",
+    legacyDecision: "CGc",
+    clearLegacyRequest: "svc",
+    oneOf: "vr",
+    toolEventType: "RZ",
+    toolEventGroup: "TZ",
+    toolResultType: "$Z",
+    resultItems: "WZ",
+    structFields: "GM",
+    valueString: "VZ",
+  },
+  wire: {
+    methods: { stop: "uv", deleteSession: "eM", renameSession: "Z2", clearSession: "eM", permissions: "La", answer: "nB" },
+    send: { Oe: "Te", Gn: "Wn", hi: "wi", Aq: "Wq" },
+    hydrate: { BF: "hG", hka: "Rla", xe: "Ce" },
+    resume: { BF: "hG", TM: "BN" },
+    formatTurn: { XJ: "DK", yc: "Ac" },
+    permissionRequest: { Ig: "Of" },
+    planRequest: { VE: "DF", hi: "wi" },
+    planChoice: { aja: "Fka" },
+    questionRequest: { Ig: "Of", Qj: "Nj", hi: "wi" },
+    answer: { fk: "Lk", VN: "EO", HY: "DZ" },
+    session: { Vh: "Jh", xe: "Ce" },
+    turn: { Yu: "rv", Tf: "Yf" },
+    stream: { Oh: "Ah", Bx: "Sx" },
+    user: { Gh: "Nh", Uy: "lz" },
+    character: { Nc: "Oc" },
+    reply: { Oh: "Ah", ci: "oi", jna: "Uoa" },
+    permissionCard: { Vz: "rA", Ls: "Wr" },
+    permissionSummary: { qsa: "nua", joa: "Wpa", loa: "Ypa" },
+    questionCard: { Qm: "nn", Qj: "Nj", Ls: "Wr" },
+    question: { fk: "Lk", dt: "lq", cj: "Yi" },
+    option: { zq: "gq", rma: "eaa" },
+    planBlock: "cA",
+    plan: { XDa: "lGa", FOa: "mRa" },
+    errors: { IC: "mD" },
+  },
+};
+
 /** Agent attachment format of build 20261118.14. */
 const NOVEMBER_18_ATTACHMENTS: AgentAttachmentFormat = {
   store: "Xg",
@@ -261,6 +475,30 @@ const NOVEMBER_18_ATTACHMENTS: AgentAttachmentFormat = {
     videoInfo: "qTb",
     confirmUpload: "OR",
   },
+  fields: {
+    character: "Nc", text: "Lc", references: "nc", accepted: "mA", errors: "ir",
+    duration: "Tt", workflow: "hf", media: "wh", file: "yn", date: "kc",
+    dimensions: "Ac", completion: "sm",
+  },
+};
+
+/** Agent attachment format of build 20261120.00. */
+const NOVEMBER_20_ATTACHMENTS: AgentAttachmentFormat = {
+  store: "fh",
+  tiles: "la",
+  tileQuery: "rs",
+  dispatcher: "he",
+  injector: "Ab",
+  consent: "kS",
+  exports: {
+    reference: "SO", message: "jBc", text: "QI", id: "VN", validateFiles: "UR",
+    isVideo: "RR", mimeType: "OTb", imageSize: "QR", videoInfo: "UTb", confirmUpload: "jS",
+  },
+  fields: {
+    character: "Oc", text: "Nc", references: "oc", accepted: "IA", errors: "Ir",
+    duration: "pu", workflow: "lf", media: "Eh", file: "Nn", date: "lc",
+    dimensions: "Bc", completion: "Jm",
+  },
 };
 
 /** Verified operations and store format of one build. */
@@ -269,6 +507,20 @@ interface FrontendBuild {
   projectStore: ProjectStoreFormat;
   /** Operations with verified request formats. */
   operations: Partial<FrontendFormats>;
+  /** Native fields used to confirm a character voice assignment. */
+  voiceConfirmation?: VoiceConfirmationFormat;
+}
+
+/** Character editor and query fields used to read the saved voice. */
+export interface VoiceConfirmationFormat {
+  /** Exported character editor class. */
+  editor: string;
+  /** Query that loads the character entity. */
+  entityQuery: string;
+  /** Editor method that reads the voice ID from that entity. */
+  savedVoice: string;
+  /** Form method that reads the locally selected voice ID. */
+  selectedVoice: string;
 }
 
 /** Request formats by exact build label. Include only verified operations. */
@@ -279,10 +531,11 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       collection_write: { tileId: "Uc", tileChange: "df", moveTarget: "Sj", moveTiles: "Bb" },
       asset_trash_store: {
         entries: "Kv",
+        tile: "Oa",
+        trashed: "Ab",
+        date: "jc",
         destination: "Dm",
         sceneWorkflows: "qg",
-        sceneClips: "Tc",
-        sceneHistory: "tg",
       },
       character_bio: { tileId: "Uc", tileChange: "df", notes: "mx" },
     },
@@ -295,6 +548,23 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       agent_chat: NOVEMBER_18_AGENT,
       agent_attachments: NOVEMBER_18_ATTACHMENTS,
       agent_settings: NOVEMBER_18_AGENT_SETTINGS,
+    },
+  }],
+  ["boq_labs-ai-sandbox-frontend_20261120.00_p0", {
+    projectStore: NOVEMBER_20_STORE,
+    voiceConfirmation: { editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3" },
+    operations: {
+      collection_write: {
+        tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
+      },
+      asset_trash_store: {
+        entries: "tw", tile: "Ia", trashed: "Cb", date: "Xb", destination: "hn",
+        sceneWorkflows: "Dj",
+      },
+      character_bio: { tileId: "Xc", tileChange: "mf", notes: "Zx" },
+      agent_chat: NOVEMBER_20_AGENT,
+      agent_attachments: NOVEMBER_20_ATTACHMENTS,
+      agent_settings: NOVEMBER_20_AGENT_SETTINGS,
     },
   }],
 ]);

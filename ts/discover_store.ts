@@ -10,7 +10,7 @@ import {
   withLViewMapCapture,
 } from "./angular";
 import { delay, hoverProbe } from "./dom";
-import { withTileChangeAliases } from "./frontend_compatibility";
+import { withMutationAliases } from "./frontend_compatibility";
 import { clearStore, runtimeState } from "./state";
 import type {
   DiscoverStoreResult,
@@ -162,7 +162,7 @@ async function invokeMutation(
   payload: Record<string, unknown>,
   lcObj?: MutationQueueObj | null,
 ): Promise<unknown> {
-  payload = withTileChangeAliases(payload);
+  payload = withMutationAliases(payload);
   const mq = queueObj as MutationQueueObj | null | undefined;
   const qKa = typeof mq?.ka === "function" ? mq.ka.bind(mq) : null;
   const hasPendingQueueItems = (): boolean => {
@@ -473,12 +473,12 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
         getTileMap: getUoMap,
         isReady: () => isStoreDataReady(runtimeState.lService),
         mutate: (payload) =>
-          uoPg.call(uo, projectId, withTileChangeAliases(payload)),
+          uoPg.call(uo, projectId, withMutationAliases(payload)),
         rename: async (id, displayName) =>
           await uoPg.call(
             uo,
             projectId,
-            withTileChangeAliases({
+            withMutationAliases({
               type: "single_tile",
               Xc: id,
               Uc: id,
@@ -499,14 +499,14 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
       mutate: (payload) => {
         const fn = resolveMutatorFrom(runtimeState.lService, projectId);
         if (!fn) throw new Error("store_mutate_missing");
-        return fn(withTileChangeAliases(payload));
+        return fn(withMutationAliases(payload));
       },
       rename: async (id, displayName) => {
         const svc = runtimeState.lService;
         const fn = resolveMutatorFrom(svc, projectId);
         if (fn) {
           return await fn(
-            withTileChangeAliases({
+            withMutationAliases({
               type: "single_tile",
               Xc: id,
               Uc: id,

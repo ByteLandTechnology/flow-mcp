@@ -463,9 +463,14 @@ export async function writePromptBox(
   }
 
   try {
+    tb.focus();
     const p = tb.querySelector("p");
     if (p) p.textContent = "";
-    else tb.innerHTML = "<p><br></p>";
+    else {
+      const paragraph = document.createElement("p");
+      paragraph.append(document.createElement("br"));
+      tb.replaceChildren(paragraph);
+    }
     await delay(40);
     const pasteEv = new ClipboardEvent("paste", {
       bubbles: true,
@@ -554,13 +559,9 @@ export async function writePromptBox(
     // Fall through to direct DOM paragraph update.
   }
 
-  let p = tb.querySelector("p");
-  if (!p) {
-    tb.innerHTML = "<p></p>";
-    p = tb.querySelector("p");
-  }
-  if (p) p.textContent = text;
-  else tb.textContent = text;
+  const p = tb.querySelector("p") ?? document.createElement("p");
+  p.textContent = text;
+  if (!p.parentElement) tb.replaceChildren(p);
   tb.dispatchEvent(
     new InputEvent("input", {
       bubbles: true,

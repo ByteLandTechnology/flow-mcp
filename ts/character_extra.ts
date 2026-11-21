@@ -3,14 +3,19 @@
 
 // Custom voices, full voice lists, voice previews, and portrait removal on the open character editor page.
 
+import { withLViewMapCapture } from "./angular";
 import {
   clickButtonByRegex,
   delay,
   dismissOverlay,
   elText,
+  findSnackbarMatch,
+  isVisibleEnabled,
   setNativeValue,
 } from "./dom";
+import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import type { CharacterExtraOpRequest } from "./types";
+import { bindVoiceConfirmation } from "./voice_confirmation";
 
 /** One voice row in the "Select a voice" dialog. */
 interface VoiceRow {
@@ -26,6 +31,24 @@ interface VoiceRow {
 
 /** Icon ligature words that the dialog renders as text inside voice rows. */
 const ICON_WORDS = new Set(["voice_selection", "settings_2", "play_arrow"]);
+
+/** Performance text for a custom voice request that supplies only a sample. */
+const DEFAULT_VOICE_PERFORMANCE = "Read naturally in the selected voice.";
+
+/** Maximum wait for a save, with time left to attach and confirm the voice. */
+const VOICE_SAVE_TIMEOUT_MS = 100_000;
+
+/** Values for the custom voice editor and its save deadline. */
+interface CustomVoiceInput {
+  /** Sample text to read. */
+  sample: string;
+  /** Performance instructions for the selected voice. */
+  performance: string;
+  /** Name for the saved voice. */
+  name: string;
+  /** Latest time to wait for Flow to save the voice. */
+  deadline: number;
+}
 
 /** Returns the open voice dialog pane, or null. */
 function voicePane(): Element | null {
@@ -150,10 +173,59 @@ function paneButton(pane: Element, re: RegExp): HTMLElement | null {
   return (
     Array.from(pane.querySelectorAll<HTMLElement>("button")).find(
       (b) =>
-        !/voice_selection/.test(b.innerText || "") &&
+        isVisibleEnabled(b) && !/voice_selection/.test(b.innerText || "") &&
         re.test(b.innerText || ""),
     ) || null
   );
+}
+
+/** Saves the custom voice and waits for Flow to show its saved entry. */
+async function saveCustomVoice(pane: Element, { sample, performance, name, deadline }: CustomVoiceInput) {
+  const sampleEl = field(pane, /hi there/i);
+  const perfEl = field(pane, /performance style/i);
+  if (!sampleEl || !perfEl) return { error: "voice_custom_fields_not_found" };
+  if (sample) setNativeValue(sampleEl, sample);
+  setNativeValue(perfEl, performance || DEFAULT_VOICE_PERFORMANCE);
+
+  // Flow shows the name field after the performance text changes.
+  let nameEl: HTMLInputElement | HTMLTextAreaElement | null = null;
+  for (let i = 0; i < 30 && !nameEl; i++) {
+    nameEl = field(voicePane() ?? pane, /voice name/i);
+    if (!nameEl) await delay(100);
+  }
+  if (!nameEl) return { error: "voice_name_field_not_found" };
+  if (name) setNativeValue(nameEl, name);
+  const savedName = nameEl.value.trim();
+  if (!savedName) return { error: "voice_name_required" };
+
+  let save: HTMLElement | null = null;
+  for (let i = 0; i < 30 && !save; i++) {
+    save = paneButton(voicePane() ?? pane, /save new voice/i);
+    if (!save) await delay(100);
+  }
+  if (!save) return { error: "save_new_voice_button_not_found" };
+  const saveError = /failed to save voice|preview generation failed/i;
+  const priorError = findSnackbarMatch(saveError)?.bar;
+  const oldRows = new Set(renderedRows(voicePane() ?? pane)
+    .filter((row) => row.custom && row.name === savedName)
+    .map((row) => row.el));
+  save.click();
+
+  // Add to character can be active for the base voice while Flow saves the custom voice.
+  while (globalThis.performance.now() < deadline) {
+    await delay(500);
+    const error = findSnackbarMatch(saveError);
+    if (error && error.bar !== priorError) return { error: "custom_voice_save_failed" };
+    const current = voicePane();
+    if (!current) return { error: "voice_dialog_closed_during_save" };
+    const saved = renderedRows(current).find((row) =>
+      row.custom && row.name === savedName && !oldRows.has(row.el));
+    if (saved && !current.querySelector("button.voice-save-button:disabled")) {
+      saved.el.click();
+      return { name: savedName };
+    }
+  }
+  return { error: "custom_voice_save_timeout" };
 }
 
 /** Returns the text of the character voice button. */
@@ -167,6 +239,7 @@ function voiceButtonText(): string {
 async function applyVoice(
   req: CharacterExtraOpRequest,
 ): Promise<Record<string, unknown>> {
+  const deadline = globalThis.performance.now() + VOICE_SAVE_TIMEOUT_MS;
   const base = String(req.voice || "").trim();
   const sample = String(req.sample || "").trim();
   const performance = String(req.performance || "").trim();
@@ -174,8 +247,14 @@ async function applyVoice(
   const custom = Boolean(sample || performance);
   if (custom && sample.length > 120)
     return { ok: false, error: "voice_sample_over_120_characters" };
-  const pane = await openDialog();
+  const format = frontendBuild(readBuildLabel())?.voiceConfirmation;
+  let pane = format ? await withLViewMapCapture(openDialog) : await openDialog();
   if (!pane) return { ok: false, error: "voice_dialog_not_available" };
+  const confirm = format && bindVoiceConfirmation(format);
+  if (format && !confirm) {
+    await dismissOverlay();
+    return { ok: false, error: "voice_confirmation_unavailable" };
+  }
   if (base && !(await selectRow(pane, base))) {
     const available = (await collectAllRows(pane)).map((r) => r.name);
     await dismissOverlay();
@@ -185,38 +264,17 @@ async function applyVoice(
       available_voices: available,
     };
   }
+  let expected = base;
   if (custom) {
-    const sampleEl = field(pane, /hi there/i);
-    const perfEl = field(pane, /performance style/i);
-    if (!sampleEl || !perfEl) {
+    const result = await saveCustomVoice(voicePane() ?? pane, { sample, performance, name, deadline });
+    if (!result.name) {
       await dismissOverlay();
-      return { ok: false, error: "voice_custom_fields_not_found" };
+      return { ok: false, error: result.error };
     }
-    if (sample) setNativeValue(sampleEl, sample);
-    if (performance) setNativeValue(perfEl, performance);
-    let nameEl: HTMLInputElement | HTMLTextAreaElement | null = null;
-    for (let i = 0; i < 30 && !nameEl; i++) {
-      await delay(100);
-      nameEl = field(pane, /voice name/i);
-    }
-    if (nameEl && name) setNativeValue(nameEl, name);
-    const save = paneButton(pane, /save new voice/i);
-    if (!save) {
-      await dismissOverlay();
-      return { ok: false, error: "save_new_voice_button_not_found" };
-    }
-    save.click();
-    let ready = false;
-    // Stay below the 120-second limit of the Rust call, so that this op reports the timeout.
-    for (let i = 0; i < 220 && !ready; i++) {
-      await delay(500);
-      ready = Boolean(paneButton(pane, /add to character/i));
-    }
-    if (!ready) {
-      await dismissOverlay();
-      return { ok: false, error: "custom_voice_save_timeout" };
-    }
+    expected = result.name;
+    await delay(250);
   }
+  pane = voicePane() ?? pane;
   const add = paneButton(pane, /add to character/i);
   if (add) {
     add.click();
@@ -226,9 +284,12 @@ async function applyVoice(
   await delay(1500);
   if (voicePane()) await dismissOverlay();
   const shown = voiceButtonText();
-  const expect = (custom ? name : base).toLowerCase();
+  const expect = expected.toLowerCase();
   if (expect && !shown.toLowerCase().includes(expect)) {
     return { ok: false, error: "voice_not_applied", shown };
+  }
+  if (confirm && !await confirm()) {
+    return { ok: false, error: "outcome_unknown", stage: "set_character_voice" };
   }
   return { ok: true, applied: [custom ? "custom_voice" : "voice"], shown };
 }

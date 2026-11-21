@@ -59,7 +59,8 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
 
   if (action === "prepare_extend") {
     const id = String(req?.asset_id || "").trim();
-    if (!location.pathname.includes("/scene/")) {
+    const activeScene = /\/scene\/([^/?#]+)/.exec(location.pathname)?.[1];
+    if (!activeScene || (req.scene_id && activeScene !== req.scene_id)) {
       if (!(tileMap instanceof Map) || !helper?.mutate) {
         return { ok: false, error: "store_not_bound" };
       }
@@ -68,7 +69,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         const wfId = String(tileMap.get(id)?.workflowId || id);
         const created = await createScene(helper, getMap, [wfId]);
         if (!created?.ok || !created.id) {
-          return { ok: false, error: "failed_to_create_scene_for_extend" };
+          return { ok: false, error: created.error ?? "failed_to_create_scene_for_extend" };
         }
         sceneId = created.id;
       }
@@ -174,10 +175,8 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         if (isVisibleEnabled(addClipBtn)) {
           addClipBtn.click();
           await delay(250);
-          const menuScope =
-            document.querySelector(
-              '.extend-menu-panel, flow-extend-menu, .cdk-overlay-pane, [role="menu"]',
-            ) || document;
+          // Angular renders the menu in an overlay outside the menu host.
+          const menuScope = document.querySelector(".extend-menu-panel") ?? document;
           const optCandidates = Array.from(
             menuScope.querySelectorAll(
               '.extend-clip-option button, .extend-clip-option [role="menuitem"], flow-menu-item.extend-clip-option, button, [role="menuitem"], [role="button"]',
@@ -219,10 +218,15 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       }
     }
 
+    if (!inExtendMode()) return { ok: false, error: "extend_mode_not_ready" };
+    const composer = document.querySelector("flow-edit-video-prompt-box") ??
+      document.querySelector("flow-scene-builder");
+    if (!composer) return { ok: false, error: "extend_composer_not_found" };
+
     let tb: HTMLElement | null = null;
     for (let i = 0; i < 20; i++) {
       const textboxes = Array.from(
-        document.querySelectorAll(
+        composer.querySelectorAll(
           '.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], textarea',
         ),
       ).filter(
@@ -250,12 +254,19 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
 
     const prompt = String(req?.prompt || "").trim();
     if (!prompt) return { ok: false, error: "extend_prompt_required" };
-    await writePromptBox(tb, prompt);
+    const written = await writePromptBox(tb, prompt, {
+      seeds: [composer.querySelector("flow-rich-text-editor"), composer],
+      strictSync: true,
+      trySettingsClick: false,
+      hoverScopeSelector: "flow-scene-builder",
+    });
+    if (!written.ok) return { ok: false, error: "extend_prompt_not_written" };
+    if (!inExtendMode()) return { ok: false, error: "extend_mode_changed" };
 
     let submitBtn: HTMLElement | null = null;
     const exactSelector = 'button[aria-label="Start generation"]';
     for (let i = 0; i < 120; i++) {
-      const exact = document.querySelector(exactSelector);
+      const exact = composer.querySelector(exactSelector);
       if (isVisibleEnabled(exact)) {
         submitBtn = exact;
         break;
@@ -267,7 +278,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       }
     }
     if (!submitBtn) {
-      const exactAfter = document.querySelector(exactSelector);
+      const exactAfter = composer.querySelector(exactSelector);
       if (
         exactAfter &&
         exactAfter.getClientRects().length > 0 &&
@@ -276,7 +287,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         return { ok: false, error: "extend_start_generation_disabled" };
       }
       submitBtn =
-        Array.from(document.querySelectorAll('button, [role="button"]')).find(
+        Array.from(composer.querySelectorAll('button, [role="button"]')).find(
           (b): b is HTMLElement => {
             if (b.tagName === "A" || !isVisibleEnabled(b)) return false;
             if (
@@ -310,13 +321,12 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     if (!(r.width > 0 && r.height > 0)) {
       return { ok: false, error: "extend_submit_button_zero_rect" };
     }
-    return {
-      ok: true,
-      submit_point: {
-        x: r.left + r.width / 2,
-        y: r.top + r.height / 2,
-      },
-    };
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    if (!submitBtn.contains(document.elementFromPoint(x, y))) {
+      return { ok: false, error: "extend_submit_button_obscured" };
+    }
+    return { ok: true, submit_point: { x, y } };
   }
 
   if (action === "poll_extend") {

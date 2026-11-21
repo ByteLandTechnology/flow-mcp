@@ -6,6 +6,8 @@
 import { readOwn } from "./angular";
 import { delay } from "./dom";
 import { agentSettingsCompatibility } from "./frontend_compatibility";
+import type { AgentSettingsWireFormat } from "./frontend_builds";
+import { agentSettingsWire, metadataSettings, settingsRequest } from "./agent_settings_wire";
 import type {
   AgentSettingsExports,
   AgentSettingsPatch,
@@ -40,10 +42,7 @@ interface SettingsQuery {
   /** Key of the project metadata query. */
   queryKey: unknown[];
   /** Fetches current project metadata from Flow. */
-  fetch(options?: unknown, control?: { cancelRefetch: boolean }): Promise<{
-    /** Gets the Agent settings in the response. */
-    vn(): NativeSettings;
-  }>;
+  fetch(options?: unknown, control?: { cancelRefetch: boolean }): Promise<object>;
 }
 
 /** Native cache shared by the metadata and model queries. */
@@ -121,11 +120,13 @@ async function modelContext(
   flow: AgentSettingsExports,
   client: QueryClient,
   injector: AgentInjector,
+  adaptCatalogue?: (value: unknown) => ModelCatalogue | undefined,
 ): Promise<ModelContext> {
   const tierService = service(injector, flow.serviceTier) as { serviceTier?: () => number } | undefined;
   const locale = service(injector, flow.locale);
   const models = service(injector, flow.modelService);
-  let catalogue = client.ha?.(flow.modelKey);
+  const cached = client.ha?.(flow.modelKey);
+  let catalogue = adaptCatalogue ? adaptCatalogue(cached) : cached;
   if (!isCatalogue(catalogue) && models && typeof models === "object") {
     catalogue = await flow.fetchModels(models).catch(() => undefined);
   }
@@ -341,13 +342,18 @@ function prepareUpdate(state: NativeSettings, models: ModelContext, patch: Agent
 }
 
 /** Encodes the project name, settings, and explicit update mask. */
-function encodeUpdate(flow: AgentSettingsExports, projectId: string, update: PreparedUpdate): object {
+function encodeUpdate(
+  flow: AgentSettingsExports,
+  projectId: string,
+  update: PreparedUpdate,
+  wire?: AgentSettingsWireFormat,
+): object {
   const request = new flow.request();
   const mask = flow.maskPaths(new flow.mask(), update.paths);
   flow.string(request, 1, `projects/${projectId}`);
   setMessage(flow, request, 2, update.metadata);
   setMessage(flow, request, 3, mask);
-  return new flow.rpc(flow.updateMethod).Db(flow.finish(request));
+  return settingsRequest(flow, flow.finish(request), wire);
 }
 
 /** Reads or writes Agent settings on the bound project. */
@@ -369,8 +375,8 @@ export async function agentSettingsOp(context: SettingsContext, patch?: AgentSet
         : typeof value === "function",
     detail: "Agent settings frontend export",
   }));
-  const flow = exports as unknown as AgentSettingsExports;
-  const project = service(injector, flow.projectService);
+  const native = exports as unknown as AgentSettingsExports;
+  const project = service(injector, native.projectService);
   const client = readOwn(project, format.queryClient) as QueryClient | undefined;
   const request = readOwn(project, format.requestClient) as
     | { mutate?: (input: object) => Promise<unknown> }
@@ -382,6 +388,7 @@ export async function agentSettingsOp(context: SettingsContext, patch?: AgentSet
   });
   const compatibility = agentSettingsCompatibility(checks);
   if (!compatibility.ok) return compatibility;
+  const { flow, settings, catalogue } = agentSettingsWire(native, format.wire);
   if (settingsWritePending) return { ok: false, error: "agent_settings_write_pending" };
 
   if (patch) settingsWritePending = true;
@@ -401,14 +408,16 @@ export async function agentSettingsOp(context: SettingsContext, patch?: AgentSet
       return { ok: false, error: "agent_settings_not_ready" };
     }
     const metadataQuery = query;
-    const read = async () => (await metadataQuery.fetch(undefined, { cancelRefetch: true })).vn();
+    const read = async () => settings(metadataSettings(
+      await metadataQuery.fetch(undefined, { cancelRefetch: true }), format.wire,
+    ));
     const state = await read();
-    const models = await modelContext(flow, client ?? {}, injector);
+    const models = await modelContext(flow, client ?? {}, injector, catalogue);
     if (!isCurrent()) return { ok: false, error: "agent_project_changed" };
     if (!patch) return { ok: true, settings: settingsView(state, models) };
     if (!request?.mutate) return { ok: false, error: "agent_settings_not_ready" };
     const update = prepareUpdate(state, models, patch);
-    const payload = encodeUpdate(flow, projectId, update);
+    const payload = encodeUpdate(flow, projectId, update, format.wire);
     try {
       await request.mutate(payload);
       for (let attempt = 0; attempt < 3 && isCurrent(); attempt++) {

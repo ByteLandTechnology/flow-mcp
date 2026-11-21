@@ -151,7 +151,7 @@ Google Flow でキャラクターボイスピッカーを開き、リスト全�
 | `refs` | `string[]` | いいえ | 外見としてアップロードするローカル参照画像ファイルパス。 |
 | `prompt` | `string` | いいえ | エディタ内でキャラクター外見を生成するためのプロンプト。 |
 
-`voice_sample` または `voice_performance` を指定すると、`flow-mcp` はベースの `voice` を選び、Sample dialogue と Customize performance を入力してカスタムボイスとして保存し、キャラクターに追加します。Google Flow は先に試聴音声を生成するため、30〜60 秒かかることがあります。
+`voice_sample` または `voice_performance` を指定すると、`flow-mcp` はベースの `voice` を選び、Sample dialogue と Customize performance を入力してカスタムボイスとして保存し、キャラクターに追加します。Google Flow は先に試聴音声を生成するため、30〜60 秒かかることがあります。 試聴テキストのみを指定した場合は、選択したボイスで自然に読む標準の演技指示を使います。
 
 ### `flow_character_edit`
 
@@ -367,7 +367,7 @@ Flow Angular `lService` スナップショットから読み取ったプロジ�
 
 書き込みのたびに、同じプロジェクトのデータを再取得して結果を確認します。対応する Flow ビルドでは、まず既定の名前でコレクションを作成し、その後で指定された名前に変更します。結果を確認できない場合は、操作と ID を含む `outcome_unknown` を返します。書き込み形式を確認できていないビルドでは `unsupported_front_end` を返します。
 
-現在の Flow ビルドでは、メンバーの移動とコレクションの削除は別々のリクエストです。`"delete"` はメンバーを移動する前に `collection_delete_unavailable` を返します。
+`"delete"` は、メンバーを親コレクションまたはプロジェクトのルートに移動します。移動を確認してからコレクションを削除します。Flow がリクエストを確認できない場合は、処理段階とともに `outcome_unknown` を返します。削除リクエストの形式を検証していないビルドでは、メンバーを移動する前に `collection_delete_unavailable` を返します。
 
 ### `flow_download`
 
@@ -403,4 +403,4 @@ Google Flow 内で一致するアセット、キャラクター、シーン、�
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | はい | アセットまたはコレクションの ID、名前、またはプロンプトに一致する大文字小文字を区別しない部分文字列。 |
 
-`flow-mcp` はまずページのタイルメニューで **Move to trash** をクリックします。ページにタイルまたはメニューが表示されていない場合は、リクエスト形式を検証済みのビルドで store を使います。ビルドまたは store のチェックに失敗すると `unsupported_front_end` を返します。結果には `method` と `confirmed` が含まれます。プロジェクト store がその項目をゴミ箱内または削除済みと示すと、`confirmed` は `true` になります。操作前に store の tile map にその項目がない場合（シーンクリップなど）、`confirmed` は `null` になります。 コレクションの場合は `flow_collections` と同じ削除チェックを行い、`collection_delete_unavailable` を返します。
+`flow-mcp` はまずタイルメニューの **Move to trash** を使います。メニューから結果を確認できない場合は、プロジェクトの store を使います。store には検証済みのリクエスト形式が必要です。結果はプロジェクトを再読み込みして確認し、成功時に `method` と `confirmed` を返します。コレクションの場合は `flow_collections` と同じ手順で削除します。

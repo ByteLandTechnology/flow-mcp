@@ -44,7 +44,7 @@ impl ProjectStoreSession<'_> {
     pub(crate) async fn run_collections(&self, request: Value) -> Result<Value> {
         let mutation = matches!(
             request.get("action").and_then(Value::as_str),
-            Some("create" | "rename" | "move")
+            Some("create" | "rename" | "move" | "delete")
         )
         .then(|| format!("request {request}"));
         self.call("collectionOps", request, mutation.as_deref())

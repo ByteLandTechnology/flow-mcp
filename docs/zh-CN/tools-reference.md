@@ -151,7 +151,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | `refs` | `string[]` | 否 | 作为外观上传的本地参考图像文件路径。 |
 | `prompt` | `string` | 否 | 在编辑器内生成角色外观的提示词。 |
 
-设置 `voice_sample` 或 `voice_performance` 时,`flow-mcp` 会选择基础 `voice`,填写 Sample dialogue 与 Customize performance,保存为自定义音色并添加到角色。Google Flow 会先生成试听,因此这一步可能需要 30 到 60 秒。
+设置 `voice_sample` 或 `voice_performance` 时,`flow-mcp` 会选择基础 `voice`,填写 Sample dialogue 与 Customize performance,保存为自定义音色并添加到角色。Google Flow 会先生成试听,因此这一步可能需要 30 到 60 秒。 只提供试音文本时，工具会使用默认说明，让所选音色自然朗读。
 
 ### `flow_character_edit`
 
@@ -367,7 +367,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 工具会重新读取同一项目，核验每次写入的结果。受支持的 Flow 构建先用默认名称创建集合，工具再设置请求的名称。无法核验写入时，工具返回 `outcome_unknown`，并附上操作和相关 ID。写入格式未经验证的构建会返回 `unsupported_front_end`。
 
-当前 Flow 构建使用两次请求分别移出成员和删除集合。`"delete"` 会在移动任何成员前返回 `collection_delete_unavailable`。
+`"delete"` 先将成员移到父收藏夹或项目根目录，确认移动后才删除收藏夹。如果 Flow 未确认某一步，工具返回带阶段的 `outcome_unknown`。前端构建缺少已验证的删除请求格式时，工具会在移动成员前返回 `collection_delete_unavailable`。
 
 ### `flow_download`
 
@@ -403,4 +403,4 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | 是 | 匹配资产或集合 ID、名称或提示词的忽略大小写子串。 |
 
-`flow-mcp` 先在页面的 tile 菜单里点击 **Move to trash**。如果页面没有显示该 tile 或其菜单，工具会在回收请求格式已验证的构建上通过 store 回收。构建或 store 检查失败时，工具返回 `unsupported_front_end`。返回结果包含 `method` 和 `confirmed`。当项目 store 显示该项已进回收站或已移除时，`confirmed` 为 `true`。如果操作前 store 的 tile map 中没有该项（例如场景片段），`confirmed` 为 `null`。 对于集合，该工具使用与 `flow_collections` 相同的删除检查，返回 `collection_delete_unavailable`。
+`flow-mcp` 先尝试使用素材菜单的 **Move to trash**。无法通过菜单确认结果时，工具使用项目存储。直接写入需要已验证的请求格式，并通过重新读取项目确认结果。成功结果包含 `method` 和 `confirmed`。收藏夹使用与 `flow_collections` 相同的删除流程。

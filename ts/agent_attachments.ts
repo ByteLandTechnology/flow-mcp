@@ -3,8 +3,10 @@
 
 // Prepare Agent message references and upload local media through Flow.
 
+import { readOwn } from "./angular";
 import { isTrashedTile } from "./dom";
 import { agentAttachmentCompatibility } from "./frontend_compatibility";
+import type { AgentAttachmentFields } from "./frontend_builds";
 import { uploadUiAction } from "./open_upload_trigger";
 import type { FlowTile } from "./types";
 
@@ -30,8 +32,8 @@ interface MediaReference {
 interface CharacterReference {
   /** Type of reference to attach. */
   mediaType: "CHARACTER";
-  /** ID of the character entity. */
-  Nc: string;
+  /** Native fields of the character reference. */
+  [field: string]: unknown;
 }
 
 /** Reference accepted by the native Agent message builder. */
@@ -58,13 +60,13 @@ interface AttachmentExports {
   /** Converts a project tile to a reference. */
   reference(tile: AttachmentTile, position?: string): AttachmentReference | undefined;
   /** Creates an Agent message with references. */
-  message(input: { Lc: object; nc: AttachmentReference[] }): object;
+  message(input: Record<string, object>): object;
   /** Builds the text content of the message. */
   text(value: string): object;
   /** Allocates a Flow ID. */
   id(): Promise<FlowId>;
   /** Checks the upload type, name, and size. */
-  validateFiles(files: File[]): { mA: File[]; ir: string[] };
+  validateFiles(files: File[]): Record<string, File[] | string[]>;
   /** Returns true if Flow treats the file as a video. */
   isVideo(file: File): boolean;
   /** Gets the media type from the file name. */
@@ -72,7 +74,7 @@ interface AttachmentExports {
   /** Reads the dimensions of an image. */
   imageSize(file: File): Promise<ImageSize>;
   /** Reads the aspect ratio and duration of a video. */
-  videoInfo(file: File): Promise<{ aspectRatio: number; Tt: number }>;
+  videoInfo(file: File): Promise<{ aspectRatio: number; [field: string]: number }>;
   /** Runs the native upload consent flow. */
   confirmUpload(service: object, files: File[]): Promise<File[]>;
 }
@@ -174,13 +176,17 @@ function isMediaTile(tile: AttachmentTile): boolean {
 }
 
 /** Gets a native reference and checks that it matches the selected asset. */
-function projectReference(flow: AttachmentExports, tile: AttachmentTile | undefined) {
+function projectReference(
+  flow: AttachmentExports,
+  tile: AttachmentTile | undefined,
+  characterField: string,
+) {
   if (!tile || isTrashedTile(tile)) return undefined;
   const character = tile.type === "CHARACTER";
   if (character ? tile.isPending : !isMediaTile(tile)) return undefined;
   const reference = flow.reference(tile, "REFERENCE");
   if (character) {
-    return reference?.mediaType === "CHARACTER" && reference.Nc === tile.id
+    return reference?.mediaType === "CHARACTER" && reference[characterField] === tile.id
       ? reference : undefined;
   }
   return reference && reference.mediaType !== "CHARACTER" && reference.mediaId
@@ -188,9 +194,9 @@ function projectReference(flow: AttachmentExports, tile: AttachmentTile | undefi
 }
 
 /** Uses separate keys for character IDs and media IDs. */
-function referenceKey(reference: AttachmentReference): string {
+function referenceKey(reference: AttachmentReference, characterField: string): string {
   return reference.mediaType === "CHARACTER"
-    ? `character:${reference.Nc}`
+    ? `character:${reference[characterField]}`
     : `media:${reference.mediaId}`;
 }
 
@@ -198,10 +204,11 @@ function referenceKey(reference: AttachmentReference): string {
 async function prepareFile(
   flow: AttachmentExports,
   file: File,
+  durationField: string,
 ): Promise<PreparedFile> {
   if (flow.isVideo(file)) {
     const metadata = await flow.videoInfo(file);
-    if (metadata.Tt > MAX_VIDEO_SECONDS) {
+    if (metadata[durationField] > MAX_VIDEO_SECONDS) {
       throw new Error(
         `Trim ${file.name} to ${MAX_VIDEO_SECONDS} seconds or less before upload`,
       );
@@ -241,10 +248,19 @@ async function confirmFiles(
   }
 }
 
+/** Native services and fields for one Agent attachment upload. */
+interface UploadBinding {
+  /** Functions that prepare the upload. */
+  flow: AttachmentExports;
+  /** Service that starts the upload. */
+  dispatcher: UploadDispatcher;
+  /** Request fields of the active build. */
+  fields: AgentAttachmentFields;
+}
+
 /** Uploads one file and returns the tile that Flow returns for that upload. */
 async function uploadFile(
-  flow: AttachmentExports,
-  dispatcher: UploadDispatcher,
+  { flow, dispatcher, fields }: UploadBinding,
   input: AttachmentInput,
   prepared: PreparedFile,
 ): Promise<AttachmentTile> {
@@ -262,19 +278,19 @@ async function uploadFile(
         dispatcher.mutate({
           type: video ? "upload_video" : "upload_image",
           ua: input.projectId,
-          hf: workflow,
-          wh: media,
+          [fields.workflow]: workflow,
+          [fields.media]: media,
           fileName: file.name,
           mimeType:
             file.type ||
             flow.mimeType(file.name) ||
             (video ? "video/mp4" : "application/octet-stream"),
           aspectRatio,
-          yn: file,
-          kc: new Date(),
+          [fields.file]: file,
+          [fields.date]: new Date(),
           source: "FILE_PICKER",
-          Ac: imageSize,
-          sm: { resolve, reject },
+          [fields.dimensions]: imageSize,
+          [fields.completion]: { resolve, reject },
         });
       }),
     signal,
@@ -286,6 +302,7 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
   const compatibility = agentAttachmentCompatibility();
   if (!compatibility.ok) return compatibility;
   const { format } = compatibility;
+  const { fields } = format;
   const exports = Reflect.get(window, "default_AiSandboxAngularFrontend") ?? {};
   const store = input.page[format.store] as Record<string, unknown> | undefined;
   const tiles = store?.[format.tiles];
@@ -332,9 +349,10 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
   const { signal } = input;
   let currentFile: string | undefined;
   try {
-    if (input.assetIds.length > 0 && query && !query.data()) {
-      await waitForAttachment(() => query.refetch(), signal);
-      if (!query.data())
+    if (input.assetIds.length > 0 && query) {
+      // The Agent page can hold a cache from before a change in the project page.
+      const result = await waitForAttachment(() => query.refetch(), signal);
+      if (readOwn(result, "status") === "error" || !query.data())
         return {
           ok: false as const,
           error: "agent_attachment_assets_unavailable",
@@ -352,36 +370,38 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
             isMediaTile(asset) && asset.primaryMediaId?.replace(/^media\//, "") ===
             id.replace(/^media\//, ""),
         );
-      const reference = projectReference(flow, tile);
+      const reference = projectReference(flow, tile, fields.character);
       if (!reference)
         return {
           ok: false as const,
           error: "agent_attachment_unavailable",
           asset_id: id,
         };
-      references.set(referenceKey(reference), reference);
+      references.set(referenceKey(reference, fields.character), reference);
     }
     if (input.files.length > 0 && injector && dispatcher) {
       const consent = injector.get(exports[format.consent]);
-      const { mA: accepted, ir: errors } = flow.validateFiles(input.files);
+      const validation = flow.validateFiles(input.files);
+      const accepted = validation[fields.accepted] as File[];
+      const errors = validation[fields.errors] as string[];
       if (accepted.length !== input.files.length)
         throw new Error(errors.join(" "));
       const prepared = await waitForAttachment(
-        () => Promise.all(accepted.map((file) => prepareFile(flow, file))),
+        () => Promise.all(accepted.map((file) => prepareFile(flow, file, fields.duration))),
         signal,
       );
       await confirmFiles(flow, consent, accepted, signal);
       for (const file of prepared) {
         currentFile = file.file.name;
-        const tile = await uploadFile(flow, dispatcher, input, file);
+        const tile = await uploadFile({ flow, dispatcher, fields }, input, file);
         uploadedAssetIds.push(tile.id);
         currentFile = undefined;
-        const reference = projectReference(flow, tile);
+        const reference = projectReference(flow, tile, fields.character);
         if (!reference || reference.mediaType === "CHARACTER")
           throw new Error(
             `Flow could not attach ${file.file.name} after upload`,
           );
-        references.set(referenceKey(reference), reference);
+        references.set(referenceKey(reference, fields.character), reference);
       }
     }
     signal.throwIfAborted();
@@ -394,8 +414,8 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
     return {
       ok: true as const,
       message: flow.message({
-        Lc: flow.text(input.message),
-        nc: [...references.values()],
+        [fields.text]: flow.text(input.message),
+        [fields.references]: [...references.values()],
       }),
       uploaded_asset_ids: uploadedAssetIds,
     };
