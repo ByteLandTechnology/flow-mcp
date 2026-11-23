@@ -414,6 +414,11 @@ impl ChromeEngine {
         self.project_store_lock.lock().await
     }
 
+    /// Tries to lock the project store without waiting for a write to finish.
+    pub(crate) fn try_lock_project_store(&self) -> Option<MutexGuard<'_, ()>> {
+        self.project_store_lock.try_lock().ok()
+    }
+
     /// Passes live Map objects to the project store binder in the same JavaScript context.
     pub(crate) async fn bind_project_store(&self, project_id: &str) -> Result<Value> {
         let cdp = self.active_cdp().await?;

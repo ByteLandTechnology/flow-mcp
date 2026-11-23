@@ -33,16 +33,7 @@ impl<'a> ProjectStoreSession<'a> {
             .and_then(|url| project_id_from_url(url.path()))
             .context("Open a Google Flow project before you use this tool")?;
         let guard = engine.lock_project_store().await;
-        let status = engine
-            .call_flow_js("projectStoreStatus", json!([project_id]))
-            .await?;
-        let status =
-            if status.get("error").and_then(Value::as_str) == Some("collection_store_not_bound") {
-                engine.bind_project_store(&project_id).await?
-            } else {
-                status
-            };
-        let session = checked_runtime_result(status)?
+        let session = checked_runtime_result(bind_current_store(engine, &project_id).await?)?
             .get("session")
             .and_then(Value::as_str)
             .context("The browser did not return the project store session")?
@@ -82,4 +73,22 @@ impl<'a> ProjectStoreSession<'a> {
             (Err(error), None) => Err(error),
         }
     }
+}
+
+/// Prepares the direct store for a status check without changing the page.
+pub(crate) async fn prepare_project_store_status(engine: &ChromeEngine, project_id: &str) {
+    if let Some(_guard) = engine.try_lock_project_store() {
+        let _ = bind_current_store(engine, project_id).await;
+    }
+}
+
+/// Reads or binds the direct store for the requested project.
+async fn bind_current_store(engine: &ChromeEngine, project_id: &str) -> Result<Value> {
+    let status = engine
+        .call_flow_js("projectStoreStatus", json!([project_id]))
+        .await?;
+    if status.get("error").and_then(Value::as_str) == Some("collection_store_not_bound") {
+        return engine.bind_project_store(project_id).await;
+    }
+    Ok(status)
 }

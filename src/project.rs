@@ -18,6 +18,7 @@ use tokio::time::{Duration, Instant};
 use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
+use crate::project_store::prepare_project_store_status;
 
 /// Angular error code for a required input that has no value yet.
 const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
@@ -347,7 +348,8 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
     }
 
-    let frontend = if in_project {
+    let frontend = if let Some(project_id) = &project_id {
+        prepare_project_store_status(engine, project_id).await;
         engine.call_flow_js("probeStore", json!([])).await.ok()
     } else {
         None
