@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.2.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.1.0...v2.2.0) (2026-11-23)
+
+
+### Features
+
+* upload local media to Flow projects ([f3e65ac](https://github.com/ByteLandTechnology/flow-mcp/commit/f3e65ac9d54dccedee376f081c5b970219342c41))
+
+
+### Bug Fixes
+
+* **build:** upgrade url to 2.5.9 ([f243783](https://github.com/ByteLandTechnology/flow-mcp/commit/f2437838b8f068aeab96e8d10c7c5f8653477c43))
+* **flow:** bind the project store before status checks ([25e9f31](https://github.com/ByteLandTechnology/flow-mcp/commit/25e9f31ce9d935e83568ad80f387d225f288f5b5))
+* **flow:** confirm custom voice saves ([7a90cf2](https://github.com/ByteLandTechnology/flow-mcp/commit/7a90cf29381c8dc0d2e56156c375f2e0e43518c0))
+* **flow:** restore character reference uploads ([68f30e7](https://github.com/ByteLandTechnology/flow-mcp/commit/68f30e7c58ea45132988e44df1c9dbef6e3f727c))
+
 ## [2.1.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.0.0...v2.1.0) (2026-11-21)
 
 
