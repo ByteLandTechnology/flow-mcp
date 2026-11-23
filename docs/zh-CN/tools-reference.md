@@ -90,7 +90,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 返回 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`。不会自动打开或创建项目。
 
-当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。 `operations` 报告当前构建和 store 是否支持 `collection_write`、`character_bio` 和 `asset_trash_store`，每项均包含 `ok` 和 `failed_checks`。
+当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。 `operations` 报告当前构建和 store 是否支持 `project_upload`、`collection_write`、`character_bio` 和 `asset_trash_store`，每项均包含 `ok` 和 `failed_checks`。
 
 ### `flow_login`
 
@@ -330,15 +330,30 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ### `flow_assets`
 
-列出从 Flow Angular `lService` 快照读取的项目卡片。
+列出当前项目资源，或将本机图片和视频直接上传到当前项目。
 
 | 参数 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
+| `action` | `string` | 否 | `list`（默认）或 `upload`。 |
+| `files` | `string[]` | `upload` 时必填 | 服务端所在机器的本地图片或视频路径。 |
 | `query` | `string` | 否 | 匹配资产 ID、名称或提示词的忽略大小写子串。 |
 | `kind` | `string` | 否 | 按 `"image"`、`"video"`、`"scene"`、`"character"` 或 `"all"`（默认）筛选。 |
 | `collection` | `string` | 否 | 按集合 ID、名称子串、`"all"`、`"none"` 或 `"uncollected"` 筛选。 |
 | `limit` | `integer` | 否 | 返回的最大条目数（`>= 1`）。 |
 | `resolve_urls` | `boolean` | 否 | 应用筛选和条数限制后，补齐返回项缺失的媒体 URL。默认 `true`，最多等待 10 秒。 |
+
+上传前先打开目标项目的工作区。筛选参数用于 `list`。Flow 会检查文件类型和大小，视频需裁到 30 秒以内。Chrome 可能会切换到项目页签以读取视频元数据。
+
+```json
+{
+  "action": "upload",
+  "files": ["/abs/path/reference.png", "/abs/path/clip.mp4"]
+}
+```
+
+返回 `project_id`、`count` 和 `assets`。每项包含 `id`、`name`、`kind`，并在可用时返回 `primary_media_id`。
+
+批次中途失败时，错误包含 Flow 已确认的资源。若能确定处理到哪个文件，也会返回 `file`。收到 `outcome_unknown` 时，请检查项目后再重试。
 
 ### `flow_rename`
 

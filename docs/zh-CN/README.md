@@ -88,6 +88,6 @@ cargo build --release
 | Agent 对话 | `flow_agent` | 管理会话并与 Flow Agent 收发消息 |
 | 视频与场景 | `flow_video`、`flow_scenes` | 在不修改源文件的情况下裁剪视频、续写片段并管理场景时间线 |
 | 队列控制 | `flow_wait`、`flow_cancel`、`flow_retry` | 等待任务完成（`PATIENCE_MS = 45s`）、停止任务或重新运行失败任务 |
-| 媒体库与下载 | `flow_assets`、`flow_rename`、`flow_collections`、`flow_download`、`flow_downloads`、`flow_trash` | 筛选资产、重命名项目、管理集合、下载文件、分片读取或移入回收站 |
+| 媒体库与下载 | `flow_assets`、`flow_rename`、`flow_collections`、`flow_download`、`flow_downloads`、`flow_trash` | 上传媒体、筛选资产、重命名项目、管理集合、下载文件、分片读取或移入回收站 |
 
 阅读 [工具参考](tools-reference.md) 以查看每个参数与返回字段。

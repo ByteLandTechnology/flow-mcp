@@ -104,9 +104,25 @@ pub(crate) struct RenameEntry {
     pub(crate) name: String,
 }
 
+/// Operation to run in the active project library.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AssetAction {
+    /// Lists the assets in the active project.
+    #[default]
+    List,
+    /// Uploads local images and videos to the active project.
+    Upload,
+}
+
 /// Parameters for `flow_assets`.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub(crate) struct AssetsParams {
+    /// Asset operation. The default is `list`.
+    #[serde(default)]
+    pub(crate) action: AssetAction,
+    /// Local image or video file paths for `upload`.
+    pub(crate) files: Option<Vec<String>>,
     /// Case-insensitive substring that matches asset ID, name, or prompt.
     pub(crate) query: Option<String>,
     /// Asset kind filter: "image", "video", "scene", "character", or "all" (default).

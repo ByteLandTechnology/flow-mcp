@@ -6,8 +6,8 @@
 import { readOwn } from "./angular";
 import { isTrashedTile } from "./dom";
 import { agentAttachmentCompatibility } from "./frontend_compatibility";
-import type { AgentAttachmentFields } from "./frontend_builds";
-import { uploadUiAction } from "./open_upload_trigger";
+import { bindMediaUpload, uploadMediaFiles, waitForMedia } from "./project_upload";
+import type { MediaUploadExport, UploadProgress } from "./project_upload";
 import type { FlowTile } from "./types";
 
 /** Tile that can supply a reference in the active Flow project. */
@@ -39,22 +39,6 @@ interface CharacterReference {
 /** Reference accepted by the native Agent message builder. */
 type AttachmentReference = MediaReference | CharacterReference;
 
-/** Dimensions of a local image. */
-interface ImageSize {
-  /** Width in pixels. */
-  width: number;
-  /** Height in pixels. */
-  height: number;
-}
-
-/** Flow ID and the value from which it is calculated. */
-interface FlowId {
-  /** ID for the project asset or media. */
-  id: string;
-  /** Value that Flow uses to allocate the ID. */
-  seed: string;
-}
-
 /** Native attachment functions of the verified front end. */
 interface AttachmentExports {
   /** Converts a project tile to a reference. */
@@ -63,24 +47,10 @@ interface AttachmentExports {
   message(input: Record<string, object>): object;
   /** Builds the text content of the message. */
   text(value: string): object;
-  /** Allocates a Flow ID. */
-  id(): Promise<FlowId>;
-  /** Checks the upload type, name, and size. */
-  validateFiles(files: File[]): Record<string, File[] | string[]>;
-  /** Returns true if Flow treats the file as a video. */
-  isVideo(file: File): boolean;
-  /** Gets the media type from the file name. */
-  mimeType(name: string): string | undefined;
-  /** Reads the dimensions of an image. */
-  imageSize(file: File): Promise<ImageSize>;
-  /** Reads the aspect ratio and duration of a video. */
-  videoInfo(file: File): Promise<{ aspectRatio: number; [field: string]: number }>;
-  /** Runs the native upload consent flow. */
-  confirmUpload(service: object, files: File[]): Promise<File[]>;
 }
 
-/** Keys used to bind the attachment functions for each supported build. */
-export type AgentAttachmentExport = keyof AttachmentExports;
+/** Keys used to bind the Agent attachment functions for each supported build. */
+export type AgentAttachmentExport = keyof AttachmentExports | MediaUploadExport;
 
 /** Input to one message with attachments. */
 interface AttachmentInput {
@@ -100,74 +70,12 @@ interface AttachmentInput {
   files: File[];
 }
 
-/** Files prepared for upload. */
-interface PreparedFile {
-  /** File to send to Flow. */
-  file: File;
-  /** True if Flow treats the file as a video. */
-  video: boolean;
-  /** Aspect ratio of the media. */
-  aspectRatio: number;
-  /** Image dimensions, when available. */
-  imageSize?: ImageSize;
-}
-
 /** Native query that supplies the project tile signal. */
 interface TileQuery {
   /** Returns the result after the first successful load. */
   data(): unknown;
   /** Loads the current project's tiles. */
   refetch(): Promise<unknown>;
-}
-
-/** Sends a project upload request through the native store. */
-interface UploadDispatcher {
-  /** Submits the mutation in the project page. */
-  mutate(request: Record<string, unknown>): void;
-}
-
-/** Time limit to prepare and upload files before the tool sends the message. */
-export const ATTACHMENT_TIMEOUT_MS = 100_000;
-
-/** Maximum video duration in seconds before Flow opens its trim dialog. */
-const MAX_VIDEO_SECONDS = 30;
-
-/** Temporary file input for CDP file assignment. */
-let stagedInput: HTMLInputElement | undefined;
-
-/** Creates an input for CDP to assign local files. */
-export function stageAgentFiles(): HTMLInputElement {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.multiple = true;
-  stagedInput = input;
-  return input;
-}
-
-/** Takes the files from the temporary input and clears it. */
-export function takeAgentFiles(): File[] {
-  const files = Array.from(stagedInput?.files ?? []);
-  stagedInput = undefined;
-  return files;
-}
-
-/** Waits for the operation until the attachment deadline expires. */
-export async function waitForAttachment<T>(
-  run: () => Promise<T>,
-  signal?: AbortSignal,
-): Promise<T> {
-  if (!signal) return run();
-  signal.throwIfAborted();
-  let abort: (() => void) | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-  });
-  try {
-    return await Promise.race([run(), deadline]);
-  } finally {
-    if (abort) signal.removeEventListener("abort", abort);
-  }
 }
 
 /** Returns true when the tile can identify a media reference. */
@@ -200,103 +108,6 @@ function referenceKey(reference: AttachmentReference, characterField: string): s
     : `media:${reference.mediaId}`;
 }
 
-/** Gets the upload metadata and checks the video duration. */
-async function prepareFile(
-  flow: AttachmentExports,
-  file: File,
-  durationField: string,
-): Promise<PreparedFile> {
-  if (flow.isVideo(file)) {
-    const metadata = await flow.videoInfo(file);
-    if (metadata[durationField] > MAX_VIDEO_SECONDS) {
-      throw new Error(
-        `Trim ${file.name} to ${MAX_VIDEO_SECONDS} seconds or less before upload`,
-      );
-    }
-    return { file, video: true, aspectRatio: metadata.aspectRatio };
-  }
-  const imageSize = await flow.imageSize(file);
-  return {
-    file,
-    video: false,
-    imageSize,
-    aspectRatio: imageSize.width / imageSize.height,
-  };
-}
-
-/** Runs the upload consent workflow with the same handler as other uploads. */
-async function confirmFiles(
-  flow: AttachmentExports,
-  consent: object,
-  files: File[],
-  signal: AbortSignal,
-): Promise<void> {
-  signal.throwIfAborted();
-  const timer = setInterval(() => uploadUiAction("accept_consent"), 250);
-  const stop = () => clearInterval(timer);
-  signal.addEventListener("abort", stop, { once: true });
-  try {
-    const accepted = await waitForAttachment(
-      () => flow.confirmUpload(consent, files),
-      signal,
-    );
-    if (accepted.length !== files.length)
-      throw new Error("Flow did not accept the selected files");
-  } finally {
-    stop();
-    signal.removeEventListener("abort", stop);
-  }
-}
-
-/** Native services and fields for one Agent attachment upload. */
-interface UploadBinding {
-  /** Functions that prepare the upload. */
-  flow: AttachmentExports;
-  /** Service that starts the upload. */
-  dispatcher: UploadDispatcher;
-  /** Request fields of the active build. */
-  fields: AgentAttachmentFields;
-}
-
-/** Uploads one file and returns the tile that Flow returns for that upload. */
-async function uploadFile(
-  { flow, dispatcher, fields }: UploadBinding,
-  input: AttachmentInput,
-  prepared: PreparedFile,
-): Promise<AttachmentTile> {
-  const { signal } = input;
-  const { file, video, aspectRatio, imageSize } = prepared;
-  const [workflow, media] = await waitForAttachment(
-    () => Promise.all([flow.id(), flow.id()]),
-    signal,
-  );
-  signal.throwIfAborted();
-  if (!input.isCurrent()) throw new Error("The Flow project changed");
-  return waitForAttachment(
-    () =>
-      new Promise((resolve, reject) => {
-        dispatcher.mutate({
-          type: video ? "upload_video" : "upload_image",
-          ua: input.projectId,
-          [fields.workflow]: workflow,
-          [fields.media]: media,
-          fileName: file.name,
-          mimeType:
-            file.type ||
-            flow.mimeType(file.name) ||
-            (video ? "video/mp4" : "application/octet-stream"),
-          aspectRatio,
-          [fields.file]: file,
-          [fields.date]: new Date(),
-          source: "FILE_PICKER",
-          [fields.dimensions]: imageSize,
-          [fields.completion]: { resolve, reject },
-        });
-      }),
-    signal,
-  );
-}
-
 /** Resolves project references, uploads local files, and builds the native Agent message. */
 export async function buildAttachmentMessage(input: AttachmentInput) {
   const compatibility = agentAttachmentCompatibility();
@@ -307,12 +118,7 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
   const store = input.page[format.store] as Record<string, unknown> | undefined;
   const tiles = store?.[format.tiles];
   const query = store?.[format.tileQuery] as TileQuery | undefined;
-  const dispatcher = input.page[format.dispatcher] as
-    | UploadDispatcher
-    | undefined;
-  const injector = input.page[format.injector] as
-    | { get(type: unknown): object }
-    | undefined;
+  const upload = input.files.length ? bindMediaUpload(input.page, format) : undefined;
   const checks = [
     {
       name: "project_tiles",
@@ -332,10 +138,7 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
   if (input.files.length > 0) {
     checks.push({
       name: "upload_service",
-      ok:
-        typeof dispatcher?.mutate === "function" &&
-        typeof injector?.get === "function" &&
-        typeof exports[format.consent] === "function",
+      ok: upload !== undefined,
       detail: "Project upload services",
     });
   }
@@ -347,11 +150,11 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
   ) as unknown as AttachmentExports;
   const uploadedAssetIds: string[] = [];
   const { signal } = input;
-  let currentFile: string | undefined;
+  const progress: UploadProgress = {};
   try {
     if (input.assetIds.length > 0 && query) {
       // The Agent page can hold a cache from before a change in the project page.
-      const result = await waitForAttachment(() => query.refetch(), signal);
+      const result = await waitForMedia(() => query.refetch(), signal);
       if (readOwn(result, "status") === "error" || !query.data())
         return {
           ok: false as const,
@@ -379,30 +182,15 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
         };
       references.set(referenceKey(reference, fields.character), reference);
     }
-    if (input.files.length > 0 && injector && dispatcher) {
-      const consent = injector.get(exports[format.consent]);
-      const validation = flow.validateFiles(input.files);
-      const accepted = validation[fields.accepted] as File[];
-      const errors = validation[fields.errors] as string[];
-      if (accepted.length !== input.files.length)
-        throw new Error(errors.join(" "));
-      const prepared = await waitForAttachment(
-        () => Promise.all(accepted.map((file) => prepareFile(flow, file, fields.duration))),
-        signal,
-      );
-      await confirmFiles(flow, consent, accepted, signal);
-      for (const file of prepared) {
-        currentFile = file.file.name;
-        const tile = await uploadFile({ flow, dispatcher, fields }, input, file);
+    if (upload) {
+      await uploadMediaFiles(upload, input, progress, (tile, file) => {
         uploadedAssetIds.push(tile.id);
-        currentFile = undefined;
         const reference = projectReference(flow, tile, fields.character);
-        if (!reference || reference.mediaType === "CHARACTER")
-          throw new Error(
-            `Flow could not attach ${file.file.name} after upload`,
-          );
+        if (!reference || reference.mediaType === "CHARACTER") {
+          throw new Error(`Flow could not attach ${file.name} after upload`);
+        }
         references.set(referenceKey(reference, fields.character), reference);
-      }
+      });
     }
     signal.throwIfAborted();
     if (!input.isCurrent())
@@ -427,7 +215,7 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
         : "agent_attachment_failed",
       detail: error instanceof Error ? error.message : String(error),
       uploaded_asset_ids: uploadedAssetIds,
-      file_in_progress: signal.aborted ? currentFile : undefined,
+      file_in_progress: progress.inFlight ? progress.file : undefined,
     };
   }
 }

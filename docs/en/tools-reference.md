@@ -90,7 +90,7 @@ Check Google Flow authentication state, active project, `JobQueue`, SQLite index
 
 Returns `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`. Does not open or create projects.
 
-When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project. The `operations` field reports whether `collection_write`, `character_bio`, and `asset_trash_store` can run with the active build and store. Each operation has `ok` and `failed_checks`.
+When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project. The `operations` field reports whether `project_upload`, `collection_write`, `character_bio`, and `asset_trash_store` can run with the active build and store. Each operation has `ok` and `failed_checks`.
 
 ### `flow_login`
 
@@ -330,15 +330,30 @@ Queue a failed or cancelled job again with `retried_from` set to `id`. Fails on 
 
 ### `flow_assets`
 
-List project tiles read from the Flow Angular `lService` snapshot.
+List project assets or upload local images and videos to the active project.
 
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
+| `action` | `string` | No | `list` (default) or `upload`. |
+| `files` | `string[]` | For `upload` | Local image or video paths on the server. |
 | `query` | `string` | No | Case-insensitive substring matching asset ID, name, or prompt. |
 | `kind` | `string` | No | Filter by `"image"`, `"video"`, `"scene"`, `"character"`, or `"all"` (default). |
 | `collection` | `string` | No | Filter by collection ID, name substring, `"all"`, `"none"`, or `"uncollected"`. |
 | `limit` | `integer` | No | Maximum items to return (`>= 1`). |
 | `resolve_urls` | `boolean` | No | Resolve missing media URLs after the filters and limit. Default is `true`. The lookup has a 10-second limit. |
+
+Open the target project workspace before you upload. Use the filters with `list`. Flow checks file types and sizes. Trim videos to 30 seconds or less. Chrome can activate the project tab to read video metadata.
+
+```json
+{
+  "action": "upload",
+  "files": ["/abs/path/reference.png", "/abs/path/clip.mp4"]
+}
+```
+
+The result gives `project_id`, `count`, and `assets`. Each asset gives its `id`, `name`, `kind`, and `primary_media_id` when available.
+
+If the batch stops, the error gives the assets that Flow confirms before the failure. It also gives `file` if the tool can identify the file in progress. If you get `outcome_unknown`, check the project before you retry.
 
 ### `flow_rename`
 

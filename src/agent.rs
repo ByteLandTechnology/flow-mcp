@@ -16,9 +16,10 @@ use tokio::time::{Duration, sleep};
 
 use crate::agent_settings::{AgentSettingsPatch, has_text};
 use crate::config::FLOW_URL;
-use crate::engine::{BackgroundPage, ChromeEngine, checked_runtime_result, validate_local_files};
+use crate::engine::{BackgroundPage, ChromeEngine, checked_runtime_result};
 use crate::project::project_workspace_url;
 use crate::queue::JobQueue;
+use crate::upload::local_upload_paths;
 
 /// Action ID for a permission request that starts a new turn when it gets a response.
 const LEGACY_PERMISSION_ID: &str = "legacy-permission";
@@ -277,7 +278,11 @@ impl AgentChat {
         request: AgentParams,
     ) -> Result<Value> {
         request.validate()?;
-        let files = attachment_paths(request.files.as_deref()).await?;
+        let files = local_upload_paths(
+            request.files.as_deref().unwrap_or_default(),
+            "Agent attachment",
+        )
+        .await?;
         let mut state = self.state.lock().await;
         if state.as_ref().is_none_or(|agent| !agent.page.is_alive()) {
             let page = Arc::new(engine.open_background_page().await?);
@@ -353,23 +358,6 @@ impl AgentChat {
             Err(error) => Err(error),
         }
     }
-}
-
-/// Checks the local attachments and returns absolute paths for Chrome.
-async fn attachment_paths(files: Option<&[String]>) -> Result<Vec<String>> {
-    validate_local_files(files, "Agent attachment").await?;
-    let mut paths = Vec::new();
-    for file in files.unwrap_or_default() {
-        let path = tokio::fs::canonicalize(file)
-            .await
-            .with_context(|| format!("Cannot open Agent attachment {file}"))?;
-        paths.push(
-            path.into_os_string()
-                .into_string()
-                .map_err(|_| anyhow::anyhow!("Agent attachment path must use UTF-8: {file}"))?,
-        );
-    }
-    Ok(paths)
 }
 
 impl AgentPage {

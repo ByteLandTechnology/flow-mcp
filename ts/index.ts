@@ -3,7 +3,6 @@
 
 // Browser runtime bundle entrypoint registering window.__flowMcp once per document.
 
-import { stageAgentFiles } from "./agent_attachments";
 import { assetOps } from "./asset_ops";
 import { trashAssetOp } from "./asset_trash";
 import {
@@ -34,6 +33,7 @@ import { uploadUiAction } from "./open_upload_trigger";
 import { tileDomOp } from "./tile_dom";
 import { locatePoint } from "./locate";
 import { projectNav } from "./project_nav";
+import { projectUpload, stageMediaFiles } from "./project_upload";
 import { projectsOp } from "./projects_ops";
 import { readStoreSnapshot } from "./read_store_snapshot";
 import { resolveVideoUrl } from "./resolve_video_url";
@@ -55,7 +55,8 @@ if (!window.__flowMcp) {
     projectsOp,
     assetOps,
     trashAssetOp,
-    stageAgentFiles,
+    stageMediaFiles,
+    projectUpload,
     agentAllocate,
     agentBound,
     agentBusy,

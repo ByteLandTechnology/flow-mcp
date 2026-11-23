@@ -3,7 +3,7 @@
 
 // Check the build and runtime requirements of internal Flow operations.
 
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { frontendBuild, MEDIA_UPLOAD_EXPORTS, readBuildLabel } from "./frontend_builds";
 import type {
   AgentAttachmentFormat,
   AgentChatFormat,
@@ -12,6 +12,7 @@ import type {
   CharacterBioFormat,
   CollectionWriteFormat,
   FrontendFormats,
+  ProjectUploadFormat,
 } from "./frontend_builds";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
@@ -103,6 +104,33 @@ export function agentAttachmentCompatibility(
   return checkOperation("agent_attachments", build, [...exports, ...checks]);
 }
 
+/** Returns the project library upload format when the native functions are available. */
+export function projectUploadCompatibility(
+  checks: StoreProbeCheck[] = [],
+): FrontendCompatibility<ProjectUploadFormat> {
+  const build = readBuildLabel();
+  const format = frontendBuild(build)?.operations.project_upload;
+  const namespace = Reflect.get(window, "default_AiSandboxAngularFrontend") ?? {};
+  const exports = format ? [
+    ...MEDIA_UPLOAD_EXPORTS.map((name) => ({
+      name,
+      ok: typeof namespace[format.media.exports[name]] === "function",
+      detail: "Media upload export",
+    })),
+    {
+      name: "upload_consent",
+      ok: typeof namespace[format.media.consent] === "function",
+      detail: "Upload consent service",
+    },
+    {
+      name: "project_page",
+      ok: typeof namespace[format.page.page] === "function",
+      detail: "Project workspace class",
+    },
+  ] : [];
+  return checkOperation("project_upload", build, [...exports, ...checks]);
+}
+
 /** Returns the collection format for the active project when its checks pass. */
 export function collectionWriteCompatibility(): FrontendCompatibility<CollectionWriteFormat> {
   return checkOperation("collection_write", readBuildLabel(), projectWriteChecks("collection"));
@@ -188,6 +216,7 @@ export function probeStore(): StoreProbeResult {
       agent_chat: operationStatus(agentChatCompatibility()),
       agent_attachments: operationStatus(agentAttachmentCompatibility()),
       agent_settings: operationStatus(agentSettingsCompatibility()),
+      project_upload: operationStatus(projectUploadCompatibility()),
       collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
       character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
       asset_trash_store: operationStatus(assetTrashCompatibility()),

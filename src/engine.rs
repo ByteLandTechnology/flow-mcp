@@ -118,7 +118,7 @@ impl BackgroundPage {
 
     /// Assigns local paths to the temporary file input in the Agent page.
     pub(crate) async fn stage_agent_files(&self, files: &[String]) -> Result<()> {
-        set_local_files(&self.cdp, "window.__flowMcp.stageAgentFiles()", files).await
+        set_local_files(&self.cdp, "window.__flowMcp.stageMediaFiles()", files).await
     }
 
     /// Binds the Agent runtime to the specified project page.

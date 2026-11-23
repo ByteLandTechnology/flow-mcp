@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::agent::{AgentChat, AgentParams};
-use crate::assets::{self, AssetsParams, DownloadParams, RenameEntry};
+use crate::assets::{self, AssetAction, AssetsParams, DownloadParams, RenameEntry};
 use crate::auth::{self, LoginParams};
 use crate::characters::{self, CharacterEditParams, CharacterParams, VoicesParams};
 use crate::collections::{self, CollectionsParams};
@@ -27,6 +27,7 @@ use crate::project::{self, ProjectsParams};
 use crate::queue::{JobQueue, JobResult, JobRunner, JobView, SceneParams, WaitParams};
 use crate::scenes::{self, ScenesParams, VideoParams};
 use crate::tile_menu::PageHold;
+use crate::upload::{local_upload_paths, upload_project_files};
 use crate::voices::{self, VoicePreviewParams};
 
 /// Maximum downloaded file size served directly through MCP `resources/read` (`64 MiB`).
@@ -347,8 +348,31 @@ impl FlowService {
         auth::handle_login(&self.engine, req).await
     }
 
-    /// Lists assets in the active Google Flow project.
+    /// Lists assets or uploads local media to the active Google Flow project.
     pub(crate) async fn assets(&self, req: AssetsParams) -> Result<Value> {
+        if req.action == AssetAction::Upload {
+            anyhow::ensure!(
+                req.query.is_none()
+                    && req.kind.is_none()
+                    && req.collection.is_none()
+                    && req.limit.is_none()
+                    && req.resolve_urls.is_none(),
+                "List filters apply only to flow_assets list"
+            );
+            let files = req.files.as_deref().unwrap_or_default();
+            anyhow::ensure!(!files.is_empty(), "flow_assets upload requires files");
+            let paths = local_upload_paths(files, "Media upload").await?;
+            let queue = Arc::clone(&self.queue);
+            let engine = Arc::clone(&self.engine);
+            // Keep the execution and page guards if the client disconnects during upload.
+            return tokio::spawn(async move {
+                let _execution = queue.try_lock_execution()?;
+                let _page = PageHold::new();
+                upload_project_files(&engine, &paths).await
+            })
+            .await?;
+        }
+        anyhow::ensure!(req.files.is_none(), "Use files with flow_assets upload");
         let list = assets::list_assets(&self.engine, &req).await?;
         Ok(json!({ "count": list.len(), "assets": list }))
     }

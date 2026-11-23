@@ -3,12 +3,8 @@
 
 // Flow Agent session queries, live turns, and user responses.
 
-import {
-  ATTACHMENT_TIMEOUT_MS,
-  buildAttachmentMessage,
-  takeAgentFiles,
-  waitForAttachment,
-} from "./agent_attachments";
+import { buildAttachmentMessage } from "./agent_attachments";
+import { MEDIA_UPLOAD_TIMEOUT_MS, takeMediaFiles, waitForMedia } from "./project_upload";
 import type {
   AgentDecision,
   AgentRequest,
@@ -749,7 +745,7 @@ async function sendUserMessage(
   const assetIds = request.asset_ids?.map((id) => id.trim()) ?? [];
   const signal =
     assetIds.length || files.length
-      ? AbortSignal.timeout(ATTACHMENT_TIMEOUT_MS)
+      ? AbortSignal.timeout(MEDIA_UPLOAD_TIMEOUT_MS)
       : undefined;
   const input = {
     text: request.message ?? "",
@@ -759,14 +755,14 @@ async function sendUserMessage(
     return send(bound, draftSession(id), [], input);
 
   try {
-    const session = await waitForAttachment(
+    const session = await waitForMedia(
       () => getSession(bound, id),
       signal,
     );
     if (!session) return failure("agent_session_not_found", { session_id: id });
     const stored = bound.transport.ha.has(id)
       ? []
-      : await waitForAttachment(() => savedTurns(bound, session), signal);
+      : await waitForMedia(() => savedTurns(bound, session), signal);
     if (liveBinding(bound.projectId) !== bound)
       return failure("agent_project_changed");
     return send(bound, session, stored, input);
@@ -780,7 +776,7 @@ async function sendUserMessage(
 
 /** Runs one session or message action for the bound project. */
 export async function agentOp(request: AgentRequest) {
-  const files = takeAgentFiles();
+  const files = takeMediaFiles();
   if (files.length !== (request.file_count ?? 0))
     return failure("agent_attachment_files_unavailable");
   const bound = liveBinding(request.project_id);

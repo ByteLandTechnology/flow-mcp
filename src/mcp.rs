@@ -173,9 +173,9 @@ impl FlowMcpServer {
         Self::format_result(self.service.projects(req).await)
     }
 
-    /// Lists assets in the active Google Flow project.
+    /// Lists assets or uploads local images and videos to the active Google Flow project.
     #[tool(
-        description = "List assets in the active Google Flow project with optional query, kind, collection, and limit filters."
+        description = "List or upload assets in the active Google Flow project. Use list with optional query, kind, collection, and limit filters. Use upload with local image or video file paths."
     )]
     async fn flow_assets(&self, Parameters(req): Parameters<AssetsParams>) -> CallToolResult {
         Self::format_result(self.service.assets(req).await)

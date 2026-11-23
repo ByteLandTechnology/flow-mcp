@@ -7,7 +7,8 @@ import { isNgLViewMap, readOwn } from "./angular";
 import { delay } from "./dom";
 import { projectStoreFormats } from "./frontend_builds";
 import type { ProjectStoreFormat } from "./frontend_builds";
-import type { FlowTile, StoreProbeCheck } from "./types";
+import { runtimeState } from "./state";
+import type { FlowTile, NgLView, StoreProbeCheck } from "./types";
 
 /** A Flow query for the tiles of one project. */
 interface ProjectTileQuery {
@@ -116,15 +117,15 @@ export function bindProjectStore(maps: unknown[], projectId: string): ReturnType
   }
 
   const seen = new Set<object>();
-  const candidates: ProjectStore[] = [];
-  const consider = (value: unknown): void => {
+  const candidates: Array<{ store: ProjectStore; views: Map<number, NgLView> }> = [];
+  const consider = (value: unknown, views: Map<number, NgLView>): void => {
     if (!value || typeof value !== "object" || seen.has(value)) return;
     seen.add(value);
     for (const { storeClass, format } of layouts) {
       if (!(value instanceof storeClass)) continue;
       const candidate = { projectId, service: value, format };
       if (readProjectStore(candidate)) {
-        candidates.push(candidate);
+        candidates.push({ store: candidate, views });
         break;
       }
     }
@@ -135,17 +136,19 @@ export function bindProjectStore(maps: unknown[], projectId: string): ReturnType
     for (const view of map.values()) {
       if (!Array.isArray(view)) continue;
       for (const slot of view) {
-        consider(slot);
+        consider(slot, map);
         // The project shell holds the store in its component instance.
         if (!slot || typeof slot !== "object") continue;
         for (const key of ["ha", "Eu", "oa", "ka", "fh"]) {
-          consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
+          consider(Object.getOwnPropertyDescriptor(slot, key)?.value, map);
         }
       }
     }
   }
 
-  boundStore = candidates.length === 1 ? candidates[0] : null;
+  const selected = candidates.length === 1 ? candidates[0] : undefined;
+  boundStore = selected?.store ?? null;
+  if (selected) runtimeState.ngLViewMap = selected.views;
   return candidates.length > 1
     ? { ok: false, error: "ambiguous_collection_store" }
     : projectStoreStatus(projectId);

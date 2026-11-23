@@ -88,6 +88,6 @@ Read the guide sections for each task:
 | Agent Chat | `flow_agent` | Manage sessions and exchange messages with Flow Agent |
 | Video & Scenes | `flow_video`, `flow_scenes` | Trim videos without source changes, extend clips, and manage scene timelines |
 | Queue Control | `flow_wait`, `flow_cancel`, `flow_retry` | Wait for jobs (`PATIENCE_MS = 45s`), stop jobs, or run failed jobs again |
-| Library & Media | `flow_assets`, `flow_rename`, `flow_collections`, `flow_download`, `flow_downloads`, `flow_trash` | Filter tiles, rename items, group collections, download files, read chunks, or trash items |
+| Library & Media | `flow_assets`, `flow_rename`, `flow_collections`, `flow_download`, `flow_downloads`, `flow_trash` | Upload media, filter tiles, rename items, group collections, download files, read chunks, or trash items |
 
 Read [Tools Reference](docs/en/tools-reference.md) for every parameter and response field.

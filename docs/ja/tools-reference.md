@@ -90,7 +90,7 @@ Google Flow 認証状態、アクティブプロジェクト、`JobQueue`、SQLi
 
 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }` を返します。プロジェクトを自動的に開いたり作成したりしません。
 
-アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。 `operations` には、現在のビルドと store で `collection_write`、`character_bio`、`asset_trash_store` が使えるかが表示されます。各操作には `ok` と `failed_checks` が含まれます。
+アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。 `operations` には、現在のビルドと store で `project_upload`、`collection_write`、`character_bio`、`asset_trash_store` が使えるかが表示されます。各操作には `ok` と `failed_checks` が含まれます。
 
 ### `flow_login`
 
@@ -330,15 +330,30 @@ Flow シーンタイムラインの一覧表示、作成、クリップ追加、
 
 ### `flow_assets`
 
-Flow Angular `lService` スナップショットから読み取ったプロジェクトタイルを一覧表示します。
+現在のプロジェクトのアセットを一覧表示したり、ローカルの画像や動画をアップロードしたりします。
 
 | パラメータ | 型 | 必須 | 説明 |
 | :--- | :--- | :--- | :--- |
+| `action` | `string` | いいえ | `list`（既定）または `upload`。 |
+| `files` | `string[]` | `upload` の場合に必須 | サーバー上のローカル画像または動画のパス。 |
 | `query` | `string` | いいえ | アセット ID、名前、またはプロンプトに一致する大文字小文字を区別しない部分文字列。 |
 | `kind` | `string` | いいえ | `"image"`、`"video"`、`"scene"`、`"character"`、または `"all"`（既定）で絞り込みます。 |
 | `collection` | `string` | いいえ | コレクション ID、名前部分文字列、`"all"`、`"none"`、または `"uncollected"` で絞り込みます。 |
 | `limit` | `integer` | いいえ | 返す最大項目数（`>= 1`）。 |
 | `resolve_urls` | `boolean` | いいえ | 絞り込みと件数制限の後、不足しているメディア URL を取得します。既定値は `true` で、待機時間は最大 10 秒です。 |
+
+アップロードの前に対象のプロジェクトのワークスペースを開きます。フィルターは `list` で使用します。Flow はファイルの種類とサイズを確認します。動画は 30 秒以内に切り詰めてください。動画のメタデータを読み取るために、Chrome がプロジェクトのタブをアクティブにする場合があります。
+
+```json
+{
+  "action": "upload",
+  "files": ["/abs/path/reference.png", "/abs/path/clip.mp4"]
+}
+```
+
+結果には `project_id`、`count`、`assets` が含まれます。各アセットには `id`、`name`、`kind`、取得できる場合は `primary_media_id` が含まれます。
+
+途中で失敗した場合、エラーには Flow が確認済みのアセットが含まれます。処理中のファイルを特定できる場合は `file` も返ります。`outcome_unknown` が返った場合は、再試行の前にプロジェクトを確認してください。
 
 ### `flow_rename`
 

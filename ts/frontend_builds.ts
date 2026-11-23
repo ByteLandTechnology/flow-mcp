@@ -7,6 +7,7 @@ import type { AgentAttachmentExport } from "./agent_attachments";
 import type { AgentExport } from "./agent_protocol";
 import type { AgentWireFormat } from "./agent_wire";
 import type { AgentSettingsExport } from "./agent_settings_protocol";
+import type { MediaUploadExport } from "./project_upload";
 
 /** Field names for the collection write requests of one build. */
 export interface CollectionWriteFormat {
@@ -44,6 +45,8 @@ export interface FrontendFormats {
   agent_chat: AgentChatFormat;
   /** Agent references and local media uploads. */
   agent_attachments: AgentAttachmentFormat;
+  /** Local media uploads to a project library. */
+  project_upload: ProjectUploadFormat;
   /** Project-level Agent preferences and memory. */
   agent_settings: AgentSettingsFormat;
   /** Direct collection writes. */
@@ -118,34 +121,27 @@ export interface AgentChatFormat {
   wire?: AgentWireFormat;
 }
 
-/** Project page fields and exports for Agent attachments. */
-export interface AgentAttachmentFormat {
-  /** Project store on the page component. */
-  store: string;
-  /** Signal with all project tiles. */
-  tiles: string;
-  /** Query that loads the tiles for the active project. */
-  tileQuery: string;
+/** Native services and request fields for local media uploads. */
+export interface MediaUploadFormat {
   /** Project mutation dispatcher. */
   dispatcher: string;
   /** Angular injector on the project page. */
   injector: string;
   /** Exported upload consent service. */
   consent: string;
-  /** Functions that the verified build uses for attachments. */
-  exports: Readonly<Record<AgentAttachmentExport, string>>;
-  /** Fields in the native reference, message, and upload formats. */
-  fields: AgentAttachmentFields;
+  /** Functions that the verified build uses for uploads. */
+  exports: Readonly<Record<MediaUploadExport, string>>;
+  /** Fields in the native upload format. */
+  fields: MediaUploadFields;
 }
 
-/** Field names in the Agent attachment protocol. */
-export interface AgentAttachmentFields {
-  /** Character ID in a native reference. */
-  character: string;
-  /** Text content in the message request. */
-  text: string;
-  /** Attachment references in the message request. */
-  references: string;
+/** Upload functions that do not depend on Agent message support. */
+export const MEDIA_UPLOAD_EXPORTS = [
+  "id", "validateFiles", "isVideo", "mimeType", "imageSize", "videoInfo", "confirmUpload",
+] as const satisfies readonly MediaUploadExport[];
+
+/** Fields in the native request and reply for a local media upload. */
+export interface MediaUploadFields {
   /** Accepted files in the validation result. */
   accepted: string;
   /** Error messages in the validation result. */
@@ -164,6 +160,38 @@ export interface AgentAttachmentFields {
   dimensions: string;
   /** Completion callbacks in the upload request. */
   completion: string;
+}
+
+/** Project page fields and exports for Agent attachments. */
+export interface AgentAttachmentFormat extends MediaUploadFormat {
+  /** Project store on the page component. */
+  store: string;
+  /** Signal with all project tiles. */
+  tiles: string;
+  /** Query that loads the tiles for the active project. */
+  tileQuery: string;
+  /** Functions for uploads and Agent message attachments. */
+  exports: Readonly<Record<AgentAttachmentExport, string>>;
+  /** Fields for uploads and Agent message attachments. */
+  fields: AgentAttachmentFields;
+}
+
+/** Additional fields in the Agent attachment protocol. */
+export interface AgentAttachmentFields extends MediaUploadFields {
+  /** Character ID in a native reference. */
+  character: string;
+  /** Text content in the message request. */
+  text: string;
+  /** Attachment references in the message request. */
+  references: string;
+}
+
+/** Project page and upload formats for an independent library upload. */
+export interface ProjectUploadFormat {
+  /** Class and lifecycle fields of the page that owns the upload services. */
+  page: Pick<AgentChatFormat, "page" | "lifecycle" | "destroyed" | "project">;
+  /** Native upload fields shared with Agent attachments. */
+  media: MediaUploadFormat;
 }
 
 /** Field names for a character personality update. */
@@ -571,6 +599,7 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
       agent_chat: NOVEMBER_18_AGENT,
       agent_attachments: NOVEMBER_18_ATTACHMENTS,
+      project_upload: { page: NOVEMBER_18_AGENT, media: NOVEMBER_18_ATTACHMENTS },
       agent_settings: NOVEMBER_18_AGENT_SETTINGS,
     },
   }],
@@ -594,6 +623,7 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       character_bio: { tileId: "Xc", tileChange: "mf", notes: "Zx" },
       agent_chat: NOVEMBER_20_AGENT,
       agent_attachments: NOVEMBER_20_ATTACHMENTS,
+      project_upload: { page: NOVEMBER_20_AGENT, media: NOVEMBER_20_ATTACHMENTS },
       agent_settings: NOVEMBER_20_AGENT_SETTINGS,
     },
   }],

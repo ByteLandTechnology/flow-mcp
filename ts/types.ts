@@ -717,8 +717,10 @@ export interface StoreProbeResult {
 
 /** Public browser runtime API exposed at `window.__flowMcp`. */
 export interface FlowMcpRuntime {
-  /** Returns the temporary file input for an Agent upload. */
-  stageAgentFiles: typeof import("./agent_attachments").stageAgentFiles;
+  /** Returns the temporary input for a local media upload. */
+  stageMediaFiles: typeof import("./project_upload").stageMediaFiles;
+  /** Uploads local media to the pinned project. */
+  projectUpload: typeof import("./project_upload").projectUpload;
   /** Allocates an ID for a new Agent session. */
   agentAllocate: typeof import("./agent_chat").agentAllocate;
   /** Checks the project and lifecycle of the bound Agent. */
