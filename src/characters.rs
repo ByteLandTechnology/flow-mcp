@@ -14,7 +14,7 @@ use crate::assets::{FlowAsset, list_assets_with_project, match_asset, trash_asse
 use crate::character_bio::{edit_character_bio, set_character_bio};
 use crate::db::FlowDb;
 use crate::download::download_resolved_asset;
-use crate::engine::{ChromeEngine, validate_local_files};
+use crate::engine::{ChromeEngine, checked_runtime_result, validate_local_files};
 use crate::generation::inspect_generation_network;
 use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_subroute_url,
@@ -595,103 +595,87 @@ pub(crate) async fn create_or_update_character_job(
         (target.id, final_name, submitted_meta)
     };
 
-    let mut upload_err: Option<anyhow::Error> = None;
-    if let Some(ref refs) = scene.refs
-        && !refs.is_empty()
-    {
-        on_progress(format!(
-            "uploading {} character reference files",
-            refs.len()
-        ));
+    let upload_err = async {
+        let Some(refs) = scene.refs.as_ref().filter(|refs| !refs.is_empty()) else {
+            return Ok(());
+        };
         for (idx, ref_path) in refs.iter().take(2).enumerate() {
             let slot = if idx == 0 { "portrait" } else { "body" };
-            let open_res = engine
-                .call_flow_async(
-                    "characterMediaOp",
-                    json!([{
-                        "action": "open_upload",
-                        "slot": slot,
-                        "character_id": char_id,
-                    }]),
-                )
+            on_progress(format!("uploading character {slot} reference image"));
+            let request = json!([{
+                "action": "open_upload",
+                "slot": slot,
+                "character_id": char_id,
+            }]);
+            let mut open_res = engine
+                .call_flow_async("characterMediaOp", request.clone())
                 .await?;
-            if open_res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                anyhow::bail!(
-                    "Failed to open character upload menu: {}",
-                    open_res
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                );
+            if open_res.get("error").and_then(Value::as_str) == Some("character_preview_not_bound")
+                && engine
+                    .bind_angular_views(
+                        "flow-character-preview-panel, flow-character-image-preview",
+                    )
+                    .await
+                    .unwrap_or(false)
+            {
+                open_res = engine.call_flow_async("characterMediaOp", request).await?;
             }
-            let selector = open_res
+            let opened = checked_runtime_result(open_res).map_err(|err| {
+                anyhow::anyhow!("Failed to open the {slot} upload for character '{char_id}': {err}")
+            })?;
+            let selector = opened
                 .get("selector")
-                .and_then(|v| v.as_str())
-                .unwrap_or("input[type=\"file\"]");
-            let prev_src = open_res
-                .get("prev_src")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let prev_media_id = open_res
-                .get("prev_media_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let slot = open_res
-                .get("slot")
-                .and_then(|v| v.as_str())
-                .unwrap_or("portrait")
-                .to_string();
+                .and_then(Value::as_str)
+                .context("Flow did not return the character file input")?;
+            let check_request = json!([{
+                "action": "check_upload",
+                "character_id": char_id,
+                "slot": slot,
+                "prev_src": opened.get("prev_src"),
+                "prev_media_id": opened.get("prev_media_id"),
+            }]);
             engine
                 .upload_files(selector, std::slice::from_ref(ref_path))
-                .await?;
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "outcome_unknown (character '{char_id}', {slot} upload): {err}"
+                    )
+                })?;
+
             let upload_deadline = Instant::now() + Duration::from_secs(45);
             loop {
                 tokio::time::sleep(Duration::from_millis(400)).await;
-                if let Some(rx) = net_rx.as_mut()
-                    && let Err(err) = inspect_generation_network(rx, &on_progress)
-                {
-                    upload_err = Some(err);
-                    break;
+                if let Some(rx) = net_rx.as_mut() {
+                    inspect_generation_network(rx, &on_progress)?;
                 }
-                let chk = engine
-                    .call_flow_async(
-                        "characterMediaOp",
-                        json!([{
-                            "action": "check_upload",
-                            "character_id": char_id,
-                            "prev_src": prev_src,
-                            "prev_media_id": prev_media_id,
-                            "slot": slot,
-                        }]),
+                let result = engine
+                    .call_flow_async("characterMediaOp", check_request.clone())
+                    .await
+                    .map_err(|err| {
+                        anyhow::anyhow!(
+                            "outcome_unknown (character '{char_id}', {slot} upload): {err}"
+                        )
+                    })?;
+                let checked = checked_runtime_result(result).map_err(|err| {
+                    anyhow::anyhow!(
+                        "Failed to upload the {slot} reference image for character '{char_id}': {err}"
                     )
-                    .await?;
-                if chk.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                    upload_err = Some(anyhow::anyhow!(
-                        "Failed to upload character reference image: {}",
-                        chk.get("error")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                    ));
-                    break;
-                }
-                if chk.get("done").and_then(|v| v.as_bool()) == Some(true) {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                })?;
+                if checked.get("done").and_then(Value::as_bool) == Some(true) {
                     break;
                 }
                 if Instant::now() >= upload_deadline {
-                    upload_err = Some(anyhow::anyhow!(
-                        "Timed out waiting for character reference image upload"
-                    ));
-                    break;
+                    anyhow::bail!(
+                        "outcome_unknown (character '{char_id}', {slot} upload): Flow did not confirm the upload"
+                    );
                 }
             }
-            if upload_err.is_some() {
-                break;
-            }
         }
+        Ok(())
     }
+    .await
+    .err();
 
     let mut files = Vec::new();
     let created = vec![char_id.clone()];

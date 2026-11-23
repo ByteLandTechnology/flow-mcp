@@ -751,6 +751,8 @@ export interface FlowMcpRuntime {
   projectStoreStatus: (projectId: string) => unknown;
   /** Finds the active project store in the Angular view registry. */
   bindProjectStore: (maps: unknown[], projectId: string) => unknown;
+  /** Binds the Angular view registry that contains the selected host. */
+  bindAngularViews: (maps: unknown[], selector: string) => boolean;
   /** Reads or changes tiles in the pinned project store. */
   collectionOps: (
     projectId: string,

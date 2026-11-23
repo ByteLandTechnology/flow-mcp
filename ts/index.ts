@@ -15,6 +15,7 @@ import {
   agentStatus,
   bindAgent,
 } from "./agent_chat";
+import { bindAngularViews } from "./angular";
 import { attachIngredients } from "./attach_ingredients";
 import { characterBioOp } from "./character_bio";
 import { characterExtraOp } from "./character_extra";
@@ -62,6 +63,7 @@ if (!window.__flowMcp) {
     agentPrototype,
     agentStatus,
     bindAgent,
+    bindAngularViews,
     collectionOps,
     bindProjectStore,
     projectStoreStatus,

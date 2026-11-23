@@ -427,6 +427,20 @@ impl ChromeEngine {
         .context("The project store search did not finish")?
     }
 
+    /// Finds the Angular view registry for the specified host in the active page.
+    pub(crate) async fn bind_angular_views(&self, selector: &str) -> Result<bool> {
+        let cdp = self.active_cdp().await?;
+        let selector = selector.to_owned();
+        tokio::spawn(async move {
+            let result =
+                bind_browser_instances(&cdp, "Map.prototype", "bindAngularViews", &selector)
+                    .await?;
+            Ok(result.and_then(|value| value.as_bool()) == Some(true))
+        })
+        .await
+        .context("The Angular view search did not finish")?
+    }
+
     /// Returns the Flow front-end build label that the active page publishes, or `None` when it is unavailable.
     pub(crate) async fn build_label(&self) -> Option<String> {
         let value = self.call_flow_js("buildLabel", json!([])).await.ok()?;
@@ -882,7 +896,7 @@ async fn bind_browser_instances(
     cdp: &CdpConnection,
     prototype_expression: &str,
     binder: &str,
-    project_id: &str,
+    context: &str,
 ) -> Result<Option<Value>> {
     let group = format!("flow-bind-{}", uuid::Uuid::new_v4());
     let result = async {
@@ -909,8 +923,8 @@ async fn bind_browser_instances(
                 "Runtime.callFunctionOn",
                 json!({
                     "objectId": id,
-                    "functionDeclaration": "function (method, project) { return window.__flowMcp?.[method](this, project); }",
-                    "arguments": [{"value": binder}, {"value": project_id}],
+                    "functionDeclaration": "function (method, context) { return window.__flowMcp?.[method](this, context); }",
+                    "arguments": [{"value": binder}, {"value": context}],
                     "returnByValue": true,
                 }),
             )

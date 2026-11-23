@@ -509,6 +509,26 @@ interface FrontendBuild {
   operations: Partial<FrontendFormats>;
   /** Native fields used to confirm a character voice assignment. */
   voiceConfirmation?: VoiceConfirmationFormat;
+  /** Native fields of the character preview panel. */
+  characterPreview?: CharacterPreviewFormat;
+}
+
+/** Native methods of the character preview panel. */
+export interface CharacterPreviewFormat {
+  /** Lifecycle controller on the panel. */
+  lifecycle: string;
+  /** Method that opens the native file picker for the active slot. */
+  upload: string;
+  /** Method that identifies the preview panel. */
+  marker: string;
+  /** Signal with the portrait media record. */
+  portrait: string;
+  /** Signal with the body media record. */
+  body: string;
+  /** Signal with the active slot image URL. */
+  source: string;
+  /** Signal that reports whether the preview is busy. */
+  busy: string;
 }
 
 /** Character editor and query fields used to read the saved voice. */
@@ -553,6 +573,9 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261120.00_p0", {
     projectStore: NOVEMBER_20_STORE,
     voiceConfirmation: { editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3" },
+    characterPreview: {
+      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma", source: "Gza", busy: "mB",
+    },
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",

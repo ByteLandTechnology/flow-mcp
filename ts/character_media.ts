@@ -12,46 +12,54 @@ import {
   type PickerMatchTarget,
 } from "./angular";
 import {
-  characterLooksOf,
   clickButtonByRegex,
   delay,
   dismissOverlay,
   elText,
   findSnackbarMatch,
   fifeBase,
+  hoverProbe,
   isVisibleEnabled,
+  legacyMedia,
   pickTileUrl,
   setNativeValue,
 } from "./dom";
+import { frontendBuild, readBuildLabel, type CharacterPreviewFormat } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
 import { runtimeState } from "./state";
 import type {
-  AngularLifecycleHandle,
   CharacterMediaOpRequest,
   FlowMediaPayload,
   NgLView,
 } from "./types";
 
-/** Minified Angular character image preview component instance. */
-interface CharacterPreviewComponent extends AngularLifecycleHandle {
-  /** Opens file picker trigger for replacing or uploading preview media. */
-  JR: () => void;
-  /** Saves or updates character slot preview state. */
-  Si: () => unknown;
-  /** Portrait slot media signal reader. */
-  ka?: () => FlowMediaPayload | null | undefined;
-  /** Full-body slot media signal reader. */
-  ma?: () => FlowMediaPayload | null | undefined;
-  /** Computed preview `src` URL signal reader. */
-  psa?: () => string | null | undefined;
-  /** Preview area loading indicator signal reader. */
-  zy?: () => boolean;
+/** Image slot in the character editor. */
+type CharacterSlot = "portrait" | "body";
+
+/** Maximum wait for the editor to select and load an upload slot. */
+const UPLOAD_SLOT_TIMEOUT_MS = 30_000;
+
+/** Character preview panel used to open the native picker and read slot state. */
+interface CharacterPreview {
+  /** Opens the picker for the active slot. */
+  upload: () => unknown;
+  /** Reads one slot's media record. */
+  media: (slot: CharacterSlot) => FlowMediaPayload | null | undefined;
+  /** Reads the source URL of the active slot. */
+  source: () => unknown;
+  /** Reads the loading state of the active slot. */
+  busy: () => unknown;
 }
+
+/** Native methods used by the earlier preview panel. */
+const LEGACY_PREVIEW: CharacterPreviewFormat = {
+  lifecycle: "Ca", upload: "JR", marker: "Si", portrait: "ka", body: "ma", source: "psa", busy: "zy",
+};
 
 /** Snapshot of character preview slot state read from component signals and DOM. */
 interface PreviewSlotState {
   /** Resolved preview component instance when mounted. */
-  previewComp: CharacterPreviewComponent | null;
+  previewComp: CharacterPreview | null;
   /** Media record for the selected slot (`portrait` or `body`). */
   slotMedia: FlowMediaPayload | null | undefined;
   /** Trimmed slot media identifier string. */
@@ -76,8 +84,15 @@ async function captureLViewAndClick(fn: () => void): Promise<void> {
   });
 }
 
-/** Walks character preview component hosts and LViews to locate `CharacterPreviewComponent`. */
-function getCharacterPreviewInstance(): CharacterPreviewComponent | null {
+/** Reads a signal or calls a method on the native preview panel. */
+function callPanel(panel: object, name: string): unknown {
+  const method = readOwn(panel, name);
+  return typeof method === "function" ? method.call(panel) : undefined;
+}
+
+/** Finds the preview panel in a live Angular view and binds its methods. */
+function getCharacterPreviewInstance(): CharacterPreview | null {
+  const format = frontendBuild(readBuildLabel())?.characterPreview ?? LEGACY_PREVIEW;
   const roots = document.querySelectorAll(
     "flow-character-preview-panel, flow-character-image-preview",
   );
@@ -99,11 +114,17 @@ function getCharacterPreviewInstance(): CharacterPreviewComponent | null {
           !(slot instanceof Node) &&
           !Array.isArray(slot) &&
           !(slot instanceof Map) &&
-          !(slot as AngularLifecycleHandle).Ca?.Va &&
-          typeof (slot as Partial<CharacterPreviewComponent>).JR === "function" &&
-          typeof (slot as Partial<CharacterPreviewComponent>).Si === "function"
+          !readOwn(readOwn(slot, format.lifecycle), "Va") &&
+          typeof readOwn(slot, format.upload) === "function" &&
+          typeof readOwn(slot, format.marker) === "function"
         ) {
-          return slot as CharacterPreviewComponent;
+          return {
+            upload: () => callPanel(slot, format.upload),
+            media: (which) =>
+              legacyMedia(callPanel(slot, format[which]) as FlowMediaPayload | null | undefined),
+            source: () => callPanel(slot, format.source),
+            busy: () => callPanel(slot, format.busy),
+          };
         }
       }
       if (depth < 4) {
@@ -116,18 +137,18 @@ function getCharacterPreviewInstance(): CharacterPreviewComponent | null {
 }
 
 /** Normalizes character slot selector into `"portrait"` or `"body"`. */
-function normSlot(raw: unknown): "portrait" | "body" {
+function normSlot(raw: unknown): CharacterSlot {
   return String(raw || "portrait").toLowerCase() === "body"
     ? "body"
     : "portrait";
 }
 
 /** Reads current slot media, preview URLs, and busy indicators for `slot`. */
-function readPreviewSlotState(slot: "portrait" | "body"): PreviewSlotState {
+function readPreviewSlotState(slot: CharacterSlot): PreviewSlotState {
   const previewComp = getCharacterPreviewInstance();
-  const slotMedia = slot === "body" ? previewComp?.ma?.() : previewComp?.ka?.();
+  const slotMedia = previewComp?.media(slot);
   const slotMediaId = String(slotMedia?.id || "").trim();
-  const compSrc = String(previewComp?.psa?.() || "").trim();
+  const compSrc = String(previewComp?.source() || "").trim();
   const imgSrc = (
     document
       .querySelector("flow-character-image-preview img.preview-image[src]")
@@ -138,7 +159,7 @@ function readPreviewSlotState(slot: "portrait" | "body"): PreviewSlotState {
       document.querySelector(
         'flow-character-image-preview .image-area[aria-busy="true"]',
       ),
-    ) || Boolean(previewComp?.zy?.());
+    ) || Boolean(previewComp?.busy());
   return { previewComp, slotMedia, slotMediaId, compSrc, imgSrc, isAreaBusy };
 }
 
@@ -153,18 +174,35 @@ function dismissAllSnackbars(): boolean {
   return dismissed;
 }
 
-/** Finds the visible Body slot selector chip button inside character preview panels. */
-function findBodySlotButton(): HTMLElement | null {
-  return (
-    Array.from(
-      document.querySelectorAll(
-        "flow-character-preview-panel flow-slot-chip-button button.chip-button",
-      ),
-    ).find(
-      (btn): btn is HTMLElement =>
-        isVisibleEnabled(btn) && /\bbody\b/i.test(elText(btn)),
-    ) || null
-  );
+/** Finds a visible slot button, including the Create portrait and Create body states. */
+function findPreviewSlotButton(slot: CharacterSlot): HTMLButtonElement | undefined {
+  const label = slot === "portrait" ? /\bportrait\b/i : /\bbody\b/i;
+  return [...document.querySelectorAll<HTMLButtonElement>(
+    "flow-character-preview-panel flow-slot-chip-button button",
+  )].find((button) => button.getClientRects().length > 0 && label.test(elText(button)));
+}
+
+/** Reports whether the requested slot controls the visible preview. */
+function isPreviewSlotSelected(slot: CharacterSlot): boolean {
+  const button = findPreviewSlotButton(slot);
+  if (button) return button.classList.contains("chip-button-active");
+  return slot === "portrait" && !findPreviewSlotButton("body") &&
+    Boolean(document.querySelector("flow-character-image-preview"));
+}
+
+/** Selects the requested slot and waits for the preview controls. */
+async function selectPreviewSlot(slot: CharacterSlot, deadline: number): Promise<boolean> {
+  let clicked: HTMLButtonElement | undefined;
+  while (performance.now() < deadline) {
+    if (isPreviewSlotSelected(slot)) return true;
+    const button = findPreviewSlotButton(slot);
+    if (isVisibleEnabled(button) && button !== clicked) {
+      clicked = button;
+      await captureLViewAndClick(() => button.click());
+    }
+    await delay(100);
+  }
+  return false;
 }
 
 /** Handles character uploads, project reference attachments, and look generation prompts. */
@@ -176,10 +214,15 @@ export async function characterMediaOp(
   const action = String(req?.action || "").toLowerCase();
 
   if (action === "open_upload") {
+    const wantSlot = normSlot(req?.slot);
+    const deadline = performance.now() + UPLOAD_SLOT_TIMEOUT_MS;
     for (const prev of document.querySelectorAll("[data-flow-mcp-upload]")) {
       prev.removeAttribute("data-flow-mcp-upload");
     }
     if (dismissAllSnackbars()) await delay(100);
+    if (!await selectPreviewSlot(wantSlot, deadline)) {
+      return { ok: false, error: `character_${wantSlot}_slot_unavailable` };
+    }
 
     const findPreviewUploadButton = (): HTMLElement | null => {
       for (const root of document.querySelectorAll(
@@ -219,40 +262,24 @@ export async function characterMediaOp(
       return null;
     };
 
-    const hasReadyPreviewImage = (): boolean => {
-      const st = readPreviewSlotState("portrait");
-      return (
-        Boolean(st.imgSrc) &&
-        !document.querySelector(
-          'flow-character-image-preview .image-area[aria-busy="true"]',
-        )
-      );
-    };
-
-    for (let i = 0; i < 80; i++) {
-      if (findPreviewUploadButton() || hasReadyPreviewImage()) break;
+    let state = readPreviewSlotState(wantSlot);
+    if (!state.previewComp) {
+      const controls = [...document.querySelectorAll("flow-character-preview-panel [mattooltip], flow-character-preview-panel button")];
+      await withLViewMapCapture(() => hoverProbe(controls.slice(0, 6)));
+      state = readPreviewSlotState(wantSlot);
+      if (!state.previewComp && frontendBuild(readBuildLabel())?.characterPreview) {
+        return { ok: false, error: "character_preview_not_bound" };
+      }
+    }
+    while (performance.now() < deadline) {
+      if (!state.isAreaBusy &&
+          (findPreviewUploadButton() || state.slotMediaId || state.imgSrc || state.compSrc)) break;
       await delay(100);
+      state = readPreviewSlotState(wantSlot);
     }
-
-    const wantSlot = normSlot(req?.slot);
-    if (wantSlot === "body") {
-      let bodyBtn: HTMLElement | null = null;
-      for (let i = 0; i < 30; i++) {
-        bodyBtn = findBodySlotButton();
-        if (bodyBtn) break;
-        await delay(100);
-      }
-      if (!bodyBtn) return { ok: false, error: "character_body_slot_unavailable" };
-      if (!bodyBtn.classList.contains("chip-button-active")) {
-        bodyBtn.click();
-        for (let i = 0; i < 30; i++) {
-          if (findPreviewUploadButton() || hasReadyPreviewImage()) break;
-          await delay(100);
-        }
-      }
-    }
-
-    const { previewComp, slotMediaId, compSrc, imgSrc } = readPreviewSlotState(wantSlot);
+    if (!isPreviewSlotSelected(wantSlot)) return { ok: false, error: "character_upload_slot_changed" };
+    if (state.isAreaBusy) return { ok: false, error: "character_preview_busy" };
+    const { previewComp, slotMediaId, compSrc, imgSrc } = state;
     const prevSrc = imgSrc || compSrc;
     const prevMediaId = slotMediaId;
 
@@ -277,10 +304,11 @@ export async function characterMediaOp(
       if (uploadBtn) {
         const inner = uploadBtn.tagName === "FLOW-BUTTON" ? uploadBtn.querySelector("button") : null;
         (inner instanceof HTMLElement ? inner : uploadBtn).click();
-      } else if (prevSrc && previewComp) {
-        previewComp.JR();
+      } else if (previewComp && (prevMediaId || prevSrc)) {
+        void previewComp.upload();
       } else {
-        return { ok: false, error: "upload_button_not_found" };
+        const error = prevSrc && !previewComp ? "character_preview_not_bound" : "upload_button_not_found";
+        return { ok: false, error };
       }
       await delay(250);
     } finally {
@@ -305,38 +333,28 @@ export async function characterMediaOp(
   }
 
   if (action === "check_upload") {
+    const slot = normSlot(req?.slot);
+    if (!isPreviewSlotSelected(slot)) return { ok: false, error: "character_upload_slot_changed" };
     const consentDialog = document.querySelector("flow-upload-consent-dialog");
     if (consentDialog && clickButtonByRegex(/^(?:i agree,\s*do not show again|i agree)$/i, consentDialog)) {
       await delay(150);
       return { ok: true, done: false, accepted_consent: true };
     }
-    if (document.querySelector("flow-character-image-preview flow-error-tile")) {
-      return { ok: false, error: "character_upload_failed" };
-    }
-    const failSnack = findSnackbarMatch(/failed to upload image/i);
-    if (failSnack) return { ok: false, error: failSnack.text };
-    const uploadedSnack = findSnackbarMatch(/image uploaded to character/i);
-
-    if (req?.character_id) {
-      const tileMapNow = getMap();
-      const t = tileMapNow instanceof Map ? tileMapNow.get(String(req.character_id)) : null;
-      const looks = characterLooksOf(t);
-      if (looks) {
-        for (const entry of looks.values()) {
-          if (entry?.nf === "UPLOAD_FAILED" || entry?.media?.nf === "UPLOAD_FAILED") {
-            return { ok: false, error: "character_upload_failed" };
-          }
-        }
-      }
-    }
-
     const prevSrc = String(req?.prev_src || "").trim();
     const prevMediaId = String(req?.prev_media_id || "").trim();
-    const { slotMedia, slotMediaId, compSrc, imgSrc, isAreaBusy } = readPreviewSlotState(normSlot(req?.slot));
+    const { slotMedia, slotMediaId, compSrc, imgSrc, isAreaBusy } = readPreviewSlotState(slot);
+    const newMedia = Boolean(slotMediaId && slotMediaId !== prevMediaId);
+    const failedMedia = slotMedia?.nf === "UPLOAD_FAILED" || slotMedia?.Zc === "failed";
+    const failSnack = findSnackbarMatch(/failed to upload image(?: to character)?/i);
+    const uploadedSnack = findSnackbarMatch(/image uploaded to character/i);
+    if ((newMedia && failedMedia) || (failSnack && !uploadedSnack)) {
+      const detail = failSnack?.text.match(/failed to upload image(?: to character)?/i)?.[0];
+      return { ok: false, error: "character_upload_failed", slot, detail };
+    }
     if (
       !isAreaBusy &&
-      ((imgSrc && (!prevSrc || imgSrc !== prevSrc)) ||
-        (slotMediaId && (!prevMediaId || slotMediaId !== prevMediaId) && slotMedia?.nf !== "UPLOAD_FAILED" && (compSrc || uploadedSnack)) ||
+      ((imgSrc && imgSrc !== prevSrc) ||
+        (newMedia && slotMedia?.Zc === "success" && compSrc) ||
         Boolean(uploadedSnack))
     ) {
       if (uploadedSnack) clickButtonByRegex(/^dismiss$/i, uploadedSnack.bar);
@@ -402,12 +420,12 @@ export async function characterMediaOp(
       const targetFife = fifeBase(targetUrl);
 
       const previewCompBefore = getCharacterPreviewInstance();
-      const portraitOccupied = Boolean(previewCompBefore?.ka?.()?.id);
-      const bodyOccupied = Boolean(previewCompBefore?.ma?.()?.id);
+      const portraitOccupied = Boolean(previewCompBefore?.media("portrait")?.id);
+      const bodyOccupied = Boolean(previewCompBefore?.media("body")?.id);
       let wantBodySlot = false;
       if (portraitOccupied && !bodyOccupied) {
-        const bodyBtn = findBodySlotButton();
-        if (bodyBtn) {
+        const bodyBtn = findPreviewSlotButton("body");
+        if (isVisibleEnabled(bodyBtn)) {
           wantBodySlot = true;
           if (!bodyBtn.classList.contains("chip-button-active")) {
             bodyBtn.click();
@@ -416,14 +434,14 @@ export async function characterMediaOp(
         }
       }
       const prevSlotMedia = wantBodySlot
-        ? previewCompBefore?.ma?.()
-        : previewCompBefore?.ka?.();
+        ? previewCompBefore?.media("body")
+        : previewCompBefore?.media("portrait");
       const prevSlotMediaId = String(prevSlotMedia?.id || "").trim();
       const prevPreviewSrc = String(
         document
           .querySelector("flow-character-image-preview img.preview-image[src]")
           ?.getAttribute("src") ||
-          previewCompBefore?.psa?.() ||
+          previewCompBefore?.source() ||
           "",
       ).trim();
 
