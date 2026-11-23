@@ -8,6 +8,14 @@ import { delay } from "./dom";
 import type { VoiceConfirmationFormat } from "./frontend_builds";
 import { runtimeState } from "./state";
 
+/** Reads the picker selection after Flow reports a custom voice save. */
+interface CustomVoiceReceipt {
+  /** Returns the ID of the saved voice selected by the picker. */
+  selected: () => string | undefined;
+  /** Stops listening for voice saves. */
+  close: () => void;
+}
+
 /** Finds a component in the view of its host or in a live Angular view. */
 function findComponent(host: Element, matches: (value: unknown) => boolean): unknown {
   const view = resolveLView(host);
@@ -28,6 +36,43 @@ function voiceId(component: unknown, field: string): string | undefined {
   return typeof value === "string" && value ? value.replace(/^voices\//i, "") : undefined;
 }
 
+/** Watches the native save event and reads the exact voice selected for assignment. */
+export function bindCustomVoiceReceipt(pane: Element, format: VoiceConfirmationFormat): CustomVoiceReceipt | undefined {
+  const preview = pane.querySelector("flow-voice-preview-pane");
+  const picker = pane.querySelector("flow-add-menu-popover-content");
+  if (!preview || !picker) return;
+  const component = findComponent(preview, (value) =>
+    typeof readOwn(readOwn(value, format.previewSaved), "subscribe") === "function",
+  );
+  const menu = findComponent(picker, (value) =>
+    typeof readOwn(value, format.pickerSelection) === "function",
+  );
+  const output = readOwn(component, format.previewSaved);
+  const subscribe = readOwn(output, "subscribe");
+  const selected = readOwn(menu, format.pickerSelection);
+  if (typeof subscribe !== "function" || typeof selected !== "function") return;
+
+  let receipt: unknown;
+  const subscription: unknown = subscribe.call(output, (value: unknown) => { receipt = value; });
+  return {
+    selected: () => {
+      const media = readOwn(receipt, "mediaId");
+      const workflow = readOwn(receipt, "workflowId");
+      if (!media && !workflow) return;
+      const asset: unknown = selected.call(menu);
+      if ((media && readOwn(asset, "mediaId") === media) ||
+          (workflow && readOwn(asset, "workflowId") === workflow)) {
+        const id = readOwn(asset, "id");
+        if (typeof id === "string") return id;
+      }
+    },
+    close: () => {
+      const unsubscribe = readOwn(subscription, "unsubscribe");
+      if (typeof unsubscribe === "function") unsubscribe.call(subscription);
+    },
+  };
+}
+
 /** Binds the editor's entity query and form before the tool clicks Add to character. */
 export function bindVoiceConfirmation(format: VoiceConfirmationFormat) {
   const shell = document.querySelector("flow-character-edit-page");
@@ -41,9 +86,9 @@ export function bindVoiceConfirmation(format: VoiceConfirmationFormat) {
   const fetch = readOwn(query, "refetch");
   if (!form || typeof fetch !== "function" || typeof readOwn(editor, format.savedVoice) !== "function") return;
 
-  return async () => {
+  return async (expected?: string) => {
     const selected = voiceId(form, format.selectedVoice);
-    if (!selected) return false;
+    if (!selected || (expected && selected !== expected.replace(/^voices\//i, ""))) return false;
     const deadline = performance.now() + 7_000;
     while (performance.now() < deadline && shell.isConnected) {
       const remaining = deadline - performance.now();

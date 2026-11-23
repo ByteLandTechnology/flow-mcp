@@ -13,9 +13,9 @@ import {
   isVisibleEnabled,
   setNativeValue,
 } from "./dom";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { frontendBuild, readBuildLabel, type VoiceConfirmationFormat } from "./frontend_builds";
 import type { CharacterExtraOpRequest } from "./types";
-import { bindVoiceConfirmation } from "./voice_confirmation";
+import { bindCustomVoiceReceipt, bindVoiceConfirmation } from "./voice_confirmation";
 
 /** One voice row in the "Select a voice" dialog. */
 interface VoiceRow {
@@ -49,6 +49,21 @@ interface CustomVoiceInput {
   /** Latest time to wait for Flow to save the voice. */
   deadline: number;
 }
+
+/** Saved voice name or the stage that Flow cannot confirm. */
+type CustomVoiceSaveResult = {
+  /** Name of the saved voice. */
+  name: string;
+  /** ID of the saved voice that the picker selects. */
+  id?: string;
+} | {
+  /** Tool error code. */
+  error: string;
+  /** Voice operation in progress when the error occurs. */
+  stage?: "generate_voice_preview" | "save_custom_voice";
+  /** Message from the voice dialog. */
+  detail?: string;
+};
 
 /** Returns the open voice dialog pane, or null. */
 function voicePane(): Element | null {
@@ -180,7 +195,11 @@ function paneButton(pane: Element, re: RegExp): HTMLElement | null {
 }
 
 /** Saves the custom voice and waits for Flow to show its saved entry. */
-async function saveCustomVoice(pane: Element, { sample, performance, name, deadline }: CustomVoiceInput) {
+async function saveCustomVoice(
+  pane: Element,
+  { sample, performance, name, deadline }: CustomVoiceInput,
+  format?: VoiceConfirmationFormat,
+): Promise<CustomVoiceSaveResult> {
   const sampleEl = field(pane, /hi there/i);
   const perfEl = field(pane, /performance style/i);
   if (!sampleEl || !perfEl) return { error: "voice_custom_fields_not_found" };
@@ -204,28 +223,52 @@ async function saveCustomVoice(pane: Element, { sample, performance, name, deadl
     if (!save) await delay(100);
   }
   if (!save) return { error: "save_new_voice_button_not_found" };
-  const saveError = /failed to save voice|preview generation failed/i;
-  const priorError = findSnackbarMatch(saveError)?.bar;
+  const saveError = /failed to save voice|preview generation failed|failed to load audio preview/i;
+  const priorError = findSnackbarMatch(saveError);
   const oldRows = new Set(renderedRows(voicePane() ?? pane)
     .filter((row) => row.custom && row.name === savedName)
     .map((row) => row.el));
-  save.click();
-
-  // Add to character can be active for the base voice while Flow saves the custom voice.
-  while (globalThis.performance.now() < deadline) {
-    await delay(500);
-    const error = findSnackbarMatch(saveError);
-    if (error && error.bar !== priorError) return { error: "custom_voice_save_failed" };
-    const current = voicePane();
-    if (!current) return { error: "voice_dialog_closed_during_save" };
-    const saved = renderedRows(current).find((row) =>
-      row.custom && row.name === savedName && !oldRows.has(row.el));
-    if (saved && !current.querySelector("button.voice-save-button:disabled")) {
-      saved.el.click();
-      return { name: savedName };
+  const receipt = format && bindCustomVoiceReceipt(voicePane() ?? pane, format);
+  try {
+    save.click();
+    // Flow can keep Add to character active for the base voice during the save.
+    while (globalThis.performance.now() < deadline) {
+      await delay(500);
+      const error = findSnackbarMatch(saveError);
+      if (error && (error.bar !== priorError?.bar || error.text !== priorError.text)) {
+        const detail = error.text.match(saveError)?.[0];
+        if (/^failed to save voice$/i.test(detail ?? "")) {
+          return { error: "outcome_unknown", stage: "save_custom_voice", detail };
+        }
+        return { error: "custom_voice_preview_failed", stage: "generate_voice_preview", detail };
+      }
+      const current = voicePane();
+      if (!current) {
+        return {
+          error: "outcome_unknown", stage: "save_custom_voice",
+          detail: "Flow closes the voice dialog before it confirms the save",
+        };
+      }
+      if (receipt) {
+        const id = receipt.selected();
+        if (id) return { name: savedName, id };
+      } else {
+        const saved = renderedRows(current).find((row) =>
+          row.custom && row.name === savedName && !oldRows.has(row.el));
+        const saving = /\bsaving\b/i.test(elText(current.querySelector("button.voice-save-button")));
+        if (saved && !saving) {
+          saved.el.click();
+          return { name: savedName };
+        }
+      }
     }
+  } finally {
+    receipt?.close();
   }
-  return { error: "custom_voice_save_timeout" };
+  return {
+    error: "outcome_unknown", stage: "save_custom_voice",
+    detail: "Flow does not confirm the custom voice before the time limit",
+  };
 }
 
 /** Returns the text of the character voice button. */
@@ -265,13 +308,15 @@ async function applyVoice(
     };
   }
   let expected = base;
+  let expectedId: string | undefined;
   if (custom) {
-    const result = await saveCustomVoice(voicePane() ?? pane, { sample, performance, name, deadline });
-    if (!result.name) {
+    const result = await saveCustomVoice(voicePane() ?? pane, { sample, performance, name, deadline }, format);
+    if ("error" in result) {
       await dismissOverlay();
-      return { ok: false, error: result.error };
+      return { ok: false, ...result };
     }
     expected = result.name;
+    expectedId = result.id;
     await delay(250);
   }
   pane = voicePane() ?? pane;
@@ -288,7 +333,7 @@ async function applyVoice(
   if (expect && !shown.toLowerCase().includes(expect)) {
     return { ok: false, error: "voice_not_applied", shown };
   }
-  if (confirm && !await confirm()) {
+  if (confirm && !await confirm(expectedId)) {
     return { ok: false, error: "outcome_unknown", stage: "set_character_voice" };
   }
   return { ok: true, applied: [custom ? "custom_voice" : "voice"], shown };

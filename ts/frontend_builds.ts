@@ -541,6 +541,10 @@ export interface VoiceConfirmationFormat {
   savedVoice: string;
   /** Form method that reads the locally selected voice ID. */
   selectedVoice: string;
+  /** Event that reports the saved voice media and workflow IDs. */
+  previewSaved: string;
+  /** Signal with the voice that the picker will add to the character. */
+  pickerSelection: string;
 }
 
 /** Request formats by exact build label. Include only verified operations. */
@@ -572,7 +576,10 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
   ["boq_labs-ai-sandbox-frontend_20261120.00_p0", {
     projectStore: NOVEMBER_20_STORE,
-    voiceConfirmation: { editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3" },
+    voiceConfirmation: {
+      editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
+      previewSaved: "MK", pickerSelection: "Qn",
+    },
     characterPreview: {
       lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma", source: "Gza", busy: "mB",
     },

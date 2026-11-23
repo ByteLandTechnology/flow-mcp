@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::assets::{FlowAsset, list_assets_with_project, match_asset};
 use crate::characters::{exit_character_editor, open_character_editor};
 use crate::config::downloads_dir;
-use crate::engine::ChromeEngine;
+use crate::engine::{ChromeEngine, checked_runtime_result};
 use crate::platform::{create_private_dir_all, write_private_file_atomic};
 use crate::project::{ensure_flow_store, ensure_project_workspace_root, project_id_from_url};
 use crate::queue::SceneParams;
@@ -102,14 +102,17 @@ pub(crate) async fn apply_voice(engine: &ChromeEngine, req: VoiceRequest<'_>) ->
             }]),
         )
         .await?;
-    if !op_ok(&res) {
-        let mut msg = op_error(&res, "voice assignment failed");
-        if let Some(list) = res.get("available_voices").and_then(|v| v.as_array()) {
-            let names: Vec<&str> = list.iter().filter_map(|v| v.as_str()).collect();
-            msg = format!("{} (available voices: {})", msg, names.join(", "));
-        }
-        anyhow::bail!("{}", msg);
+    if !op_ok(&res)
+        && let Some(list) = res.get("available_voices").and_then(Value::as_array)
+    {
+        let names: Vec<&str> = list.iter().filter_map(Value::as_str).collect();
+        anyhow::bail!(
+            "{} (available voices: {})",
+            op_error(&res, "voice assignment failed"),
+            names.join(", ")
+        );
     }
+    checked_runtime_result(res)?;
     Ok(())
 }
 
