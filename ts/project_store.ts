@@ -523,3 +523,16 @@ export async function refreshAfterUnknown(store: ProjectStore): Promise<Map<stri
     clearTimeout(timer);
   }
 }
+
+/** Reads confirmed server rows when a query fetcher exists, or live store rows otherwise. */
+export async function readConfirmedProjectStore(
+  store: ProjectStore,
+): Promise<Map<string, FlowTile> | null> {
+  if (!isCurrent(store) || activeBoundStore() !== store) return null;
+  if (typeof projectQuery(store)?.fetch === "function") {
+    return await refreshAfterUnknown(store);
+  }
+  const tiles = readProjectStore(store);
+  if (tiles) projectsToRefresh.delete(store.projectId);
+  return tiles;
+}

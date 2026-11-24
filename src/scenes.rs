@@ -15,7 +15,7 @@ use crate::assets::{
     rename_assets, resolve_asset, trash_asset,
 };
 use crate::db::FlowDb;
-use crate::engine::ChromeEngine;
+use crate::engine::{ChromeEngine, checked_runtime_result};
 use crate::generation::{collect_created_assets, inspect_generation_network};
 use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_workspace_url,
@@ -170,6 +170,14 @@ pub(crate) struct VideoParams {
     pub(crate) scene_id: Option<String>,
 }
 
+/// Formats a failed browser `sceneOp` result while keeping structured diagnostic fields.
+fn runtime_scene_error(res: Value) -> anyhow::Error {
+    match checked_runtime_result(res) {
+        Ok(_) => anyhow::anyhow!("unknown"),
+        Err(err) => err,
+    }
+}
+
 /// Dispatches `flow_scenes` actions (`list`, `create`, `add_clips`, `rename`, `trash`).
 pub(crate) async fn handle_scenes(
     engine: &ChromeEngine,
@@ -198,13 +206,9 @@ pub(crate) async fn handle_scenes(
                 "name": req.name,
             });
             let res = engine.call_flow_async("sceneOp", json!([payload])).await?;
-            if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                anyhow::bail!(
-                    "Failed to create scene: {}",
-                    res.get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                );
+            if res.get("ok").and_then(Value::as_bool) != Some(true) {
+                let err = runtime_scene_error(res);
+                anyhow::bail!("Failed to create scene: {err:#}");
             }
             Ok(res)
         }
@@ -214,21 +218,28 @@ pub(crate) async fn handle_scenes(
                 .asset_ids
                 .filter(|v| !v.is_empty())
                 .context("flow_scenes add_clips requires non-empty 'asset_ids'")?;
-            let _ = read_snapshot(engine).await?;
+            let snap = read_snapshot(engine).await?;
+            let project_id = snap.get("projectId").and_then(Value::as_str);
             let payload = json!({
                 "action": "add_clips",
                 "scene_id": scene_id,
                 "asset_ids": asset_ids,
                 "position": req.position,
             });
-            let res = engine.call_flow_async("sceneOp", json!([payload])).await?;
-            if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                anyhow::bail!(
-                    "Failed to add clips to scene: {}",
-                    res.get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                );
+            let res = match engine.call_flow_async("sceneOp", json!([payload])).await {
+                Ok(res) => res,
+                Err(error) => match project_id {
+                    Some(pid) => anyhow::bail!(
+                        "outcome_unknown (project {pid}, scene {scene_id} add_clips): {error:#}"
+                    ),
+                    None => {
+                        anyhow::bail!("outcome_unknown (scene {scene_id} add_clips): {error:#}")
+                    }
+                },
+            };
+            if res.get("ok").and_then(Value::as_bool) != Some(true) {
+                let err = runtime_scene_error(res);
+                anyhow::bail!("Failed to add clips to scene: {err:#}");
             }
             Ok(res)
         }
