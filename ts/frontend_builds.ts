@@ -57,6 +57,102 @@ export interface FrontendFormats {
   character_bio: CharacterBioFormat;
 }
 
+/** Managed operations that every verified Flow build must cover. */
+export const FRONTEND_OPERATIONS = [
+  "agent_chat",
+  "agent_attachments",
+  "agent_settings",
+  "project_upload",
+  "collection_write",
+  "character_bio",
+  "asset_trash_store",
+] as const satisfies readonly (keyof FrontendFormats)[];
+
+/** Browser exports required for native Agent settings requests. */
+export const AGENT_SETTINGS_EXPORTS = [
+  "projectService",
+  "projectKey",
+  "modelService",
+  "modelKey",
+  "fetchModels",
+  "serviceTier",
+  "locale",
+  "modelOptions",
+  "defaultModel",
+  "selectModel",
+  "aspectLabels",
+  "videoAspects",
+  "imageAspect",
+  "videoAspect",
+  "request",
+  "settings",
+  "mask",
+  "card",
+  "rpc",
+  "updateMethod",
+  "finish",
+  "message",
+  "maskPaths",
+  "string",
+  "strings",
+  "enumValue",
+  "integer",
+  "boolean",
+  "setCards",
+  "setMemoryEnabled",
+] as const satisfies readonly AgentSettingsExport[];
+
+/** Browser exports required for native Agent chat sessions and turns. */
+export const AGENT_EXPORTS = [
+  "allocate",
+  "init",
+  "sessionList",
+  "readSession",
+  "resume",
+  "rows",
+  "metadata",
+  "string",
+  "turnType",
+  "turns",
+  "decode",
+  "hydrate",
+  "reply",
+  "permission",
+  "plan",
+  "newEnvelope",
+  "setContent",
+  "mutable",
+  "finish",
+  "newContent",
+  "setParts",
+  "newPart",
+  "setText",
+  "errors",
+  "legacyDecision",
+  "clearLegacyRequest",
+  "oneOf",
+  "toolEventType",
+  "toolEventGroup",
+  "toolResultType",
+  "resultItems",
+  "structFields",
+  "valueString",
+] as const satisfies readonly AgentExport[];
+
+/** Browser exports required for Agent attachments and local uploads. */
+export const AGENT_ATTACHMENT_EXPORTS = [
+  "reference",
+  "message",
+  "text",
+  "id",
+  "validateFiles",
+  "isVideo",
+  "mimeType",
+  "imageSize",
+  "videoInfo",
+  "confirmUpload",
+] as const satisfies readonly AgentAttachmentExport[];
+
 /** Browser exports and service fields for Agent settings. */
 export interface AgentSettingsFormat {
   /** Project metadata service's query client. */
@@ -123,6 +219,12 @@ export interface AgentChatFormat {
 
 /** Native services and request fields for local media uploads. */
 export interface MediaUploadFormat {
+  /** Project store on the page component. */
+  store: string;
+  /** Signal with all project tiles. */
+  tiles: string;
+  /** Query that loads the tiles for the active project. */
+  tileQuery: string;
   /** Project mutation dispatcher. */
   dispatcher: string;
   /** Angular injector on the project page. */
@@ -164,12 +266,6 @@ export interface MediaUploadFields {
 
 /** Project page fields and exports for Agent attachments. */
 export interface AgentAttachmentFormat extends MediaUploadFormat {
-  /** Project store on the page component. */
-  store: string;
-  /** Signal with all project tiles. */
-  tiles: string;
-  /** Query that loads the tiles for the active project. */
-  tileQuery: string;
   /** Functions for uploads and Agent message attachments. */
   exports: Readonly<Record<AgentAttachmentExport, string>>;
   /** Fields for uploads and Agent message attachments. */
@@ -222,6 +318,16 @@ export interface ProjectStoreFormat {
   dispatcher: string;
   /** Tile rows in the query result. */
   rows: string;
+  /** Signal query that loads the tiles of the active project. */
+  tileQuery: string;
+  /** Mutation runner on the project store. */
+  mutator: string;
+  /** Error observable on the store mutation queue. */
+  errorStream: string;
+  /** Component slots that hold the injected project store. */
+  componentSlots: readonly string[];
+  /** Angular LView slot on an upgraded LContext wrapper. */
+  lContextView: string;
   /** Field names of a scene tile and its workflow history. */
   scene?: SceneTileFormat;
   /** Native names for mutations that use the general store adapter. */
@@ -266,6 +372,11 @@ const NOVEMBER_17_STORE: ProjectStoreFormat = {
   queryClient: "Xa",
   dispatcher: "VI",
   rows: "Bb",
+  tileQuery: "RC",
+  mutator: "lc",
+  errorStream: "Ha",
+  componentSlots: ["ha", "Eu", "oa", "ka"],
+  lContextView: "Pn",
   scene: { clips: "Tc", history: "tg" },
 };
 
@@ -279,6 +390,11 @@ const NOVEMBER_18_STORE: ProjectStoreFormat = {
   queryClient: "Wa",
   dispatcher: "sJ",
   rows: "Ab",
+  tileQuery: "Ir",
+  mutator: "lc",
+  errorStream: "Da",
+  componentSlots: ["Xg", "ha", "Eu", "oa", "ka"],
+  lContextView: "Pn",
 };
 
 /** Project store format of build 20261120.00. */
@@ -291,6 +407,11 @@ const NOVEMBER_20_STORE: ProjectStoreFormat = {
   queryClient: "Wa",
   dispatcher: "YJ",
   rows: "yb",
+  tileQuery: "rs",
+  mutator: "ld",
+  errorStream: "Da",
+  componentSlots: ["fh", "ha", "Ew", "la", "ka"],
+  lContextView: "zp",
   scene: { clips: "Uc", history: "Cg" },
   mutations: {
     tileId: "Xc", tileChange: "mf", sceneWorkflows: "ng", sceneCollection: "Dc",
@@ -303,36 +424,13 @@ const NOVEMBER_18_AGENT_SETTINGS: AgentSettingsFormat = {
   queryClient: "Wa",
   requestClient: "ka",
   exports: {
-    projectService: "DN",
-    projectKey: "RL",
-    modelService: "xN",
-    modelKey: "PFb",
-    fetchModels: "RFb",
-    serviceTier: "pG",
-    locale: "lh",
-    modelOptions: "xO",
-    defaultModel: "rO",
-    selectModel: "hZ",
-    aspectLabels: "AE",
-    videoAspects: "DO",
-    imageAspect: "Jlc",
-    videoAspect: "Klc",
-    request: "Ny",
-    settings: "k_",
-    mask: "Zq",
-    card: "bM",
-    rpc: "ax",
-    updateMethod: "CDb",
-    finish: "ac",
-    message: "Sk",
-    maskPaths: "Xq",
-    string: "pv",
-    strings: "rv",
-    enumValue: "Ft",
-    integer: "nv",
-    boolean: "Zs",
-    setCards: "csc",
-    setMemoryEnabled: "bsc",
+    projectService: "DN", projectKey: "RL", modelService: "xN", modelKey: "PFb",
+    fetchModels: "RFb", serviceTier: "pG", locale: "lh", modelOptions: "xO",
+    defaultModel: "rO", selectModel: "hZ", aspectLabels: "AE", videoAspects: "DO",
+    imageAspect: "Jlc", videoAspect: "Klc", request: "Ny", settings: "k_",
+    mask: "Zq", card: "bM", rpc: "ax", updateMethod: "CDb", finish: "ac",
+    message: "Sk", maskPaths: "Xq", string: "pv", strings: "rv", enumValue: "Ft",
+    integer: "nv", boolean: "Zs", setCards: "csc", setMemoryEnabled: "bsc",
   },
 };
 
@@ -373,39 +471,13 @@ const NOVEMBER_18_AGENT: AgentChatFormat = {
   lifecycle: "Ba",
   destroyed: "Va",
   exports: {
-    allocate: "yN",
-    init: "b0",
-    sessionList: "Kvc",
-    readSession: "Svc",
-    resume: "Tvc",
-    rows: "NZ",
-    metadata: "PZ",
-    string: "p",
-    turnType: "w_",
-    turns: "bv",
-    decode: "XZ",
-    hydrate: "Muc",
-    reply: "eCc",
-    permission: "yFc",
-    plan: "KEc",
-    newEnvelope: "B1",
-    setContent: "YZ",
-    mutable: "Uq",
-    finish: "Wq",
-    newContent: "wK",
-    setParts: "vK",
-    newPart: "qK",
-    setText: "pK",
-    errors: "uE",
-    legacyDecision: "xFc",
-    clearLegacyRequest: "Nuc",
-    oneOf: "nr",
-    toolEventType: "lZ",
-    toolEventGroup: "nZ",
-    toolResultType: "uZ",
-    resultItems: "qZ",
-    structFields: "hM",
-    valueString: "pZ",
+    allocate: "yN", init: "b0", sessionList: "Kvc", readSession: "Svc", resume: "Tvc",
+    rows: "NZ", metadata: "PZ", string: "p", turnType: "w_", turns: "bv",
+    decode: "XZ", hydrate: "Muc", reply: "eCc", permission: "yFc", plan: "KEc",
+    newEnvelope: "B1", setContent: "YZ", mutable: "Uq", finish: "Wq", newContent: "wK",
+    setParts: "vK", newPart: "qK", setText: "pK", errors: "uE", legacyDecision: "xFc",
+    clearLegacyRequest: "Nuc", oneOf: "nr", toolEventType: "lZ", toolEventGroup: "nZ",
+    toolResultType: "uZ", resultItems: "qZ", structFields: "hM", valueString: "pZ",
   },
 };
 
@@ -476,7 +548,7 @@ const NOVEMBER_20_AGENT: AgentChatFormat = {
     permissionSummary: { qsa: "nua", joa: "Wpa", loa: "Ypa" },
     questionCard: { Qm: "nn", Qj: "Nj", Ls: "Wr" },
     question: { fk: "Lk", dt: "lq", cj: "Yi" },
-    option: { zq: "gq", rma: "eaa" },
+    option: { zq: "gq", recommended: "eaa" },
     planBlock: "cA",
     plan: { XDa: "lGa", FOa: "mRa" },
     errors: { IC: "mD" },
@@ -492,16 +564,8 @@ const NOVEMBER_18_ATTACHMENTS: AgentAttachmentFormat = {
   injector: "Cb",
   consent: "PR",
   exports: {
-    reference: "vO",
-    message: "nAc",
-    text: "FI",
-    id: "yN",
-    validateFiles: "uR",
-    isVideo: "sR",
-    mimeType: "jTb",
-    imageSize: "rR",
-    videoInfo: "qTb",
-    confirmUpload: "OR",
+    reference: "vO", message: "nAc", text: "FI", id: "yN", validateFiles: "uR",
+    isVideo: "sR", mimeType: "jTb", imageSize: "rR", videoInfo: "qTb", confirmUpload: "OR",
   },
   fields: {
     character: "Nc", text: "Lc", references: "nc", accepted: "mA", errors: "ir",
@@ -529,19 +593,140 @@ const NOVEMBER_20_ATTACHMENTS: AgentAttachmentFormat = {
   },
 };
 
-/** Verified operations and store format of one build. */
-interface FrontendBuild {
-  /** Layout for the project store. */
-  projectStore: ProjectStoreFormat;
-  /** Operations with verified request formats. */
-  operations: Partial<FrontendFormats>;
-  /** Native fields used to confirm a character voice assignment. */
-  voiceConfirmation?: VoiceConfirmationFormat;
-  /** Native fields of the character preview panel. */
-  characterPreview?: CharacterPreviewFormat;
+/** Verified media payload fields used during snapshot reads. */
+export interface SnapshotMediaFormat {
+  /** Primary media payload property on an image or video tile. */
+  container: string;
+  /** Direct media URL property on a media payload or history item. */
+  url: string;
+  /** Lifecycle status property on a media payload. */
+  status: string;
+  /** Error payload property on a media payload. */
+  error: string;
+  /** Dimensions object property on a media payload. */
+  dimensions: string;
+  /** Video duration property in seconds on a media payload. */
+  duration: string;
+  /** Creation date property on a tile or media payload. */
+  date: string;
 }
 
-/** Native methods of the character preview panel. */
+/** Verified character tile and entity protobuf fields used during snapshot reads. */
+export interface SnapshotCharacterFormat {
+  /** Serialized entity message property on a character tile. */
+  entity: string;
+  /** Look workflow map property on a character tile. */
+  looks: string;
+  /** Preview media ID property on a character tile. */
+  previewMediaId: string;
+  /** Protobuf field number for `entity_info` on the entity message. */
+  entityInfoField: number;
+  /** Protobuf field number for `character_info` on `entity_info`. */
+  characterInfoField: number;
+  /** Protobuf field number for `audio_references` on `character_info`. */
+  audioReferencesField: number;
+  /** Protobuf field number for a preset voice ID on an audio reference. */
+  presetVoiceField: number;
+  /** Protobuf field number for a custom voice workflow ID on an audio reference. */
+  customVoiceField: number;
+  /** Protobuf field number for `personality_notes` on `character_info`. */
+  notesField: number;
+}
+
+/** Verified tile type discriminants in the project tile store. */
+export interface SnapshotTileTypesFormat {
+  /** Collection tile type value. */
+  collection: string;
+  /** Asset tile type values included in project asset lists. */
+  assets: readonly string[];
+  /** Non-asset tile type values excluded from project asset lists and counts. */
+  ignored: readonly string[];
+}
+
+/** Verified account credits service and balance accessors. */
+export interface SnapshotCreditsFormat {
+  /** Exported credits service class on the Angular frontend namespace. */
+  service: string;
+  /** Signal method returning the spendable total credit balance. */
+  total: string;
+  /** Query property on the credits service. */
+  query: string;
+  /** Method on the credits query message returning total credits. */
+  balanceMethod: string;
+}
+
+/** Verified snapshot field map for one frontend build. */
+export interface SnapshotFormat {
+  /** Media payload and URL properties. */
+  media: SnapshotMediaFormat;
+  /** Character look, preview, and entity properties. */
+  character: SnapshotCharacterFormat;
+  /** Tile type discriminants for assets, collections, and non-asset items. */
+  tileTypes: SnapshotTileTypesFormat;
+  /** Credits service class and balance accessors. */
+  credits: SnapshotCreditsFormat;
+}
+
+/** Snapshot format of build 20261120.00. */
+const NOVEMBER_20_SNAPSHOT: SnapshotFormat = {
+  media: {
+    container: "Kb",
+    url: "kc",
+    status: "od",
+    error: "Bf",
+    dimensions: "Bc",
+    duration: "Cf",
+    date: "lc",
+  },
+  character: {
+    entity: "Rc",
+    looks: "Ng",
+    previewMediaId: "Kd",
+    entityInfoField: 4,
+    characterInfoField: 3,
+    audioReferencesField: 2,
+    presetVoiceField: 2,
+    customVoiceField: 1,
+    notesField: 3,
+  },
+  tileTypes: {
+    collection: "COLLECTION",
+    assets: ["IMAGE", "VIDEO", "SCENE", "CHARACTER"],
+    ignored: ["TEXT_TILE", "CUSTOM"],
+  },
+  credits: {
+    service: "EG",
+    total: "Ts",
+    query: "query",
+    balanceMethod: "YR",
+  },
+};
+
+/** Verified operations and store format of one build. */
+interface FrontendBuildFields {
+  /** Layout for the project store. */
+  projectStore: ProjectStoreFormat;
+  /** Snapshot field descriptors for verified store reads. */
+  snapshot?: SnapshotFormat;
+  /** Native fields used to confirm a character voice assignment. */
+  voiceConfirmation?: VoiceConfirmationFormat;
+  /** Native fields of the character preview panel and controls. */
+  characterPreview?: CharacterPreviewFormat;
+  /** Native fields of the character voice form. */
+  characterVoice?: CharacterVoiceFormat;
+  /** Native fields for character creation and store lifecycle checks. */
+  characterCreate?: CharacterCreateFormat;
+  /** Native fields of editable project titles. */
+  projectTitle?: ProjectTitleFormat;
+}
+
+/** A verified build with full or pre-Agent operation coverage. */
+type FrontendBuild = FrontendBuildFields & (
+  | { legacy?: false; operations: FrontendFormats }
+  | { legacy: true; operations: Pick<FrontendFormats, "collection_write" | "asset_trash_store" | "character_bio"> & Partial<FrontendFormats> }
+);
+
+/** Native methods of the character preview panel and look controls. */
 export interface CharacterPreviewFormat {
   /** Lifecycle controller on the panel. */
   lifecycle: string;
@@ -557,6 +742,56 @@ export interface CharacterPreviewFormat {
   source: string;
   /** Signal that reports whether the preview is busy. */
   busy: string;
+  /** Footer signal that reports whether look generation is busy. */
+  footerBusy: string;
+  /** Popover method that lists project assets in the add menu. */
+  pickerAssets: string;
+  /** Popover method that selects a project asset in the add menu. */
+  pickerSelect: string;
+}
+
+/** Native signals and outputs of the character voice form. */
+export interface CharacterVoiceFormat {
+  /** Lifecycle controller on the form component. */
+  lifecycle: string;
+  /** Destroyed flag on the lifecycle controller. */
+  destroyed: string;
+  /** Signal with the loaded voice map. */
+  voiceMap: string;
+  /** Signal with the selected voice ID. */
+  selectedVoice: string;
+  /** Signal with the selected raw voice entry. */
+  selectedRecord: string;
+  /** Output emitter that commits a voice change. */
+  changeEmitter: string;
+  /** Signal that reports whether the form is busy. */
+  busy: string;
+  /** True when the build keeps the form voice map empty while idle. */
+  emptyMap: boolean;
+}
+
+/** Field names for character creation and store lifecycle checks. */
+export interface CharacterCreateFormat {
+  /** Lifecycle controller on the bound store service. */
+  lifecycle: string;
+  /** Destroyed flag on the lifecycle controller. */
+  destroyed: string;
+  /** Entity kind fields set to `1` in a `create_entity` request. */
+  entityKinds: readonly string[];
+  /** Collection fields set to `undefined` in a `create_entity` request. */
+  collections: readonly string[];
+  /** Completion callback fields in a `create_entity` request. */
+  completions: readonly string[];
+  /** Created tile fields in a `create_entity` response. */
+  created: readonly string[];
+}
+
+/** Native fields of `flow-editable-text` used to commit a project title. */
+export interface ProjectTitleFormat {
+  /** Output emitter that commits the edited title text. */
+  saveEmitter: string;
+  /** Signal that sets the component back to viewing mode. */
+  stateSignal: string;
 }
 
 /** Character editor and query fields used to read the saved voice. */
@@ -575,10 +810,33 @@ export interface VoiceConfirmationFormat {
   pickerSelection: string;
 }
 
+/** Character preview format of earlier builds. */
+const LEGACY_CHARACTER_PREVIEW: CharacterPreviewFormat = {
+  lifecycle: "Ca", upload: "JR", marker: "Si", portrait: "ka", body: "ma",
+  source: "psa", busy: "zy", footerBusy: "Th", pickerAssets: "Hi", pickerSelect: "Sla",
+};
+
+/** Character voice form format of earlier builds. */
+const LEGACY_CHARACTER_VOICE: CharacterVoiceFormat = {
+  lifecycle: "Ca", destroyed: "Va", voiceMap: "bW", selectedVoice: "zZ",
+  selectedRecord: "Kna", changeEmitter: "p$", busy: "yb", emptyMap: false,
+};
+
+/** Character creation format of earlier builds. */
+const LEGACY_CHARACTER_CREATE: CharacterCreateFormat = {
+  lifecycle: "Ca", destroyed: "Va", entityKinds: ["A3", "AW"],
+  collections: ["tb", "ub"], completions: ["De", "ve"], created: ["MF", "II"],
+};
+
+/** Editable project title format of earlier builds. */
+const LEGACY_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "tJa", stateSignal: "state" };
+
 /** Request formats by exact build label. Include only verified operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
+    legacy: true,
     projectStore: NOVEMBER_17_STORE,
+    characterCreate: { ...LEGACY_CHARACTER_CREATE, lifecycle: "Ca", destroyed: "Wa" },
     operations: {
       collection_write: { tileId: "Uc", tileChange: "df", moveTarget: "Sj", moveTiles: "Bb" },
       asset_trash_store: {
@@ -594,8 +852,14 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
   ["boq_labs-ai-sandbox-frontend_20261118.14_p0", {
     projectStore: NOVEMBER_18_STORE,
+    characterCreate: { ...LEGACY_CHARACTER_CREATE, lifecycle: "Ba", destroyed: "Va" },
+    characterVoice: { ...LEGACY_CHARACTER_VOICE, lifecycle: "Ba", destroyed: "Va" },
     operations: {
       collection_write: { tileId: "Vc", tileChange: "jf", moveTarget: "Wj", moveTiles: "Ab" },
+      asset_trash_store: {
+        entries: "Yv", tile: "Ia", trashed: "Bb", date: "Yb", destination: "Km",
+        sceneWorkflows: "Gj",
+      },
       character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
       agent_chat: NOVEMBER_18_AGENT,
       agent_attachments: NOVEMBER_18_ATTACHMENTS,
@@ -605,13 +869,24 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
   ["boq_labs-ai-sandbox-frontend_20261120.00_p0", {
     projectStore: NOVEMBER_20_STORE,
+    snapshot: NOVEMBER_20_SNAPSHOT,
     voiceConfirmation: {
       editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
       previewSaved: "MK", pickerSelection: "Qn",
     },
     characterPreview: {
-      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma", source: "Gza", busy: "mB",
+      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma",
+      source: "Gza", busy: "mB", footerBusy: "Zh", pickerAssets: "xZ", pickerSelect: "Qda",
     },
+    characterVoice: {
+      lifecycle: "Ba", destroyed: "Va", voiceMap: "o_", selectedVoice: "A3",
+      selectedRecord: "Pua", changeEmitter: "Pea", busy: "yb", emptyMap: true,
+    },
+    characterCreate: {
+      lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM"],
+      collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
+    },
+    projectTitle: { saveEmitter: "HSa", stateSignal: "state" },
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
@@ -629,36 +904,6 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
 ]);
 
-/** Native methods used by the earlier character preview panel. */
-const LEGACY_CHARACTER_PREVIEW: CharacterPreviewFormat = {
-  lifecycle: "Ca",
-  upload: "JR",
-  marker: "Si",
-  portrait: "ka",
-  body: "ma",
-  source: "psa",
-  busy: "zy",
-};
-
-/** Returns verified builds ordered from newest to oldest. */
-function newestFirstBuilds(): FrontendBuild[] {
-  return Array.from(VERIFIED_BUILDS.values()).reverse();
-}
-
-/** Keeps the first item for each key while preserving order. */
-function uniqueFormats<T>(items: readonly T[], keyOf: (item: T) => string): T[] {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const item of items) {
-    const key = keyOf(item);
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(item);
-    }
-  }
-  return out;
-}
-
 /** Returns the exact label published by the active page. */
 export function readBuildLabel(): string | null {
   const label = window.WIZ_global_data?.cfb2h;
@@ -670,55 +915,66 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
   return label === null ? undefined : VERIFIED_BUILDS.get(label);
 }
 
-/** Returns the layouts to check from newest to oldest when the runtime binds the active project store. */
-export function projectStoreFormats(): readonly ProjectStoreFormat[] {
-  const build = frontendBuild(readBuildLabel());
-  if (build) return [build.projectStore];
-  return uniqueFormats(
-    newestFirstBuilds().map((entry) => entry.projectStore),
-    (format) => JSON.stringify(format),
-  );
+/** Returns the verified project store layout of the active build, or undefined. */
+export function activeProjectStoreFormat(): ProjectStoreFormat | undefined {
+  return frontendBuild(readBuildLabel())?.projectStore;
 }
 
-/** Returns character preview layouts from newest to oldest for the active build. */
-export function characterPreviewFormats(): readonly CharacterPreviewFormat[] {
+/** Adds the native fields used by the verified project store mutator. */
+export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
   const build = frontendBuild(readBuildLabel());
-  if (build) return [build.characterPreview ?? LEGACY_CHARACTER_PREVIEW];
-  const candidates = newestFirstBuilds()
-    .flatMap((entry) => (entry.characterPreview ? [entry.characterPreview] : []));
-  return uniqueFormats(
-    [...candidates, LEGACY_CHARACTER_PREVIEW],
-    (format) => JSON.stringify(format),
-  );
+  const format = build?.projectStore.mutations;
+  if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
+    const change = payload.Ve as Record<string, unknown>;
+    if (format) {
+      const native = change.type === "set_video_trim_seconds" ? {
+        ...change, [format.trimStart]: change.Cg, [format.trimEnd]: change.Rf,
+      } : change;
+      return { ...payload, [format.tileId]: payload.Xc ?? payload.Uc, [format.tileChange]: native };
+    }
+    const collectionWrite = build?.operations.collection_write;
+    if (collectionWrite) {
+      return {
+        ...payload,
+        [collectionWrite.tileId]: payload.Xc ?? payload.Uc,
+        [collectionWrite.tileChange]: change,
+      };
+    }
+    return payload;
+  }
+  if (format && payload.type === "create_scene") {
+    return { ...payload, [format.sceneWorkflows]: payload.rg, [format.sceneCollection]: payload.Fc };
+  }
+  if (format && payload.type === "add_workflows_to_scene") {
+    return { ...payload, [format.sceneId]: payload.Lc, [format.sceneWorkflows]: payload.rg };
+  }
+  if (format && payload.type === "create_entity") {
+    return { ...payload, pM: payload.pM ?? 1 };
+  }
+  return payload;
 }
 
-/** Returns voice confirmation layouts from newest to oldest for the active build. */
-export function voiceConfirmationFormats(): readonly VoiceConfirmationFormat[] {
-  const build = frontendBuild(readBuildLabel());
-  if (build) return build.voiceConfirmation ? [build.voiceConfirmation] : [];
-  return uniqueFormats(
-    newestFirstBuilds().flatMap((entry) =>
-      entry.voiceConfirmation ? [entry.voiceConfirmation] : [],
-    ),
-    (format) => JSON.stringify(format),
-  );
+/** Returns the character preview field mapping for the active build. */
+export function characterPreviewFormat(): CharacterPreviewFormat {
+  return frontendBuild(readBuildLabel())?.characterPreview ?? LEGACY_CHARACTER_PREVIEW;
 }
 
-/** Returns scene tile field layouts from newest to oldest for the active build. */
-export function sceneTileFormats(): readonly SceneTileFormat[] {
-  const build = frontendBuild(readBuildLabel());
-  if (build) return build.projectStore.scene ? [build.projectStore.scene] : [];
-  return uniqueFormats(
-    newestFirstBuilds().flatMap((entry) =>
-      entry.projectStore.scene ? [entry.projectStore.scene] : [],
-    ),
-    (format) => `${format.clips}:${format.history}`,
-  );
+/** Returns the character voice form mapping for the active build. */
+export function characterVoiceFormat(): CharacterVoiceFormat {
+  return frontendBuild(readBuildLabel())?.characterVoice ?? LEGACY_CHARACTER_VOICE;
 }
 
-/** Returns the mutation field layout for the active build, defaulting to the newest verified layout on unknown builds. */
-export function projectMutationFormat(): ProjectMutationFormat | undefined {
-  const build = frontendBuild(readBuildLabel());
-  if (build) return build.projectStore.mutations;
-  return newestFirstBuilds().find((entry) => entry.projectStore.mutations)?.projectStore.mutations;
+/** Returns the character creation and store lifecycle mapping for the active build. */
+export function characterCreateFormat(): CharacterCreateFormat {
+  return frontendBuild(readBuildLabel())?.characterCreate ?? LEGACY_CHARACTER_CREATE;
+}
+
+/** Returns the editable project title mapping for the active build. */
+export function projectTitleFormat(): ProjectTitleFormat {
+  return frontendBuild(readBuildLabel())?.projectTitle ?? LEGACY_PROJECT_TITLE;
+}
+
+/** Returns the verified snapshot field descriptors for the active build. */
+export function snapshotFormat(): SnapshotFormat | undefined {
+  return frontendBuild(readBuildLabel())?.snapshot;
 }

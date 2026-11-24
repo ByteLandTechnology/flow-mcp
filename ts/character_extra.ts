@@ -13,12 +13,7 @@ import {
   isVisibleEnabled,
   setNativeValue,
 } from "./dom";
-import {
-  frontendBuild,
-  readBuildLabel,
-  voiceConfirmationFormats,
-  type VoiceConfirmationFormat,
-} from "./frontend_builds";
+import { frontendBuild, readBuildLabel, type VoiceConfirmationFormat } from "./frontend_builds";
 import type { CharacterExtraOpRequest } from "./types";
 import { bindCustomVoiceReceipt, bindVoiceConfirmation } from "./voice_confirmation";
 
@@ -35,7 +30,11 @@ interface VoiceRow {
 }
 
 /** Icon ligature words that the dialog renders as text inside voice rows. */
-const ICON_WORDS = new Set(["voice_selection", "settings_2", "play_arrow"]);
+export const VOICE_ICON_WORDS: ReadonlySet<string> = new Set([
+  "voice_selection",
+  "settings_2",
+  "play_arrow",
+]);
 
 /** Performance text for a custom voice request that supplies only a sample. */
 const DEFAULT_VOICE_PERFORMANCE = "Read naturally in the selected voice.";
@@ -71,11 +70,34 @@ type CustomVoiceSaveResult = {
 };
 
 /** Returns the open voice dialog pane, or null. */
-function voicePane(): Element | null {
+export function voicePane(): Element | null {
   return (
     Array.from(
       document.querySelectorAll(".cdk-overlay-pane, [role='dialog']"),
-    ).find((p) => /select a voice/i.test(elText(p))) || null
+    ).find((p) => {
+      if (
+        p.querySelector(
+          "mat-tooltip-component, .mdc-tooltip, flow-media-picker-dialog",
+        )
+      ) {
+        return false;
+      }
+      if (/select a voice/i.test(elText(p))) {
+        return (
+          p.matches("[role='dialog']") ||
+          Boolean(
+            p.querySelector(
+              "[role='dialog'], button, [role='option'], [role='menuitem'], flow-voice-preview-pane, flow-add-menu-popover-content, flow-add-menu-asset-item, .asset-title, .voice-card-name",
+            ),
+          )
+        );
+      }
+      return Boolean(
+        p.querySelector("flow-voice-preview-pane, .voice-card-name") ||
+          (!/add from project/i.test(elText(p)) &&
+            p.querySelector("flow-add-menu-asset-item")),
+      );
+    }) || null
   );
 }
 
@@ -89,7 +111,7 @@ function renderedRows(pane: Element): VoiceRow[] {
       .split(/\r?\n/)
       .map((s) => s.trim())
       .filter(Boolean);
-    const words = lines.filter((l) => !ICON_WORDS.has(l));
+    const words = lines.filter((l) => !VOICE_ICON_WORDS.has(l));
     if (!words.length) continue;
     rows.push({
       name: words[0],
@@ -203,7 +225,7 @@ function paneButton(pane: Element, re: RegExp): HTMLElement | null {
 async function saveCustomVoice(
   pane: Element,
   { sample, performance, name, deadline }: CustomVoiceInput,
-  formats: readonly VoiceConfirmationFormat[],
+  format?: VoiceConfirmationFormat,
 ): Promise<CustomVoiceSaveResult> {
   const sampleEl = field(pane, /hi there/i);
   const perfEl = field(pane, /performance style/i);
@@ -233,11 +255,7 @@ async function saveCustomVoice(
   const oldRows = new Set(renderedRows(voicePane() ?? pane)
     .filter((row) => row.custom && row.name === savedName)
     .map((row) => row.el));
-  let receipt: ReturnType<typeof bindCustomVoiceReceipt>;
-  for (const format of formats) {
-    receipt = bindCustomVoiceReceipt(voicePane() ?? pane, format);
-    if (receipt) break;
-  }
+  const receipt = format && bindCustomVoiceReceipt(voicePane() ?? pane, format);
   try {
     save.click();
     // Flow can keep Add to character active for the base voice during the save.
@@ -299,20 +317,11 @@ async function applyVoice(
   const custom = Boolean(sample || performance);
   if (custom && sample.length > 120)
     return { ok: false, error: "voice_sample_over_120_characters" };
-  const formats = voiceConfirmationFormats();
-  const requireConfirmation = Boolean(frontendBuild(readBuildLabel())?.voiceConfirmation);
-  let pane = formats.length > 0 ? await withLViewMapCapture(openDialog) : await openDialog();
+  const format = frontendBuild(readBuildLabel())?.voiceConfirmation;
+  let pane = format ? await withLViewMapCapture(openDialog) : await openDialog();
   if (!pane) return { ok: false, error: "voice_dialog_not_available" };
-  let confirm: ReturnType<typeof bindVoiceConfirmation>;
-  let activeFormats = formats;
-  for (const candidate of formats) {
-    confirm = bindVoiceConfirmation(candidate);
-    if (confirm) {
-      activeFormats = [candidate];
-      break;
-    }
-  }
-  if (requireConfirmation && !confirm) {
+  const confirm = format && bindVoiceConfirmation(format);
+  if (format && !confirm) {
     await dismissOverlay();
     return { ok: false, error: "voice_confirmation_unavailable" };
   }
@@ -328,11 +337,7 @@ async function applyVoice(
   let expected = base;
   let expectedId: string | undefined;
   if (custom) {
-    const result = await saveCustomVoice(
-      voicePane() ?? pane,
-      { sample, performance, name, deadline },
-      activeFormats,
-    );
+    const result = await saveCustomVoice(voicePane() ?? pane, { sample, performance, name, deadline }, format);
     if ("error" in result) {
       await dismissOverlay();
       return { ok: false, ...result };

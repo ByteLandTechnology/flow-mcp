@@ -25,7 +25,7 @@ import {
   setNativeValue,
 } from "./dom";
 import {
-  characterPreviewFormats,
+  characterPreviewFormat,
   frontendBuild,
   readBuildLabel,
 } from "./frontend_builds";
@@ -89,47 +89,47 @@ function callPanel(panel: object, name: string): unknown {
   return typeof method === "function" ? method.call(panel) : undefined;
 }
 
-/** Finds the preview panel in a live Angular view and binds its methods from newest to oldest format. */
+/** Finds the preview panel in a live Angular view and binds its methods. */
 function getCharacterPreviewInstance(): CharacterPreview | null {
+  const format = characterPreviewFormat();
   const roots = document.querySelectorAll(
     "flow-character-preview-panel, flow-character-image-preview",
   );
-  for (const format of characterPreviewFormats()) {
-    const seen = new Set<unknown>();
-    for (const root of roots) {
-      const startLv = resolveLView(root);
-      if (!Array.isArray(startLv)) continue;
-      const queue: Array<[NgLView, number]> = [[startLv, 0]];
-      while (queue.length > 0) {
-        const next = queue.shift();
-        if (!next) break;
-        const [lv, depth] = next;
-        if (!Array.isArray(lv) || seen.has(lv)) continue;
-        seen.add(lv);
-        for (const slot of lv) {
-          if (
-            slot &&
-            typeof slot === "object" &&
-            !(slot instanceof Node) &&
-            !Array.isArray(slot) &&
-            !(slot instanceof Map) &&
-            !readOwn(readOwn(slot, format.lifecycle), "Va") &&
-            typeof readOwn(slot, format.upload) === "function" &&
-            typeof readOwn(slot, format.marker) === "function"
-          ) {
-            return {
-              upload: () => callPanel(slot, format.upload),
-              media: (which) =>
-                legacyMedia(callPanel(slot, format[which]) as FlowMediaPayload | null | undefined),
-              source: () => callPanel(slot, format.source),
-              busy: () => callPanel(slot, format.busy),
-            };
-          }
+  const seen = new Set<unknown>();
+  for (const root of roots) {
+    const startLv = resolveLView(root);
+    if (!Array.isArray(startLv)) continue;
+    const queue: Array<[NgLView, number]> = [[startLv, 0]];
+    while (queue.length > 0) {
+      const next = queue.shift();
+      if (!next) break;
+      const [lv, depth] = next;
+      if (!Array.isArray(lv) || seen.has(lv)) continue;
+      seen.add(lv);
+      for (const slot of lv) {
+        const lc = readOwn(slot, format.lifecycle);
+        if (
+          slot &&
+          typeof slot === "object" &&
+          !(slot instanceof Node) &&
+          !Array.isArray(slot) &&
+          !(slot instanceof Map) &&
+          !(lc && typeof lc === "object" && readOwn(lc, "Va")) &&
+          typeof readOwn(slot, format.upload) === "function" &&
+          typeof readOwn(slot, format.marker) === "function"
+        ) {
+          return {
+            upload: () => callPanel(slot, format.upload),
+            media: (which) =>
+              legacyMedia(callPanel(slot, format[which]) as FlowMediaPayload | null | undefined),
+            source: () => callPanel(slot, format.source),
+            busy: () => callPanel(slot, format.busy),
+          };
         }
-        if (depth < 4) {
-          if (Array.isArray(lv[3])) queue.push([lv[3], depth + 1]);
-          if (Array.isArray(lv[15])) queue.push([lv[15], depth + 1]);
-        }
+      }
+      if (depth < 4) {
+        if (Array.isArray(lv[3])) queue.push([lv[3], depth + 1]);
+        if (Array.isArray(lv[15])) queue.push([lv[15], depth + 1]);
       }
     }
   }
@@ -188,6 +188,44 @@ function isPreviewSlotSelected(slot: CharacterSlot): boolean {
   if (button) return button.classList.contains("chip-button-active");
   return slot === "portrait" && !findPreviewSlotButton("body") &&
     Boolean(document.querySelector("flow-character-image-preview"));
+}
+
+/** Probes preview controls inside LView capture so Angular reveals its view registry. */
+async function probePreviewControls(): Promise<void> {
+  const controls = [
+    ...document.querySelectorAll(
+      "flow-character-preview-panel [mattooltip], flow-character-preview-panel button",
+    ),
+  ];
+  await withLViewMapCapture(() => hoverProbe(controls.slice(0, 6)));
+}
+
+/** Infers whether `slot` holds media from preview slot chips and rendered image state. */
+function isPreviewSlotOccupiedDom(slot: CharacterSlot): boolean {
+  const button = findPreviewSlotButton(slot);
+  if (button) {
+    const chip = button.closest("flow-slot-chip-button");
+    if (chip?.querySelector("img[src]")) return true;
+    const label = `${elText(button)} ${button.getAttribute("aria-label") || ""}`;
+    if (/\bcreate\b/i.test(label)) return false;
+    if (!button.classList.contains("chip-button-active")) return true;
+    const previewImg = document
+      .querySelector("flow-character-image-preview img.preview-image[src]")
+      ?.getAttribute("src")
+      ?.trim();
+    if (previewImg) return true;
+    const previewEl = document.querySelector("flow-character-image-preview");
+    return !previewEl || !/\badd from project\b/i.test(elText(previewEl));
+  }
+  return (
+    slot === "portrait" &&
+    Boolean(
+      document
+        .querySelector("flow-character-image-preview img.preview-image[src]")
+        ?.getAttribute("src")
+        ?.trim(),
+    )
+  );
 }
 
 /** Selects the requested slot and waits for the preview controls. */
@@ -264,13 +302,9 @@ export async function characterMediaOp(
 
     let state = readPreviewSlotState(wantSlot);
     if (!state.previewComp) {
-      const controls = [...document.querySelectorAll("flow-character-preview-panel [mattooltip], flow-character-preview-panel button")];
-      await withLViewMapCapture(() => hoverProbe(controls.slice(0, 6)));
+      await probePreviewControls();
       state = readPreviewSlotState(wantSlot);
-      if (
-        !state.previewComp &&
-        (Boolean(frontendBuild(readBuildLabel())?.characterPreview) || !findPreviewUploadButton())
-      ) {
+      if (!state.previewComp && frontendBuild(readBuildLabel())?.characterPreview) {
         return { ok: false, error: "character_preview_not_bound" };
       }
     }
@@ -386,10 +420,11 @@ export async function characterMediaOp(
     const footerEl = document.querySelector("flow-edit-character-footer");
     const footerLv = footerEl ? resolveLView(footerEl) : null;
     if (Array.isArray(footerLv)) {
+      const { footerBusy: footerBusyKey } = characterPreviewFormat();
       for (const cand of footerLv) {
         try {
-          const thFn = readOwn(cand, "Th");
-          if (typeof thFn === "function" && Boolean(thFn.call(cand))) {
+          const busyFn = readOwn(cand, footerBusyKey);
+          if (typeof busyFn === "function" && Boolean(busyFn.call(cand))) {
             footerBusy = true;
             break;
           }
@@ -412,9 +447,41 @@ export async function characterMediaOp(
 
   const charId = req?.character_id ? String(req.character_id).trim() : null;
   const applied: string[] = [];
+  let completedAssets = 0;
+  const previewSelector =
+    "flow-character-preview-panel, flow-character-image-preview";
+  if (
+    !document.querySelector(previewSelector) &&
+    document.querySelector("flow-character-edit-page")
+  ) {
+    for (let i = 0; i < 20 && !document.querySelector(previewSelector); i++) {
+      await delay(100);
+    }
+  }
+  const requiresBoundPreview = (): boolean =>
+    Boolean(
+      frontendBuild(readBuildLabel())?.characterPreview &&
+        document.querySelector(previewSelector),
+    );
+  const ensurePreviewBound = async (): Promise<CharacterPreview | null> => {
+    let comp = getCharacterPreviewInstance();
+    if (!comp) {
+      await probePreviewControls();
+      comp = getCharacterPreviewInstance();
+    }
+    return comp;
+  };
+  let previewCompBefore = await ensurePreviewBound();
+  if (!previewCompBefore && requiresBoundPreview()) {
+    return {
+      ok: false,
+      error: "character_preview_not_bound",
+      completed_assets: 0,
+    };
+  }
 
   if (Array.isArray(req?.asset_ids) && req.asset_ids.length > 0) {
-    for (const aid of req.asset_ids) {
+    for (const [idx, aid] of req.asset_ids.entries()) {
       const targetTile = getMap()?.get(String(aid));
       const hasDisplayName = Boolean(targetTile?.displayName && String(targetTile.displayName).trim());
       const targetName = hasDisplayName && targetTile?.displayName ? String(targetTile.displayName).trim() : "";
@@ -422,20 +489,38 @@ export async function characterMediaOp(
       const targetUrl = pickTileUrl(targetTile);
       const targetFife = fifeBase(targetUrl);
 
-      const previewCompBefore = getCharacterPreviewInstance();
-      const portraitOccupied = Boolean(previewCompBefore?.media("portrait")?.id);
-      const bodyOccupied = Boolean(previewCompBefore?.media("body")?.id);
+      if (idx > 0) {
+        previewCompBefore = await ensurePreviewBound();
+        if (!previewCompBefore && requiresBoundPreview()) {
+          return {
+            ok: false,
+            error: "character_preview_not_bound",
+            applied,
+            completed_assets: completedAssets,
+          };
+        }
+      }
+      const hasSlotMedia = (slot: CharacterSlot): boolean => {
+        if (previewCompBefore) {
+          const media = previewCompBefore.media(slot);
+          return Boolean(media?.id || media?.mediaId);
+        }
+        return isPreviewSlotOccupiedDom(slot);
+      };
+      const portraitOccupied = hasSlotMedia("portrait");
+      const bodyOccupied = hasSlotMedia("body");
       let wantBodySlot = false;
       if (portraitOccupied && !bodyOccupied) {
         const bodyBtn = findPreviewSlotButton("body");
         if (isVisibleEnabled(bodyBtn)) {
           wantBodySlot = true;
           if (!bodyBtn.classList.contains("chip-button-active")) {
-            bodyBtn.click();
+            await captureLViewAndClick(() => bodyBtn.click());
             await delay(250);
           }
         }
       }
+      previewCompBefore ??= getCharacterPreviewInstance();
       const prevSlotMedia = wantBodySlot
         ? previewCompBefore?.media("body")
         : previewCompBefore?.media("portrait");
@@ -511,18 +596,21 @@ export async function characterMediaOp(
 
       let overlay: Element | null = null;
       for (let i = 0; i < 20; i++) {
-        overlay = document.querySelector(
-          'flow-media-picker-dialog, [role="dialog"], cdk-overlay-pane, [role="listbox"]',
-        );
-        if (
-          overlay &&
-          !overlay.querySelector(".loading-container") &&
-          overlay.querySelector(
-            'flow-add-menu-asset-item, flow-grid-tile-container, [role="option"], img[src]',
-          )
-        ) {
-          break;
-        }
+        overlay =
+          Array.from(
+            document.querySelectorAll(
+              'flow-media-picker-dialog, [role="dialog"], .cdk-overlay-pane, [role="listbox"]',
+            ),
+          ).find(
+            (el) =>
+              !el.querySelector(".loading-container") &&
+              Boolean(
+                el.querySelector(
+                  'flow-add-menu-asset-item, flow-grid-tile-container, [role="option"], img[src]',
+                ),
+              ),
+          ) || null;
+        if (overlay) break;
         await delay(150);
       }
       const overlayRoot: ParentNode = overlay || document;
@@ -577,28 +665,30 @@ export async function characterMediaOp(
           document.querySelector("flow-add-menu-popover-content");
         const popLv = popEl ? resolveLView(popEl) : null;
         if (Array.isArray(popLv)) {
+          const { pickerAssets, pickerSelect } = characterPreviewFormat();
           for (const cand of popLv) {
-            const hiFn = readOwn(cand, "Hi");
-            const slaFn = readOwn(cand, "Sla");
-            if (typeof hiFn === "function" && typeof slaFn === "function") {
-              const list = hiFn.call(cand) as unknown[];
-              const m = Array.isArray(list)
-                ? list.find((a) => pickerAssetMatches(a, matchTarget)) ||
-                  (lowName
-                    ? list.find((a) =>
-                        String(
-                          readOwn(a, "title") || readOwn(a, "displayName") || "",
-                        )
-                          .toLowerCase()
-                          .includes(lowName),
+            const listFn = readOwn(cand, pickerAssets);
+            const pickFn = readOwn(cand, pickerSelect);
+            if (typeof listFn !== "function" || typeof pickFn !== "function") {
+              continue;
+            }
+            const list = listFn.call(cand) as unknown[];
+            const m = Array.isArray(list)
+              ? list.find((a) => pickerAssetMatches(a, matchTarget)) ||
+                (lowName
+                  ? list.find((a) =>
+                      String(
+                        readOwn(a, "title") || readOwn(a, "displayName") || "",
                       )
-                    : null)
-                : null;
-              if (m) {
-                slaFn.call(cand, m, new MouseEvent("click"));
-                picked = true;
-                break;
-              }
+                        .toLowerCase()
+                        .includes(lowName),
+                    )
+                  : null)
+              : null;
+            if (m) {
+              pickFn.call(cand, m, new MouseEvent("click"));
+              picked = true;
+              break;
             }
           }
         }
@@ -647,6 +737,7 @@ export async function characterMediaOp(
       }
       await dismissOverlay();
       applied.push(refAdded ? `ref:${aid}` : `ref_clicked:${aid}`);
+      completedAssets = idx + 1;
     }
   }
 
@@ -675,7 +766,19 @@ export async function characterMediaOp(
       ),
     ).some((b) => /\bbody\b/i.test(elText(b)));
     const lookSlot: "portrait" | "body" = activeBodyChip ? "body" : "portrait";
-    const beforeLook = readPreviewSlotState(lookSlot);
+    let beforeLook = readPreviewSlotState(lookSlot);
+    if (!beforeLook.previewComp) {
+      await probePreviewControls();
+      beforeLook = readPreviewSlotState(lookSlot);
+      if (!beforeLook.previewComp && requiresBoundPreview()) {
+        return {
+          ok: false,
+          error: "character_preview_not_bound",
+          applied,
+          completed_assets: completedAssets,
+        };
+      }
+    }
     const prevLookMediaId = beforeLook.slotMediaId;
     const prevLookSrc = beforeLook.imgSrc || beforeLook.compSrc;
 

@@ -18,11 +18,11 @@ flow-mcp [OPTIONS] <COMMAND>
 | `login [--timeout <SECS>] [--force] [--json]` | Google サインイン用に可視 Chrome ウィンドウを開き、サインインの完了まで待機します。`--timeout` は最大待機秒数です（既定 `180`、`15..=3600`）。`--force` は保存済みの Cookie とセッションを先に消去します。 |
 | `status [--json]` | サインイン状態を表示します。保存済みのセッションがある場合は、バックグラウンドの Chrome を起動します。 |
 | `logout [--json]` | `<home>/chrome-profile` と `<home>/cookies.json` を削除します。 |
-| `doctor [--json]` | Chrome バイナリ、`<home>` とファイル権限、インスタンスロック、サインイン状態を確認します。 |
+| `doctor [--json]` | Chrome バイナリ、`<home>` とファイル権限、インスタンスロック、Google Flow のフロントエンドビルド、サインイン状態を確認します。 |
 
 `login`、`status`、`logout` は `flow_login` と同じアクションを使用し、結果フィールドごとに `key: value` を 1 行ずつ出力します。`--json` を付けると、`flow_login` の結果オブジェクトを出力します。`doctor` はチェックごとに 1 行を出力し、ステータスは `ok`、`warn`、`fail`、`skip` のいずれかです。
 
-サブコマンドが最後まで実行されると、終了ステータスは `0` です。未サインインの場合や `doctor` のチェックが失敗した場合も同じです。エラーが発生した場合（たとえばサインインのタイムアウトや、実行中の別の `flow-mcp` が Chrome プロファイルを使用している場合）は `1` です。フラグの値が無効な場合は `2` です。
+サブコマンドが最後まで実行され、`doctor` のどのチェックも `fail` でない場合、終了ステータスは `0` です（未サインインなどの `warn` や `skip` のみの場合も `0` です）。`doctor` のいずれかのチェックが `fail` になった場合や、エラーが発生した場合（たとえばサインインのタイムアウトや、実行中の別の `flow-mcp` が Chrome プロファイルを使用している場合）は `1` です。フラグの値が無効な場合は `2` です。
 
 ### HTTP トランスポート
 
@@ -90,7 +90,7 @@ Google Flow 認証状態、アクティブプロジェクト、`JobQueue`、SQLi
 
 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }` を返します。プロジェクトを自動的に開いたり作成したりしません。
 
-アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。 `operations` には、現在のビルドと store で `project_upload`、`collection_write`、`character_bio`、`asset_trash_store` が使えるかが表示されます。各操作には `ok` と `failed_checks` が含まれます。
+Google Flow のどのページでも、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks`、`operations` が入ります。各チェックには `name`、`ok`、`detail` があり、ページやプロジェクトを変更しません。`operations` は 7 つの管理対象操作（`agent_chat`、`agent_attachments`、`agent_settings`、`project_upload`、`collection_write`、`character_bio`、`asset_trash_store`）を報告し、それぞれに `ok` と `failed_checks` が含まれます。`/project/<id>` 以外のページでは、現在の Flow ビルドが 7 つの操作すべてで検証済みかどうかを確認します。`/project/<id>` 内では、ランタイムのプロジェクト store、メディアタイルの URL、および Agent とアップロードのエクスポートとページサービスも確認します。トップレベルの `ok` は、ビルドが検証済みで、すべてのチェックに合格し、7 つの操作すべてが `ok` になったときにのみ `true` になります。
 
 ### `flow_login`
 
@@ -218,7 +218,7 @@ Google Flow でキャラクターボイスピッカーを開き、リスト全�
 
 Google Flow プロジェクトで Agent の設定とチャットを管理します。すべての操作に `project_id` が必要です。既存のセッションには `session_id` を指定します。Flow は最初のメッセージを受け取るとセッションを保存します。
 
-`create_session` と `send_message` では、`asset_ids` でプロジェクト内の画像、動画、キャラクターを添付できます。画像と動画にはアセット ID またはプライマリメディア ID、キャラクターには `flow_characters` が返すキャラクター ID を指定します。1 つのメッセージに複数の種類を混在させることができます。`files` にはアップロードして添付するローカルの画像や動画のパスを指定します。ローカル動画は 30 秒以内にトリミングしてください。ファイルの保存後、ツールは `uploaded_asset_ids` を返すことがあります。ターンの `user.attachment_media_ids` と `user.attachment_character_ids` に添付したメディアとキャラクターの ID が入ります。
+`create_session` と `send_message` では、`asset_ids` でプロジェクト内の画像、動画、キャラクターを添付できます。画像と動画にはアセット ID、プライマリメディア ID、編集履歴の完了済みメディア ID、または完了済みのアップサンプル動画 ID を指定し、キャラクターには `flow_characters` が返すキャラクター ID を指定します。1 つのメッセージに複数の種類を混在させることができます。`files` にはアップロードして添付するローカルの画像や動画のパスを指定します。ローカル動画は 30 秒以内にトリミングしてください。動画のアップロードはトランスコード完了まで待機します。ファイルの保存後、ツールは `uploaded_asset_ids` を返すことがあります。ターンの `user.attachment_media_ids` と `user.attachment_character_ids` に添付したメディアとキャラクターの ID が入ります。
 
 アップロードがタイムアウトすると、確認済みのファイル ID がエラーに含まれます。`file_in_progress` がある場合は、再アップロードの前にプロジェクトでファイルの状態を確認します。添付の準備がタイムアウトした場合、メッセージは送信されません。
 
@@ -252,7 +252,8 @@ Google Flow プロジェクトで Agent の設定とチャットを管理しま�
 - ステータスが `action_required` の場合は、`pending_actions` の `action_id` を指定して `respond` を呼び出します。
   - 許可の `decision` は `approve`、`approve_and_remember`、`deny` です。
   - プランの `decision` は `run_full_plan` または `previz` です。
-  - 質問には `answers` で各 `question_id`、`option_ids`、任意の `text` を送ります。
+  - 質問には `answers` で各 `question_id`、`option_ids`、任意の自由記述 `text` を送るか、空配列 `[]` を渡して質問カードをスキップします。
+- 未回答の許可リクエストまたは質問リクエストが期限切れになり後続の出力がない場合、ターンのステータスは `failed` になります。同じターンに後続の応答ブロックが現れると、それ以前のプランは `pending_actions` から除外されます。
 
 `persisted: false` は、新しいセッションがまだ Flow のセッション一覧に表示されないことを示します。書き込みで `outcome_unknown` が返った場合は、再試行の前にセッションやターンを確認します。フロントエンドのビルドまたはランタイムの確認に失敗すると、`unsupported_front_end` が返ります。
 
@@ -337,12 +338,12 @@ Flow シーンタイムラインの一覧表示、作成、クリップ追加、
 | `action` | `string` | いいえ | `list`（既定）または `upload`。 |
 | `files` | `string[]` | `upload` の場合に必須 | サーバー上のローカル画像または動画のパス。 |
 | `query` | `string` | いいえ | アセット ID、名前、またはプロンプトに一致する大文字小文字を区別しない部分文字列。 |
-| `kind` | `string` | いいえ | `"image"`、`"video"`、`"scene"`、`"character"`、または `"all"`（既定）で絞り込みます。 |
+| `kind` | `string` | いいえ | `"image"`、`"video"`、`"audio"`、`"scene"`、`"character"`、または `"all"`（既定）で絞り込みます。 |
 | `collection` | `string` | いいえ | コレクション ID、名前部分文字列、`"all"`、`"none"`、または `"uncollected"` で絞り込みます。 |
 | `limit` | `integer` | いいえ | 返す最大項目数（`>= 1`）。 |
-| `resolve_urls` | `boolean` | いいえ | 絞り込みと件数制限の後、不足しているメディア URL を取得します。既定値は `true` で、待機時間は最大 10 秒です。 |
+| `resolve_urls` | `boolean` | いいえ | 不足しているメディア URL を取得します。画像または音声で絞り込む場合は、種類が不明なアセットを確認してから件数を制限します。既定値は `true` で、待機時間は最大 10 秒です。 |
 
-アップロードの前に対象のプロジェクトのワークスペースを開きます。フィルターは `list` で使用します。Flow はファイルの種類とサイズを確認します。動画は 30 秒以内に切り詰めてください。動画のメタデータを読み取るために、Chrome がプロジェクトのタブをアクティブにする場合があります。
+アップロードの前に対象のプロジェクトのワークスペースを開きます。アップロードはプロジェクトルートまたは `/collection/<id>` ビューでそのまま実行でき、シーン、キャラクター、編集、チャット、ツールの各ビューからはプロジェクトルートへ戻ります。フィルターは `list` で使用します。Flow はファイルの種類とサイズを確認します。動画は 30 秒以内に切り詰めてください。動画のアップロードはトランスコード完了まで待機します。動画のメタデータを読み取るために、Chrome がプロジェクトのタブをアクティブにする場合があります。
 
 ```json
 {
@@ -386,7 +387,7 @@ Flow シーンタイムラインの一覧表示、作成、クリップ追加、
 
 ### `flow_download`
 
-一致するプロジェクトの画像または動画を `<home>/downloads` へダウンロードし、`flow-mcp.db` に登録します。最大 `45` 秒まで待機し（タイムアウト時は `pending: true`）、`{"file", "resource_uri", "record"}` を返します。クライアントが MCP `2025-06-18` 以降に対応している場合は、`resource_link` も返します。
+一致するプロジェクトのメディアアセット（画像、動画、音声、またはキャラクター外見）を `<home>/downloads` へダウンロードし、`flow-mcp.db` に登録します。最大 `45` 秒まで待機し（タイムアウト時は `pending: true`）、`{"file", "resource_uri", "record"}` を返します。クライアントが MCP `2025-06-18` 以降に対応している場合は、`resource_link` も返します。
 
 | パラメータ | 型 | 必須 | 説明 |
 | :--- | :--- | :--- | :--- |
@@ -402,7 +403,7 @@ Flow シーンタイムラインの一覧表示、作成、クリップ追加、
 | `id` | `integer` | いいえ | `"get"`、`"read_chunk"`、または `"delete"` 用の SQLite ダウンロード行 ID（`>= 1`）。 |
 | `asset_id` | `string` | いいえ | `"get"`、`"read_chunk"`、または `"delete"` 用の Flow アセット ID。 |
 | `query` | `string` | いいえ | ID、名前、プロンプト、ファイル名、またはパスに一致する大文字小文字を区別しない部分文字列（`"list"`）。 |
-| `kind` | `string` | いいえ | `"list"` 用のフィルタ：`"image"`、`"video"`、`"scene"`、`"character"`、または `"all"`（既定）。 |
+| `kind` | `string` | いいえ | `"list"` 用のフィルタ：`"image"`、`"video"`、`"audio"`、`"scene"`、`"character"`、または `"all"`（既定）。 |
 | `project_id` | `string` | いいえ | `"list"` 用のプロジェクト ID フィルタ。 |
 | `existing_only` | `boolean` | いいえ | `"list"` 時にディスク上に存在するファイルの行のみを返します。既定は `false`。 |
 | `limit` | `integer` | いいえ | `"list"` 用のページ上限（`1..=500`、既定 `50`）。 |

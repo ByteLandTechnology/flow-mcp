@@ -18,11 +18,11 @@ flow-mcp [OPTIONS] <COMMAND>
 | `login [--timeout <SECS>] [--force] [--json]` | Open a visible Chrome window for Google Sign-In and wait until sign-in completes. `--timeout` sets the maximum wait in seconds (`180` default, `15..=3600`). `--force` clears the saved cookies and session first. |
 | `status [--json]` | Show the sign-in status. If a saved session exists, this subcommand starts background Chrome. |
 | `logout [--json]` | Delete `<home>/chrome-profile` and `<home>/cookies.json`. |
-| `doctor [--json]` | Check the Chrome binary, `<home>` and file permissions, the instance lock, and the sign-in status. |
+| `doctor [--json]` | Check the Chrome binary, `<home>` and file permissions, the instance lock, the live Google Flow front-end build, and the sign-in status. |
 
 `login`, `status`, and `logout` use the same actions as `flow_login`. They write one `key: value` line for each result field. With `--json`, they write the `flow_login` result object. `doctor` writes one line for each check with the status `ok`, `warn`, `fail`, or `skip`.
 
-The exit status is `0` when the subcommand runs to completion. This is also true when you are not signed in or when a `doctor` check fails. The exit status is `1` when an error occurs, for example a sign-in timeout or a Chrome profile that another running `flow-mcp` uses. The exit status is `2` when a flag value is not valid.
+The exit status is `0` when the subcommand runs to completion and no `doctor` check reports `fail`. A `warn` or `skip` result (for example when you are not signed in) still exits with status `0`. The exit status is `1` when any `doctor` check reports `fail` or when an error occurs, for example a sign-in timeout or a Chrome profile that another running `flow-mcp` uses. The exit status is `2` when a flag value is not valid.
 
 ### HTTP transport
 
@@ -90,7 +90,7 @@ Check Google Flow authentication state, active project, `JobQueue`, SQLite index
 
 Returns `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`. Does not open or create projects.
 
-When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project. The `operations` field reports whether `project_upload`, `collection_write`, `character_bio`, and `asset_trash_store` can run with the active build and store. Each operation has `ok` and `failed_checks`.
+On any Google Flow page, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, `checks`, and `operations`. Each check has `name`, `ok`, and `detail`, and the checks do not change the page or project. The `operations` field reports `agent_chat`, `agent_attachments`, `agent_settings`, `project_upload`, `collection_write`, `character_bio`, and `asset_trash_store`, each with `ok` and `failed_checks`. Outside `/project/<id>`, `flow.frontend` checks whether the active Flow build is verified for all seven operations. Inside `/project/<id>`, it also checks the runtime project store, media tile URLs, and Agent and upload exports and page services. Top-level `ok` is `true` only when the build is verified, all checks pass, and all seven operations report `ok: true`.
 
 ### `flow_login`
 
@@ -218,7 +218,7 @@ Queue a Veo video or Imagen image generation job on `JobQueue`. Returns a `JobVi
 
 Manage Flow Agent settings and chat in a Google Flow project. Each call requires `project_id`. Use `session_id` for an existing session. Flow saves a new session when it accepts the first message.
 
-Use `asset_ids` with `create_session` or `send_message` to attach existing project images, videos, or characters. Supply asset IDs or primary media IDs for images and videos. Supply the character ID from `flow_characters` for a character. You can mix all three types in one message. Use `files` with local image or video paths to upload and attach files in the same call. Trim local videos to 30 seconds or less. The tool can return `uploaded_asset_ids` after it saves files in the project. Turn results show the references in `user.attachment_media_ids` and `user.attachment_character_ids`.
+Use `asset_ids` with `create_session` or `send_message` to attach existing project images, videos, or characters. Supply asset IDs, primary media IDs, ready media IDs from edit history, or ready upsampled video IDs for images and videos. Supply the character ID from `flow_characters` for a character. You can mix all three types in one message. Use `files` with local image or video paths to upload and attach files in the same call. Trim local videos to 30 seconds or less. Video uploads wait until transcoding finishes. The tool can return `uploaded_asset_ids` after it saves files in the project. Turn results show the references in `user.attachment_media_ids` and `user.attachment_character_ids`.
 
 If an upload times out, the error shows the IDs of files that Flow has confirmed. Check the project for `file_in_progress` before you upload that file again. Flow does not send the message when attachment preparation times out.
 
@@ -252,7 +252,8 @@ Turn numbers start at 1. A turn can contain partial text, media IDs, and pending
 - When the status is `action_required`, use `respond` with the `action_id` in `pending_actions`.
   - For a permission request, set `decision` to `approve`, `approve_and_remember`, or `deny`.
   - For a plan, set `decision` to `run_full_plan` or `previz`.
-  - For a question, set `answers` to a list of objects with a `question_id`, `option_ids`, and optional `text`.
+  - For a question, set `answers` to a list of objects with a `question_id`, `option_ids`, and optional write-in `text`, or supply `[]` to skip the question card.
+- An unanswered permission or question request that expires without later output marks the turn status as `failed`. A later reply block in the same turn clears an earlier proposed plan from `pending_actions`.
 
 `persisted: false` shows that the new session is still absent from the Flow session list. If the result of a change is `outcome_unknown`, read the session or turn before you repeat the operation. The tool returns `unsupported_front_end` if the Flow build or its runtime checks fail.
 
@@ -337,12 +338,12 @@ List project assets or upload local images and videos to the active project.
 | `action` | `string` | No | `list` (default) or `upload`. |
 | `files` | `string[]` | For `upload` | Local image or video paths on the server. |
 | `query` | `string` | No | Case-insensitive substring matching asset ID, name, or prompt. |
-| `kind` | `string` | No | Filter by `"image"`, `"video"`, `"scene"`, `"character"`, or `"all"` (default). |
+| `kind` | `string` | No | Filter by `"image"`, `"video"`, `"audio"`, `"scene"`, `"character"`, or `"all"` (default). |
 | `collection` | `string` | No | Filter by collection ID, name substring, `"all"`, `"none"`, or `"uncollected"`. |
 | `limit` | `integer` | No | Maximum items to return (`>= 1`). |
-| `resolve_urls` | `boolean` | No | Resolve missing media URLs after the filters and limit. Default is `true`. The lookup has a 10-second limit. |
+| `resolve_urls` | `boolean` | No | Get missing media URLs. For image or audio requests, the tool resolves assets with an unknown media type before it applies the result limit. Default is `true`. The lookup has a 10-second limit. |
 
-Open the target project workspace before you upload. Use the filters with `list`. Flow checks file types and sizes. Trim videos to 30 seconds or less. Chrome can activate the project tab to read video metadata.
+Open the target project workspace before you upload. Upload works from the project root or a `/collection/<id>` view, and it returns to the project root from scene, character, edit, chat, or tool views. Use the filters with `list`. Flow checks file types and sizes. Trim videos to 30 seconds or less. Video uploads wait until transcoding finishes. Chrome can activate the project tab to read video metadata.
 
 ```json
 {
@@ -386,7 +387,7 @@ The tool checks the result of each write in a new read of the same project. The 
 
 ### `flow_download`
 
-Download a matching project image or video to `<home>/downloads` and index it in `flow-mcp.db`. Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
+Download a matching project media asset (image, video, audio, or character look) to `<home>/downloads` and index it in `flow-mcp.db`. Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
 
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
@@ -402,7 +403,7 @@ Query, check, stream Base64 slices from, prune, delete, or clear indexed downloa
 | `id` | `integer` | No | SQLite download row ID (`>= 1`) for `"get"`, `"read_chunk"`, or `"delete"`. |
 | `asset_id` | `string` | No | Flow asset ID for `"get"`, `"read_chunk"`, or `"delete"`. |
 | `query` | `string` | No | Case-insensitive substring matching ID, name, prompt, file name, or path (`"list"`). |
-| `kind` | `string` | No | Filter for `"list"`: `"image"`, `"video"`, `"scene"`, `"character"`, or `"all"` (default). |
+| `kind` | `string` | No | Filter for `"list"`: `"image"`, `"video"`, `"audio"`, `"scene"`, `"character"`, or `"all"` (default). |
 | `project_id` | `string` | No | Filter by project ID for `"list"`. |
 | `existing_only` | `boolean` | No | Return only rows whose file exists on disk for `"list"`. Default `false`. |
 | `limit` | `integer` | No | Page limit for `"list"` (`1..=500`, default `50`). |

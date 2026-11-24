@@ -8,20 +8,63 @@ import { readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { ResolvedMediaResult } from "./types";
 
-/** Internal extraction accumulator for `as29s` protobuf responses. */
+/** Media family in an `as29s` wire message. */
+type ResolvedMediaKind = "video" | "image" | "audio";
+
+/** URL and kind state that `extractFromProto` collects from `as29s` responses. */
 interface MediaExtractState {
-  /** Preferred streaming URL. */
-  streamUrl: string | null;
-  /** Preferred download URL. */
-  downloadUrl: string | null;
-  /** Ordered list of unique URL candidates. */
-  candidates: string[];
+  /** Preferred signed streaming URL. */
+  signedStreamUrl: string | null;
+  /** Preferred signed download URL. */
+  signedDownloadUrl: string | null;
+  /** Unique signed direct URL candidates in priority order. */
+  signedCandidates: string[];
+  /** Preferred unsigned streaming URL. */
+  unsignedStreamUrl: string | null;
+  /** Preferred unsigned download URL. */
+  unsignedDownloadUrl: string | null;
+  /** Unique unsigned URL candidates in priority order. */
+  unsignedCandidates: string[];
+  /** Media family from the wire message. */
+  mediaKind: ResolvedMediaKind | null;
+}
+
+/** Returns true when `val` is a plain sparse JSPB field map object. */
+function isSparseMap(val: unknown): val is Record<string, unknown> {
+  return val !== null && typeof val === "object" && !Array.isArray(val);
+}
+
+/** Returns true when `val` is a JSPB message array or sparse field map. */
+function isJspbMessage(val: unknown): boolean {
+  return Array.isArray(val) || isSparseMap(val);
+}
+
+/** Reads 1-based protobuf `fieldNumber` from a dense JSPB array or its trailing sparse map. */
+function jspbField(msg: unknown, fieldNumber: number): unknown {
+  if (fieldNumber < 1) return undefined;
+  if (isSparseMap(msg)) {
+    return msg[String(fieldNumber)];
+  }
+  if (!Array.isArray(msg) || msg.length === 0) {
+    return undefined;
+  }
+  const denseIdx = fieldNumber - 1;
+  const lastIdx = msg.length - 1;
+  const tail = msg[lastIdx];
+  if (isSparseMap(tail)) {
+    if (denseIdx < lastIdx && msg[denseIdx] != null) {
+      return msg[denseIdx];
+    }
+    return tail[String(fieldNumber)];
+  }
+  return denseIdx <= lastIdx ? msg[denseIdx] : undefined;
 }
 
 /** Resolves media stream and download URLs within the optional request budget. */
 export async function resolveVideoUrl(
   primaryMediaId: string,
   timeoutMs?: number | null,
+  bypassCache?: boolean,
 ): Promise<ResolvedMediaResult> {
   const signal = timeoutMs == null ? undefined : AbortSignal.timeout(timeoutMs);
   const cacheKey = primaryMediaId ? String(primaryMediaId) : "";
@@ -33,7 +76,9 @@ export async function resolveVideoUrl(
     return { ok: false, error: "missing_wiz_or_media_id" };
   }
 
-  const cachedInfo = runtimeState.mediaInfoCache.get(cacheKey);
+  const cachedInfo = bypassCache
+    ? undefined
+    : runtimeState.mediaInfoCache.get(cacheKey);
   if (
     cachedInfo &&
     typeof cachedInfo.url === "string" &&
@@ -50,6 +95,7 @@ export async function resolveVideoUrl(
           ? cachedInfo.download_url
           : cachedInfo.url,
       candidates: cachedInfo.candidates.slice(),
+      ...(cachedInfo.media_kind ? { media_kind: cachedInfo.media_kind } : {}),
     };
   }
 
@@ -68,7 +114,8 @@ export async function resolveVideoUrl(
 
   const rewriteFifeUrl = (
     rawUrl: unknown,
-    optionsSuffix: string,
+    optionsSuffix: string | null,
+    proxyActive: boolean,
   ): string | null => {
     const direct = asDirectUrl(rawUrl);
     if (!direct) return null;
@@ -83,12 +130,19 @@ export async function resolveVideoUrl(
         host.endsWith(".fife.usercontent.google.com") ||
         host === fifeHost.toLowerCase()
       ) {
-        parsed.hostname = fifeHost;
-        const basePath = parsed.pathname.replace(/=[^/]*$/, "");
-        parsed.pathname = optionsSuffix
-          ? `${basePath}=${optionsSuffix}`
-          : basePath;
-        if (authuser) {
+        if (proxyActive) {
+          parsed.hostname = fifeHost;
+        }
+        if (optionsSuffix !== null) {
+          const basePath = parsed.pathname.replace(/=[^/]*$/, "");
+          parsed.pathname = optionsSuffix
+            ? `${basePath}=${optionsSuffix}`
+            : basePath;
+        }
+        if (
+          authuser &&
+          parsed.hostname.toLowerCase() === fifeHost.toLowerCase()
+        ) {
           parsed.searchParams.set("authuser", authuser);
         }
       }
@@ -113,115 +167,201 @@ export async function resolveVideoUrl(
     }
   };
 
-  const slotAt = (arr: unknown, idx: number): unknown =>
-    Array.isArray(arr) ? arr[idx] : undefined;
+  const recordSigned = (state: MediaExtractState, direct: string): void => {
+    pushCandidate(state.signedCandidates, direct);
+    state.signedDownloadUrl ||= direct;
+    state.signedStreamUrl ||= direct;
+  };
+
+  const hasExtractedUrls = (state: MediaExtractState): boolean =>
+    state.signedCandidates.length > 0 || state.unsignedCandidates.length > 0;
+
+  const extractBranchUrl = (branch: unknown): string | null =>
+    asDirectUrl(branch) ||
+    asDirectUrl(jspbField(branch, 1)) ||
+    asDirectUrl(jspbField(jspbField(branch, 1), 1));
 
   const extractFromProto = (proto: unknown, state: MediaExtractState): void => {
-    const video = slotAt(proto, 7);
-    if (Array.isArray(video)) {
-      const v5 = slotAt(video, 5);
-      for (const branch of [slotAt(v5, 1), slotAt(v5, 2)]) {
-        // Inspect branch[0] (video stream) only; branch[1] is a still thumbnail.
-        const okDirect = asDirectUrl(slotAt(branch, 0));
+    const video = jspbField(proto, 8);
+    if (isJspbMessage(video)) {
+      const v6 = jspbField(video, 6);
+      const rawV6Case1 = jspbField(v6, 1);
+      const v6Case1 = extractBranchUrl(rawV6Case1);
+      const v6Case2 = extractBranchUrl(jspbField(v6, 2));
+      const v6Case3 = extractBranchUrl(jspbField(v6, 3));
+      const proxyActive = Boolean(
+        rawV6Case1 != null &&
+          !v6Case2 &&
+          !v6Case3 &&
+          !(v6Case1 && isSignedUrl(v6Case1)),
+      );
+
+      for (const okDirect of [v6Case2, v6Case3]) {
+        // Read field 1 (video stream) only; field 2 on a nested branch is a still thumbnail.
         if (!okDirect) continue;
         if (isSignedUrl(okDirect)) {
-          pushCandidate(state.candidates, okDirect);
-          state.downloadUrl ||= okDirect;
-          state.streamUrl ||= okDirect;
+          recordSigned(state, okDirect);
         } else {
-          const mm22 = rewriteFifeUrl(okDirect, "mm,22,15");
-          const mm18 = rewriteFifeUrl(okDirect, "mm,18,15");
-          pushCandidate(state.candidates, mm22);
-          pushCandidate(state.candidates, mm18);
-          state.streamUrl ||= mm22;
+          const mm22 = rewriteFifeUrl(okDirect, "mm,22,15", proxyActive);
+          const mm18 = rewriteFifeUrl(okDirect, "mm,18,15", proxyActive);
+          const dUrl = rewriteFifeUrl(okDirect, "d", proxyActive);
+          pushCandidate(state.unsignedCandidates, mm22);
+          pushCandidate(state.unsignedCandidates, mm18);
+          pushCandidate(state.unsignedCandidates, dUrl);
+          state.unsignedStreamUrl ||= mm22;
+          state.unsignedDownloadUrl ||= dUrl;
         }
       }
 
-      const v0 = slotAt(video, 0);
-      const v1 = slotAt(video, 1);
-      const v4 = slotAt(video, 4);
+      const v1 = jspbField(video, 1);
+      const v2 = jspbField(video, 2);
+      const v5 = jspbField(video, 5);
       for (const raw of [
-        slotAt(v0, 8),
-        slotAt(v4, 2),
-        slotAt(v0, 12),
-        slotAt(v0, 11),
-        slotAt(v4, 0),
-        slotAt(v0, 5),
-        slotAt(v1, 3),
-        slotAt(v5, 0),
+        jspbField(v1, 9),
+        jspbField(v5, 3),
+        jspbField(v1, 13),
+        jspbField(v1, 12),
+        jspbField(v5, 1),
+        jspbField(v1, 6),
+        jspbField(v2, 4),
+        v6Case1,
       ]) {
         const direct = asDirectUrl(raw);
         if (!direct) continue;
         if (isSignedUrl(direct)) {
-          pushCandidate(state.candidates, direct);
-          state.downloadUrl ||= direct;
-          state.streamUrl ||= direct;
+          recordSigned(state, direct);
         } else {
-          const dUrl = rewriteFifeUrl(direct, "d");
-          const mm22 = rewriteFifeUrl(direct, "mm,22,15");
-          const dv = rewriteFifeUrl(direct, "dv");
-          pushCandidate(state.candidates, dUrl);
-          pushCandidate(state.candidates, mm22);
-          pushCandidate(state.candidates, dv);
-          state.downloadUrl ||= dUrl;
-          state.streamUrl ||= mm22;
+          const dUrl = rewriteFifeUrl(direct, "d", proxyActive);
+          const mm22 = rewriteFifeUrl(direct, "mm,22,15", proxyActive);
+          const mm18 = rewriteFifeUrl(direct, "mm,18,15", proxyActive);
+          const dv = rewriteFifeUrl(direct, "dv", proxyActive);
+          pushCandidate(state.unsignedCandidates, dUrl);
+          pushCandidate(state.unsignedCandidates, mm22);
+          pushCandidate(state.unsignedCandidates, mm18);
+          pushCandidate(state.unsignedCandidates, dv);
+          state.unsignedDownloadUrl ||= dUrl;
+          state.unsignedStreamUrl ||= mm22;
         }
       }
-
-      const fifeStream = asDirectUrl(slotAt(v5, 0));
-      if (fifeStream) {
-        if (isSignedUrl(fifeStream)) {
-          pushCandidate(state.candidates, fifeStream);
-          state.downloadUrl ||= fifeStream;
-          state.streamUrl ||= fifeStream;
-        } else {
-          const mm22 = rewriteFifeUrl(fifeStream, "mm,22,15");
-          const mm18 = rewriteFifeUrl(fifeStream, "mm,18,15");
-          const dv = rewriteFifeUrl(fifeStream, "dv");
-          pushCandidate(state.candidates, mm22);
-          pushCandidate(state.candidates, mm18);
-          pushCandidate(state.candidates, dv);
-          state.streamUrl ||= mm22;
-        }
+      if (hasExtractedUrls(state)) {
+        state.mediaKind ||= "video";
+        return;
       }
     }
 
-    const image = slotAt(proto, 6);
-    if (Array.isArray(image)) {
-      const i5 = slotAt(image, 5);
-      for (const entryVal of [slotAt(i5, 1), slotAt(i5, 2)]) {
-        const direct =
-          asDirectUrl(entryVal) ||
-          (Array.isArray(entryVal) ? asDirectUrl(entryVal[0]) : null);
+    const image = jspbField(proto, 7);
+    if (isJspbMessage(image)) {
+      const i6 = jspbField(image, 6);
+      const rawI6Case1 = jspbField(i6, 1);
+      const i6Case1 = extractBranchUrl(rawI6Case1);
+      const i6Case2 = extractBranchUrl(jspbField(i6, 2));
+      const i6Case3 = extractBranchUrl(jspbField(i6, 3));
+      const proxyActive = Boolean(
+        rawI6Case1 != null &&
+          !i6Case2 &&
+          !i6Case3 &&
+          !(i6Case1 && isSignedUrl(i6Case1)),
+      );
+
+      for (const direct of [i6Case2, i6Case3]) {
         if (!direct) continue;
-        pushCandidate(state.candidates, direct);
-        state.downloadUrl ||= direct;
-        state.streamUrl ||= direct;
+        if (isSignedUrl(direct)) {
+          recordSigned(state, direct);
+        } else {
+          pushCandidate(state.unsignedCandidates, direct);
+          state.unsignedDownloadUrl ||= direct;
+          state.unsignedStreamUrl ||= direct;
+        }
       }
 
-      const i0 = slotAt(image, 0);
-      const i1 = slotAt(image, 1);
+      const i1 = jspbField(image, 1);
+      const i2 = jspbField(image, 2);
       for (const rawFife of [
-        slotAt(i0, 13),
-        slotAt(i1, 3),
-        slotAt(i5, 0),
+        jspbField(i1, 14),
+        jspbField(i2, 4),
+        i6Case1,
       ]) {
         const direct = asDirectUrl(rawFife);
         if (!direct) continue;
         if (isSignedUrl(direct)) {
-          pushCandidate(state.candidates, direct);
-          state.downloadUrl ||= direct;
-          state.streamUrl ||= direct;
+          recordSigned(state, direct);
         } else {
-          const dUrl = rewriteFifeUrl(direct, "d");
-          const s0Url = rewriteFifeUrl(direct, "s0");
-          const s1600Url = rewriteFifeUrl(direct, "s1600-rw");
-          pushCandidate(state.candidates, dUrl);
-          pushCandidate(state.candidates, s0Url);
-          pushCandidate(state.candidates, s1600Url);
-          state.downloadUrl ||= dUrl;
-          state.streamUrl ||= s1600Url;
+          const dUrl = rewriteFifeUrl(direct, "d", proxyActive);
+          const s0Url = rewriteFifeUrl(direct, "s0", proxyActive);
+          const s1600Url = rewriteFifeUrl(direct, "s1600-rw", proxyActive);
+          pushCandidate(state.unsignedCandidates, dUrl);
+          pushCandidate(state.unsignedCandidates, s0Url);
+          pushCandidate(state.unsignedCandidates, s1600Url);
+          state.unsignedDownloadUrl ||= dUrl;
+          state.unsignedStreamUrl ||= s1600Url;
         }
+      }
+      if (hasExtractedUrls(state)) {
+        state.mediaKind ||= "image";
+        return;
+      }
+    }
+
+    const audio = jspbField(proto, 11);
+    if (isJspbMessage(audio)) {
+      const a6 = jspbField(audio, 6);
+      const rawA6Case1 = jspbField(a6, 1);
+      const a6Case1 = extractBranchUrl(rawA6Case1);
+      const a6Case2 = extractBranchUrl(jspbField(a6, 2));
+      const a6Case3 = extractBranchUrl(jspbField(a6, 3));
+      const proxyActive = Boolean(
+        rawA6Case1 != null &&
+          !a6Case2 &&
+          !a6Case3 &&
+          !(a6Case1 && isSignedUrl(a6Case1)),
+      );
+
+      const a1 = jspbField(audio, 1);
+      const a2 = jspbField(audio, 2);
+      const a5 = jspbField(audio, 5);
+      for (const rawAudio of [
+        a6Case2,
+        a6Case3,
+        extractBranchUrl(jspbField(a5, 2)),
+        extractBranchUrl(jspbField(a5, 3)),
+        jspbField(a1, 4),
+        jspbField(a1, 6),
+        jspbField(a1, 3),
+        jspbField(a1, 5),
+        jspbField(a1, 9),
+        jspbField(a1, 12),
+        jspbField(a1, 13),
+        jspbField(a1, 14),
+        jspbField(a1, 2),
+        jspbField(a1, 1),
+        jspbField(a2, 4),
+        jspbField(a2, 3),
+        jspbField(a2, 1),
+        jspbField(a5, 1),
+        extractBranchUrl(jspbField(audio, 4)),
+        extractBranchUrl(jspbField(audio, 3)),
+        extractBranchUrl(jspbField(audio, 2)),
+        extractBranchUrl(jspbField(audio, 1)),
+        a6Case1,
+      ]) {
+        const direct = asDirectUrl(rawAudio);
+        if (!direct) continue;
+        if (isSignedUrl(direct)) {
+          recordSigned(state, direct);
+        } else {
+          const rewritten = proxyActive
+            ? rewriteFifeUrl(direct, null, true) || direct
+            : direct;
+          pushCandidate(state.unsignedCandidates, rewritten);
+          if (rewritten !== direct) {
+            pushCandidate(state.unsignedCandidates, direct);
+          }
+          state.unsignedDownloadUrl ||= rewritten;
+          state.unsignedStreamUrl ||= rewritten;
+        }
+      }
+      if (hasExtractedUrls(state)) {
+        state.mediaKind ||= "audio";
       }
     }
   };
@@ -297,32 +437,59 @@ export async function resolveVideoUrl(
   }
 
   const state: MediaExtractState = {
-    streamUrl: null,
-    downloadUrl: null,
-    candidates: [],
+    signedStreamUrl: null,
+    signedDownloadUrl: null,
+    signedCandidates: [],
+    unsignedStreamUrl: null,
+    unsignedDownloadUrl: null,
+    unsignedCandidates: [],
+    mediaKind: null,
   };
-  let lastErr = await fetchAs29s([cacheKey], state);
-  const hasSigned = state.candidates.some(isSignedUrl);
-  if (!signal?.aborted && (!hasSigned || !state.streamUrl)) {
-    const secondErr = await fetchAs29s([cacheKey, null, [1]], state);
-    if (secondErr && !lastErr) {
-      lastErr = secondErr;
+  let lastErr = await fetchAs29s([cacheKey, null, [1]], state);
+  if (
+    !signal?.aborted &&
+    state.signedCandidates.length === 0 &&
+    state.unsignedCandidates.length === 0
+  ) {
+    const fallbackErr = await fetchAs29s([cacheKey], state);
+    if (fallbackErr && !lastErr) {
+      lastErr = fallbackErr;
     }
   }
-  if (state.candidates.length === 0) {
+
+  const candidates: string[] = [];
+  for (const cand of state.signedCandidates) {
+    pushCandidate(candidates, cand);
+  }
+  for (const cand of state.unsignedCandidates) {
+    pushCandidate(candidates, cand);
+  }
+  if (candidates.length === 0) {
     return { ok: false, error: lastErr || "no_video_url_in_proto" };
   }
-  const finalDl = state.downloadUrl || state.candidates[0];
-  const finalUrl = state.streamUrl || finalDl;
+
+  const finalDl =
+    state.signedDownloadUrl ||
+    state.signedCandidates[0] ||
+    state.unsignedDownloadUrl ||
+    candidates[0];
+  const finalUrl =
+    state.signedStreamUrl ||
+    state.signedDownloadUrl ||
+    state.signedCandidates[0] ||
+    state.unsignedStreamUrl ||
+    finalDl;
   runtimeState.mediaInfoCache.set(cacheKey, {
     url: finalUrl,
     download_url: finalDl,
-    candidates: state.candidates.slice(),
+    candidates: candidates.slice(),
+    ...(state.mediaKind ? { media_kind: state.mediaKind } : {}),
   });
   return {
     ok: true,
     url: finalUrl,
     download_url: finalDl,
-    candidates: state.candidates.slice(),
+    candidates: candidates.slice(),
+    ...(state.mediaKind ? { media_kind: state.mediaKind } : {}),
   };
 }

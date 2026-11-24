@@ -1,10 +1,10 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-//! Google Sign-In, Chrome cookie synchronization, session status, and logout handling.
+//! Google Sign-In, explicit cookie export/import, session verification, and logout handling.
 //!
-//! Runs CDP Chrome during background operations and opens a
-//! visible Chrome window only during interactive Google Sign-In.
+//! Runs CDP Chrome on `<home>/chrome-profile` during background operations and opens a
+//! visible Chrome window without CDP flags only during interactive Google Sign-In.
 
 use anyhow::Result;
 use schemars::JsonSchema;
@@ -19,6 +19,32 @@ use crate::config::{
 };
 use crate::cookies::{has_google_auth_cookies, read_cookies_file};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
+
+/// Maximum number of `/about` passive SSO redirect attempts during session promotion.
+const MAX_ABOUT_SSO_RETRIES: usize = 2;
+
+/// Exact or segment-prefix non-workspace routes from the live Flow route table.
+const NON_WORKSPACE_SEGMENT_PREFIXES: [&str; 19] = [
+    "/unsupported-country",
+    "/unsupported-browser",
+    "/unavailable",
+    "/age-restricted",
+    "/privacy",
+    "/credits-terms",
+    "/about",
+    "/flow/about",
+    "/academy",
+    "/shared/tool",
+    "/shared",
+    "/flow/shared/tool",
+    "/flow/shared",
+    "/tools/flow/shared/tool",
+    "/tools/flow/shared",
+    "/404",
+    "/login",
+    "/tools/flow/about",
+    "/tools/flow/login",
+];
 
 /// Parameters for `flow_login`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -35,7 +61,61 @@ pub(crate) struct LoginParams {
     pub(crate) cookies: Option<Vec<Map<String, Value>>>,
 }
 
-/// Returns `true` when `raw` points to a non-landing Google Flow host route.
+/// Returns `true` when `path` equals `prefix` or begins with `prefix` plus `/`.
+fn has_segment_prefix(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || (path.len() > prefix.len()
+            && path.starts_with(prefix)
+            && path.as_bytes().get(prefix.len()) == Some(&b'/'))
+}
+
+/// Normalizes a URL path to lowercase without trailing slashes, preserving `/`.
+fn normalize_flow_path(raw: &str) -> String {
+    let lower = raw.trim().to_ascii_lowercase();
+    let with_slash = if lower.starts_with('/') {
+        lower
+    } else {
+        format!("/{lower}")
+    };
+    let trimmed = with_slash.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Strips an optional `/fx` prefix from a normalized path.
+fn strip_fx_prefix(clean_path: &str) -> &str {
+    if clean_path == "/fx" {
+        "/"
+    } else if let Some(rest) = clean_path.strip_prefix("/fx/") {
+        &clean_path[3..3 + 1 + rest.len()]
+    } else {
+        clean_path
+    }
+}
+
+/// Returns `true` when `clean_path` matches any of the 17 non-workspace Flow routes.
+fn is_non_workspace_flow_path(clean_path: &str) -> bool {
+    let rel = strip_fx_prefix(clean_path);
+    if rel == "/flow" {
+        return true;
+    }
+    NON_WORKSPACE_SEGMENT_PREFIXES
+        .iter()
+        .any(|prefix| has_segment_prefix(rel, prefix))
+}
+
+/// Returns true when the URL targets a Google Flow host.
+pub(crate) fn is_flow_host_url(raw: &str) -> bool {
+    Url::parse(raw).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && crate::project_route::is_flow_origin_host(url.host_str())
+    })
+}
+
+/// Returns `true` when `raw` points to a Google Flow workspace host and route.
 pub(crate) fn is_signed_in_flow_url(raw: &str) -> bool {
     let Ok(parsed) = Url::parse(raw) else {
         return false;
@@ -46,38 +126,62 @@ pub(crate) fn is_signed_in_flow_url(raw: &str) -> bool {
     let Some(host) = parsed.host_str().map(|h| h.to_ascii_lowercase()) else {
         return false;
     };
-    let flow_host =
-        host == "flow.google.com" || host == "labs.google" || host.ends_with(".labs.google");
-    let path = parsed.path().to_ascii_lowercase();
-    let blocked = path.starts_with("/about")
-        || path.starts_with("/fx/about")
-        || path.starts_with("/unsupported-country")
-        || path.starts_with("/age-restricted")
-        || path.starts_with("/unavailable")
-        || path.starts_with("/login");
-    flow_host && !blocked
-}
-
-/// Returns `true` when the active Flow page shows an authenticated session shell.
-pub(crate) async fn check_page_signed_in(engine: &ChromeEngine) -> bool {
-    let url = engine.current_url().await.unwrap_or_default();
-    if !is_signed_in_flow_url(&url) {
+    let on_labs = host == "labs.google" || host.ends_with(".labs.google");
+    if host != "flow.google.com" && !on_labs {
         return false;
     }
-    for _ in 0..8 {
-        let Ok(v) = engine.call_flow_js("checkAuth", json!([])).await else {
-            tokio::time::sleep(Duration::from_millis(350)).await;
-            continue;
-        };
-        if v.get("signed_in").and_then(|s| s.as_bool()) == Some(true) {
-            return true;
-        }
-        if v.get("explicit_signed_out").and_then(|s| s.as_bool()) == Some(true) {
-            return false;
-        }
-        tokio::time::sleep(Duration::from_millis(400)).await;
+    let clean_path = normalize_flow_path(parsed.path());
+    if on_labs && !has_segment_prefix(&clean_path, "/fx/tools/flow") {
+        return false;
     }
-    false
+    !is_non_workspace_flow_path(&clean_path)
+}
+
+/// Evaluates `checkAuth` once in the active page, retrying brief context resets during navigation.
+async fn eval_check_auth_once(engine: &ChromeEngine) -> Option<Value> {
+    for _ in 0..3 {
+        match engine.call_flow_async("checkAuth", json!([])).await {
+            Ok(v) => return Some(v),
+            Err(_) => tokio::time::sleep(Duration::from_millis(350)).await,
+        }
+    }
+    None
+}
+
+/// Verifies active Flow workspace access and reloads the workspace once when a session token expired.
+pub(crate) async fn check_page_auth(engine: &ChromeEngine, reload_on_expired: bool) -> Value {
+    let url = engine.current_url().await.unwrap_or_default();
+    if !is_signed_in_flow_url(&url) {
+        return Value::Null;
+    }
+    let Some(state) = eval_check_auth_once(engine).await else {
+        return Value::Null;
+    };
+    if reload_on_expired && state.get("token_expired").and_then(Value::as_bool) == Some(true) {
+        let target = if is_signed_in_flow_url(&url) {
+            url
+        } else {
+            FLOW_URL.to_string()
+        };
+        if engine.navigate(&target).await.is_ok() {
+            let mut refreshed = engine.current_url().await.unwrap_or_default();
+            let _ = redirect_sso_if_about(engine, &mut refreshed).await;
+            if is_signed_in_flow_url(&refreshed) {
+                return eval_check_auth_once(engine).await.unwrap_or(Value::Null);
+            }
+        }
+        return Value::Null;
+    }
+    state
+}
+
+/// Returns `true` when the active Flow page passes workspace route, Wiz token, and backend probe checks.
+pub(crate) async fn check_page_signed_in(engine: &ChromeEngine) -> bool {
+    check_page_auth(engine, true)
+        .await
+        .get("signed_in")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Removes the persisted `cookies.json` file if present on disk.
@@ -95,17 +199,17 @@ async fn clear_cookies_and_session(engine: &ChromeEngine) -> Result<()> {
     engine.clear_session().await
 }
 
-/// Verifies URL, Google auth cookies, and Flow DOM shell together.
-async fn check_fully_signed_in(engine: &ChromeEngine) -> bool {
+/// Verifies URL, live Google auth cookies, and the authenticated Flow workspace probe together.
+async fn check_fully_signed_in(engine: &ChromeEngine) -> Option<usize> {
     let url = engine.current_url().await.unwrap_or_default();
     if !is_signed_in_flow_url(&url) || url.contains("accounts.google.com") {
-        return false;
+        return None;
     }
     let cookies = engine.flow_cookies().await.unwrap_or_default();
     if !has_google_auth_cookies(&cookies) {
-        return false;
+        return None;
     }
-    check_page_signed_in(engine).await
+    check_page_signed_in(engine).await.then_some(cookies.len())
 }
 
 /// Formats a successful `flow_login` response JSON object.
@@ -121,20 +225,41 @@ fn signed_in_login_result(mode: &str, count: usize, url: String) -> Value {
     })
 }
 
-/// Returns `true` when `url` points to a Google Flow `/about` landing page.
+/// Returns `true` when `url` points to a Google Flow `/about` landing route.
 pub(crate) fn is_about_landing_url(url: &str) -> bool {
-    url.contains("flow.google.com/about") || url.contains("/fx/about")
+    let Ok(parsed) = Url::parse(url) else {
+        return url.contains("flow.google.com/about") || url.contains("/fx/about");
+    };
+    let Some(host) = parsed.host_str().map(|h| h.to_ascii_lowercase()) else {
+        return false;
+    };
+    let on_flow =
+        host == "flow.google.com" || host == "labs.google" || host.ends_with(".labs.google");
+    if !on_flow {
+        return false;
+    }
+    let clean = normalize_flow_path(parsed.path());
+    let rel = strip_fx_prefix(&clean);
+    rel == "/flow"
+        || has_segment_prefix(rel, "/about")
+        || has_segment_prefix(rel, "/flow/about")
+        || has_segment_prefix(rel, "/tools/flow/about")
+}
+
+/// Returns `true` when `url` points to an interactive Google Accounts sign-in route.
+fn is_interactive_signin_url(url: &str) -> bool {
+    url.contains("/InteractiveLogin")
+        || url.contains("/ServiceLogin")
+        || url.contains("/v3/signin/")
+        || url.contains("/signin/v2/")
+        || url.contains("/AccountChooser")
 }
 
 /// Polls until Chrome finishes the passive Google SSO redirect or lands on an interactive sign-in page.
 pub(crate) async fn wait_for_sso_redirect(engine: &ChromeEngine) {
     for _ in 0..20 {
         let cur = engine.current_url().await.unwrap_or_default();
-        if is_signed_in_flow_url(&cur)
-            || cur.contains("/v3/signin/")
-            || cur.contains("/signin/v2/")
-            || cur.contains("/AccountChooser")
-        {
+        if is_signed_in_flow_url(&cur) || is_interactive_signin_url(&cur) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
@@ -167,13 +292,28 @@ async fn ensure_flow_session_url(engine: &ChromeEngine) {
 /// Promotes the interactive Chrome profile into background CDP mode and verifies Google Flow sign-in.
 async fn finalize_promoted_login(engine: &ChromeEngine, start_url: &str) -> Result<Option<Value>> {
     engine.promote_login_chrome(start_url).await?;
-    for iter in 0..30 {
+    let mut about_retries = 0usize;
+    for _ in 0..30 {
         let cur = engine.current_url().await.unwrap_or_default();
+        if is_interactive_signin_url(&cur) {
+            break;
+        }
         if is_about_landing_url(&cur) {
+            if about_retries >= MAX_ABOUT_SSO_RETRIES {
+                break;
+            }
+            about_retries += 1;
             let _ = engine.navigate(FLOW_SSO_URL).await;
             wait_for_sso_redirect(engine).await;
-        } else if is_signed_in_flow_url(&cur) && check_fully_signed_in(engine).await {
-            let count = engine.save_cookies().await?;
+            let after_sso = engine.current_url().await.unwrap_or_default();
+            if is_interactive_signin_url(&after_sso) {
+                break;
+            }
+            continue;
+        }
+        if is_signed_in_flow_url(&cur)
+            && let Some(count) = check_fully_signed_in(engine).await
+        {
             let final_url = engine.current_url().await.unwrap_or_default();
             return Ok(Some(signed_in_login_result(
                 "interactive-chrome",
@@ -181,19 +321,10 @@ async fn finalize_promoted_login(engine: &ChromeEngine, start_url: &str) -> Resu
                 final_url,
             )));
         }
-        if iter >= 12 && (cur.contains("/v3/signin/") || cur.contains("/signin/v2/")) {
-            break;
-        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     engine.shutdown().await;
     Ok(None)
-}
-
-/// Clears `cookies.json` and launches visible Chrome at Google Sign-In.
-async fn start_clean_interactive_login(engine: &ChromeEngine) -> Result<()> {
-    remove_cookies_file();
-    engine.launch_interactive_login(FLOW_SSO_URL).await
 }
 
 /// Signs in to Google Flow using standard Chrome and promotes the session into background CDP Chrome.
@@ -204,46 +335,46 @@ async fn login_with_chrome(
     force: bool,
 ) -> Result<Value> {
     if force {
-        start_clean_interactive_login(engine).await?;
-    } else {
-        if engine.has_login_chrome().await {
-            if let Some(st) = engine.poll_login_chrome().await? {
-                if let Some(rejected) = st.rejected_url {
-                    clear_cookies_and_session(engine).await?;
-                    anyhow::bail!(
-                        "Google Accounts rejected sign-in in this browser session (URL: {}).",
-                        rejected
-                    );
+        crate::instance::acquire_instance_lock()?;
+        remove_cookies_file();
+        engine.launch_interactive_login(FLOW_SSO_URL, true).await?;
+    } else if engine.has_login_chrome().await {
+        if let Some(st) = engine.poll_login_chrome().await? {
+            if let Some(rejected) = st.rejected_url {
+                engine.shutdown().await;
+                anyhow::bail!(
+                    "Google Accounts rejected sign-in in this browser session (URL: {}).",
+                    rejected
+                );
+            }
+            if st.exited || st.has_google_auth_cookies {
+                if let Some(res) = finalize_promoted_login(engine, FLOW_URL).await? {
+                    return Ok(res);
                 }
-                if st.exited || (st.flow_url.is_some() && st.has_google_auth_cookies) {
-                    if let Some(res) = finalize_promoted_login(engine, FLOW_URL).await? {
-                        return Ok(res);
-                    }
-                    if st.exited {
-                        anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
-                    }
+                if st.exited {
+                    anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
                 }
             }
-        } else if has_persisted_session() || engine.has_page().await {
+        }
+        if !engine.has_login_chrome().await {
+            engine.launch_interactive_login(FLOW_SSO_URL, false).await?;
+        }
+    } else {
+        if has_persisted_session() || engine.has_page().await {
             engine.ensure_page().await?;
             ensure_flow_session_url(engine).await;
-            if check_fully_signed_in(engine).await {
-                let count = engine.save_cookies().await?;
+            if let Some(count) = check_fully_signed_in(engine).await {
                 let final_url = engine.current_url().await.unwrap_or_default();
                 return Ok(signed_in_login_result("existing-session", count, final_url));
             }
         }
-
-        if !engine.has_login_chrome().await {
-            start_clean_interactive_login(engine).await?;
-        }
+        engine.launch_interactive_login(FLOW_SSO_URL, false).await?;
     }
 
     if !wait_for_login {
         let st = engine.poll_login_chrome().await?;
         let url = st
-            .as_ref()
-            .and_then(|s| s.flow_url.clone().or_else(|| s.rejected_url.clone()))
+            .and_then(|s| s.rejected_url)
             .unwrap_or_else(|| FLOW_SSO_URL.to_string());
         return Ok(json!({
             "ok": true,
@@ -267,27 +398,25 @@ async fn login_with_chrome(
         };
 
         if let Some(rejected) = st.rejected_url {
-            clear_cookies_and_session(engine).await?;
+            engine.shutdown().await;
             anyhow::bail!(
                 "Google Accounts rejected sign-in in this browser session (URL: {}).",
                 rejected
             );
         }
 
-        if st.exited {
+        if st.exited || st.has_google_auth_cookies {
+            if st.has_google_auth_cookies && !st.exited {
+                tokio::time::sleep(Duration::from_secs(4)).await;
+            }
             if let Some(res) = finalize_promoted_login(engine, FLOW_URL).await? {
                 return Ok(res);
             }
-            anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
-        }
-
-        if st.flow_url.is_some() && st.has_google_auth_cookies {
-            tokio::time::sleep(Duration::from_millis(4000)).await;
-            if let Some(res) = finalize_promoted_login(engine, FLOW_URL).await? {
-                return Ok(res);
+            if st.exited {
+                anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
             }
             anyhow::bail!(
-                "Google Sign-In redirected to Google Flow, but session verification did not succeed. Run flow_login again."
+                "Google Sign-In wrote authentication cookies, but workspace verification did not succeed. Run flow_login again."
             );
         }
 
@@ -331,8 +460,8 @@ pub(crate) async fn handle_login(engine: &ChromeEngine, req: LoginParams) -> Res
             };
             engine.navigate(FLOW_SSO_URL).await?;
             wait_for_sso_redirect(engine).await;
-            let url = engine.current_url().await.unwrap_or_default();
             let signed_in = check_page_signed_in(engine).await;
+            let url = engine.current_url().await.unwrap_or_default();
             if signed_in {
                 let _ = engine.save_cookies().await;
             }
@@ -355,10 +484,12 @@ pub(crate) async fn handle_login(engine: &ChromeEngine, req: LoginParams) -> Res
             }))
         }
         "status" => {
+            let mut promotion_attempted = false;
             if engine.has_login_chrome().await
                 && let Some(st) = engine.poll_login_chrome().await?
             {
-                if st.exited || (st.flow_url.is_some() && st.has_google_auth_cookies) {
+                if st.exited || st.has_google_auth_cookies {
+                    promotion_attempted = true;
                     let _ = finalize_promoted_login(engine, FLOW_URL).await;
                 } else {
                     return Ok(json!({
@@ -370,30 +501,35 @@ pub(crate) async fn handle_login(engine: &ChromeEngine, req: LoginParams) -> Res
                         "cdpEndpoint": Value::Null,
                         "cookiesSaved": cookies_path().is_file(),
                         "profileDir": chrome_profile_dir().to_string_lossy(),
-                        "url": st.flow_url.or(st.rejected_url).unwrap_or_else(|| FLOW_SSO_URL.to_string()),
+                        "url": st.rejected_url.unwrap_or_else(|| FLOW_SSO_URL.to_string()),
                         "signedIn": false,
                     }));
                 }
             }
             let session_saved = has_persisted_session();
             let mut page_ready = engine.has_page().await;
-            if !page_ready && session_saved && engine.ensure_page().await.is_ok() {
+            if !promotion_attempted
+                && !page_ready
+                && session_saved
+                && engine.ensure_page().await.is_ok()
+            {
                 ensure_flow_session_url(engine).await;
                 page_ready = engine.has_page().await;
             }
+            let signed_in = if page_ready {
+                check_page_auth(engine, false)
+                    .await
+                    .get("signed_in")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
             let url = if page_ready {
                 engine.current_url().await.unwrap_or_default()
             } else {
                 String::new()
             };
-            let signed_in = if page_ready {
-                check_page_signed_in(engine).await
-            } else {
-                false
-            };
-            if signed_in {
-                let _ = engine.save_cookies().await;
-            }
             Ok(json!({
                 "ok": true,
                 "action": "status",

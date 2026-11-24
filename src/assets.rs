@@ -11,15 +11,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Duration, Instant};
 
-use crate::collection_page::{delete_collection_through_page, rename_collection_through_page};
 use crate::collections::{FlowCollection, find_collection};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
-use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
+use crate::project::{ensure_flow_store, read_snapshot};
 use crate::project_store::ProjectStoreSession;
 use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu};
 
@@ -36,7 +34,7 @@ pub(crate) struct FlowAsset {
     pub(crate) id: String,
     /// Asset display name (`displayName` in the tile store).
     pub(crate) name: String,
-    /// Asset kind (`"video"`, `"image"`, `"scene"`, or `"character"`).
+    /// Asset kind (`"video"`, `"image"`, `"audio"`, `"scene"`, or `"character"`).
     pub(crate) kind: String,
     /// Generation prompt for the asset.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,7 +124,7 @@ pub(crate) struct AssetsParams {
     pub(crate) files: Option<Vec<String>>,
     /// Case-insensitive substring that matches asset ID, name, or prompt.
     pub(crate) query: Option<String>,
-    /// Asset kind filter: "image", "video", "scene", "character", or "all" (default).
+    /// Asset kind filter: "image", "video", "audio", "scene", "character", or "all" (default).
     pub(crate) kind: Option<String>,
     /// Collection filter: collection ID, name substring, "all", "none", or "uncollected".
     pub(crate) collection: Option<String>,
@@ -160,7 +158,7 @@ pub(crate) struct TrashParams {
     pub(crate) r#match: String,
 }
 
-/// Resolves missing direct media URLs on finished image or video tiles through `as29s` RPCs.
+/// Resolves missing direct media URLs on finished media and character tiles through `as29s` RPCs.
 async fn populate_missing_media_urls(
     engine: &ChromeEngine,
     assets: &mut [FlowAsset],
@@ -168,8 +166,10 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
-        if !matches!(asset.kind.as_str(), "video" | "image")
-            || asset.url.is_some()
+        if !matches!(
+            asset.kind.as_str(),
+            "video" | "image" | "character" | "audio"
+        ) || asset.url.is_some()
             || asset.media_error.is_some()
             || matches!(
                 asset.media_status.as_deref(),
@@ -195,32 +195,49 @@ async fn populate_missing_media_urls(
             let timeout_ms = deadline.and_then(|at| {
                 u64::try_from(at.saturating_duration_since(Instant::now()).as_millis()).ok()
             });
-            let resolved = eval_resolve_media_url(engine, &media_id, timeout_ms)
+            let (resolved, media_kind) = eval_resolve_media_url(engine, &media_id, timeout_ms)
                 .await
-                .and_then(|val| {
-                    val.get("url")
+                .map(|val| {
+                    let url = val
+                        .get("url")
                         .and_then(|v| v.as_str())
                         .map(str::trim)
                         .filter(|u| u.starts_with("http"))
-                        .map(str::to_string)
-                });
-            (indices, resolved)
+                        .map(str::to_string);
+                    let kind = val
+                        .get("media_kind")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    (url, kind)
+                })
+                .unwrap_or((None, None));
+            (indices, resolved, media_kind)
         })
         .buffer_unordered(MEDIA_URL_LOOKUPS);
     futures_util::pin_mut!(lookups);
-    while let Some((indices, url)) = lookups.next().await {
+    while let Some((indices, url, media_kind)) = lookups.next().await {
         for index in indices {
-            assets[index].url = url.clone();
+            if let Some(ref resolved_url) = url {
+                assets[index].url = Some(resolved_url.clone());
+            }
+            if assets[index].kind == "image" && media_kind.as_deref() == Some("audio") {
+                assets[index].kind = "audio".to_string();
+            }
         }
     }
 }
 
-/// Reads the active project's metadata and full asset list in one snapshot call.
+/// Reads the active project's metadata and full asset list within the URL lookup time limit.
 pub(crate) async fn list_assets_with_project(
     engine: &ChromeEngine,
 ) -> Result<ProjectAssetsSnapshot> {
     let mut snapshot = read_project_assets(engine).await?;
-    populate_missing_media_urls(engine, &mut snapshot.assets, None).await;
+    let deadline = Instant::now() + ASSET_LIST_URL_BUDGET;
+    let _ = tokio::time::timeout_at(
+        deadline,
+        populate_missing_media_urls(engine, &mut snapshot.assets, Some(deadline)),
+    )
+    .await;
     Ok(snapshot)
 }
 
@@ -296,7 +313,7 @@ pub(crate) async fn resolve_asset(
     include_prompt: bool,
     context_label: &str,
 ) -> Result<(FlowAsset, Option<String>, Option<String>)> {
-    let snap = list_assets_with_project(engine).await?;
+    let snap = read_project_assets(engine).await?;
     let target = match_asset(&snap.assets, match_str, include_prompt)
         .cloned()
         .with_context(|| {
@@ -322,6 +339,8 @@ pub(crate) async fn list_assets(
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
     let k_filter = request.kind.as_deref().unwrap_or("all");
+    let resolve_urls = request.resolve_urls.unwrap_or(true);
+    let classify_media = resolve_urls && matches!(k_filter, "image" | "audio");
     let col_filter = request
         .collection
         .as_deref()
@@ -330,7 +349,9 @@ pub(crate) async fn list_assets(
     let mut filtered: Vec<FlowAsset> = all
         .into_iter()
         .filter(|a| {
-            if k_filter != "all" && a.kind != k_filter {
+            let possible_audio =
+                classify_media && k_filter == "audio" && a.kind == "image" && a.url.is_none();
+            if k_filter != "all" && a.kind != k_filter && !possible_audio {
                 return false;
             }
             if let Some(q) = &q_lower {
@@ -358,10 +379,10 @@ pub(crate) async fn list_assets(
         })
         .collect();
 
-    if let Some(lim) = request.limit {
+    if !classify_media && let Some(lim) = request.limit {
         filtered.truncate(lim);
     }
-    if request.resolve_urls.unwrap_or(true) {
+    if resolve_urls {
         let deadline = Instant::now() + ASSET_LIST_URL_BUDGET;
         let _ = tokio::time::timeout_at(
             deadline,
@@ -369,70 +390,78 @@ pub(crate) async fn list_assets(
         )
         .await;
     }
+    if classify_media {
+        filtered.retain(|a| a.kind == k_filter);
+        if let Some(lim) = request.limit {
+            filtered.truncate(lim);
+        }
+    }
     Ok(filtered)
 }
 
-/// Checks whether the project snapshot shows the requested name for an asset or collection.
+/// Checks whether the asset snapshot shows the requested name.
 fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
-    ["assets", "collections"].into_iter().any(|section| {
-        snap.get(section)
-            .and_then(Value::as_array)
-            .is_some_and(|items| {
-                items.iter().any(|item| {
-                    item.get("id").and_then(Value::as_str) == Some(id)
-                        && item.get("name").and_then(Value::as_str) == Some(name)
-                })
+    snap.get("assets")
+        .and_then(Value::as_array)
+        .is_some_and(|assets| {
+            assets.iter().any(|item| {
+                item.get("id").and_then(Value::as_str) == Some(id)
+                    && item.get("name").and_then(Value::as_str) == Some(name)
             })
-    })
+        })
 }
 
-/// Renames media, character, scene, and collection tiles without requiring an upfront direct store session.
+/// Polls project snapshots after a settle delay to confirm that `id` holds `name`.
+async fn confirm_renamed_asset(engine: &ChromeEngine, id: &str, name: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    while Instant::now() < deadline {
+        if let Ok(snap) = read_snapshot(engine).await
+            && snapshot_has_renamed(&snap, id, name)
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Ok(settled) = read_snapshot(engine).await
+                && snapshot_has_renamed(&settled, id, name)
+            {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
+}
+
+/// Renames collections through the collection store and other tiles through the page or store.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
-    let mut store_lock = Some(engine.lock_project_store().await);
-    ensure_flow_store(engine).await?;
+    let collections = ProjectStoreSession::open(engine).await?;
     let total = items.len();
     let mut renamed = Vec::new();
     let mut failed = Vec::new();
+    let mut asset_store_ready = false;
 
     'items: for (idx, entry) in items.into_iter().enumerate() {
-        if store_lock.is_none() {
-            store_lock = Some(engine.lock_project_store().await);
-            ensure_flow_store(engine).await?;
-        }
-        let state = tile_state(engine, &entry.id).await;
-        if state.is_present() && state.kind == "collection" {
-            match rename_collection_through_page(engine, &entry.id, &entry.name).await {
-                Ok(result) => {
-                    renamed.push(json!({
-                        "id": entry.id,
-                        "name": entry.name,
-                        "method": result["method"],
-                    }));
-                    if idx + 1 < total {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                    }
-                    continue 'items;
+        match collections.is_collection(&entry.id).await {
+            Ok(false) => {}
+            Ok(true) => {
+                match collections.rename(&entry.id, &entry.name).await {
+                    Ok(result) => renamed.push(json!({
+                        "id": entry.id, "name": entry.name, "method": result["method"]
+                    })),
+                    Err(err) => failed.push(rename_error(&entry, &err)),
                 }
-                Err(page_err) => {
-                    drop(store_lock.take());
-                    let direct = match ProjectStoreSession::open(engine).await {
-                        Ok(session) => session.rename(&entry.id, &entry.name).await,
-                        Err(_) => Err(page_err),
-                    };
-                    match direct {
-                        Ok(result) => renamed.push(json!({
-                            "id": entry.id,
-                            "name": entry.name,
-                            "method": result["method"],
-                        })),
-                        Err(err) => failed.push(rename_error(&entry, &err)),
-                    }
-                    continue 'items;
-                }
+                continue 'items;
+            }
+            Err(err) => {
+                failed.push(rename_error(&entry, &err));
+                continue 'items;
             }
         }
+        if !asset_store_ready {
+            ensure_flow_store(engine).await?;
+            asset_store_ready = true;
+        }
         // Use the rename control of the page first. The page then builds its own mutation.
-        if state.is_present()
+        if tile_state(engine, &entry.id).await.is_present()
             && matches!(
                 rename_through_menu(engine, &entry.id, &entry.name).await,
                 Ok(true)
@@ -446,8 +475,6 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
         }
         let mut ok = false;
         for attempt in 0..2 {
-            // Subscribe before calling rename so the listener catches store RPC responses.
-            let mut rx = engine.subscribe_network().await?;
             let res = engine
                 .call_flow_async(
                     "assetOps",
@@ -462,43 +489,7 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
                 failed.push(json!({ "id": entry.id, "name": entry.name, "error": e }));
                 continue 'items;
             }
-
-            let mut confirmed = read_snapshot(engine)
-                .await
-                .is_ok_and(|snap| snapshot_has_renamed(&snap, &entry.id, &entry.name));
-
-            if !confirmed {
-                let deadline = Instant::now() + Duration::from_secs(6);
-                loop {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        break;
-                    }
-                    let slice = remaining.min(Duration::from_millis(500));
-                    match tokio::time::timeout(slice, rx.recv()).await {
-                        Ok(Ok(ev)) => {
-                            if is_flow_mutation_rpc_ok(&ev) {
-                                confirmed = true;
-                                break;
-                            }
-                        }
-                        Ok(Err(RecvError::Lagged(_))) => continue,
-                        Ok(Err(RecvError::Closed)) => break,
-                        Err(_) => {
-                            if let Ok(snap) = read_snapshot(engine).await
-                                && snapshot_has_renamed(&snap, &entry.id, &entry.name)
-                            {
-                                confirmed = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if !confirmed && let Ok(snap) = read_snapshot(engine).await {
-                confirmed = snapshot_has_renamed(&snap, &entry.id, &entry.name);
-            }
-            if confirmed {
+            if confirm_renamed_asset(engine, &entry.id, &entry.name).await {
                 ok = true;
                 break;
             }
@@ -530,29 +521,10 @@ fn rename_error(entry: &RenameEntry, err: &anyhow::Error) -> Value {
     json!({ "id": entry.id, "name": entry.name, "error": format!("{err:#}") })
 }
 
-/// Deletes a collection through page controls first and falls back to the direct store session.
-async fn invoke_trash_collection(
-    engine: &ChromeEngine,
-    store_lock: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
-    id: &str,
-) -> Result<Value> {
-    match delete_collection_through_page(engine, id).await {
-        Ok(result) => Ok(result),
-        Err(err) if format!("{err:#}").contains("collection_has_child_collections") => Err(err),
-        Err(page_err) => {
-            drop(store_lock.take());
-            match ProjectStoreSession::open(engine).await {
-                Ok(session) => session.delete(id).await,
-                Err(_) => Err(page_err),
-            }
-        }
-    }
-}
-
-/// Moves a non-collection tile to trash through its context menu or a direct store session.
+/// Moves an asset to trash through the tile menu or the pinned project store.
 async fn invoke_trash_tile(
     engine: &ChromeEngine,
-    store_lock: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+    session: &ProjectStoreSession<'_>,
     id: &str,
 ) -> Result<Value> {
     let menu_error =
@@ -569,14 +541,6 @@ async fn invoke_trash_tile(
         } else {
             None
         };
-    drop(store_lock.take());
-    let session = ProjectStoreSession::open(engine).await.map_err(|err| {
-        if let Some(menu_err) = &menu_error {
-            anyhow::anyhow!("{err:#} (menu fallback: {menu_err})")
-        } else {
-            err
-        }
-    })?;
     let mut result = session
         .call("trashAssetOp", json!(id), Some("trash asset"))
         .await?;
@@ -588,38 +552,32 @@ async fn invoke_trash_tile(
     Ok(result)
 }
 
-/// Moves a matching asset, character, scene, or collection to trash without requiring an upfront store session.
+/// Moves a matching asset, character, scene, or collection to trash through the Flow store.
 pub(crate) async fn trash_asset(
     engine: &ChromeEngine,
     db: &FlowDb,
     match_str: &str,
 ) -> Result<Value> {
-    let mut store_lock = Some(engine.lock_project_store().await);
-    let snap = read_snapshot(engine).await?;
+    let collections = ProjectStoreSession::open(engine).await?;
     let query = match_str.trim();
-    let collections: Vec<FlowCollection> = serde_json::from_value(
-        snap.get("collections")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    )?;
-    if let Some(exact_col) = collections.iter().find(|c| c.id == query) {
-        return invoke_trash_collection(engine, &mut store_lock, &exact_col.id).await;
+    if collections.is_collection(query).await? {
+        return collections.delete(query).await;
     }
 
-    let assets: Vec<FlowAsset> = serde_json::from_value(
-        snap.get("assets")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    )?;
-    let Some(asset) = match_asset(&assets, query, true).cloned() else {
-        let collection = find_collection(&collections, query, true)?
+    let mut tiles = collections
+        .run_collections(json!({ "action": "assets" }))
+        .await?;
+    let assets: Vec<FlowAsset> = serde_json::from_value(tiles["assets"].take())?;
+    let Some(asset) = match_asset(&assets, query, true) else {
+        let summaries: Vec<FlowCollection> = serde_json::from_value(tiles["collections"].take())?;
+        let collection = find_collection(&summaries, query, true)?
             .with_context(|| format!("No asset or collection matches '{query}' for flow_trash"))?;
-        return invoke_trash_collection(engine, &mut store_lock, &collection.id).await;
+        return collections.delete(&collection.id).await;
     };
 
     let id = &asset.id;
     let is_character = asset.kind == "character";
-    let res = invoke_trash_tile(engine, &mut store_lock, id)
+    let res = invoke_trash_tile(engine, &collections, id)
         .await
         .map_err(|err| anyhow::anyhow!("Failed to trash '{id}': {err:#}"))?;
     if is_character {

@@ -8,10 +8,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::collection_page::{
-    add_to_collection_through_page, create_collection_through_page, delete_collection_through_page,
-    remove_from_collection_through_page, rename_collection_through_page, snapshot_collections,
-};
 use crate::engine::ChromeEngine;
 use crate::project_store::ProjectStoreSession;
 
@@ -23,7 +19,7 @@ pub(crate) struct FlowCollection {
     /// Collection display name.
     pub(crate) name: String,
     /// Asset count in this collection.
-    pub(crate) count: usize,
+    count: usize,
 }
 
 /// Parameters for `flow_collections`.
@@ -59,6 +55,14 @@ impl ProjectStoreSession<'_> {
     async fn list(&self) -> Result<Vec<FlowCollection>> {
         let mut value = self.run_collections(json!({ "action": "list" })).await?;
         Ok(serde_json::from_value(value["collections"].take())?)
+    }
+
+    /// Returns true when the tile ID belongs to a collection.
+    pub(crate) async fn is_collection(&self, id: &str) -> Result<bool> {
+        let res = self
+            .run_collections(json!({ "action": "inspect", "id": id }))
+            .await?;
+        Ok(res.get("collection").and_then(Value::as_bool) == Some(true))
     }
 
     /// Requests a verified rename for a collection ID.
@@ -122,7 +126,7 @@ impl ProjectStoreSession<'_> {
 }
 
 /// Returns the only collection in a set of matches, if one exists.
-pub(crate) fn find_unique_collection<'a>(
+fn find_unique_collection<'a>(
     mut matches: impl Iterator<Item = &'a FlowCollection>,
     query: &str,
 ) -> Result<Option<&'a FlowCollection>> {
@@ -164,37 +168,13 @@ pub(crate) fn find_collection<'a>(
     )
 }
 
-/// Returns the requested collection from the direct store session or reports a missing target.
+/// Returns the requested collection or reports a missing target.
 async fn require_collection(session: &ProjectStoreSession<'_>, query: &str) -> Result<String> {
     let collections = session.list().await?;
     Ok(find_collection(&collections, query.trim(), false)?
         .with_context(|| format!("Collection not found: {query}"))?
         .id
         .clone())
-}
-
-/// Returns the requested collection from the project snapshot or reports a missing target.
-async fn require_snapshot_collection(engine: &ChromeEngine, query: &str) -> Result<String> {
-    let collections = snapshot_collections(engine).await?;
-    Ok(find_collection(&collections, query.trim(), false)?
-        .with_context(|| format!("Collection not found: {query}"))?
-        .id
-        .clone())
-}
-
-/// Returns true when a direct collection error can fall back to page controls.
-fn is_collection_fallback_eligible(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}");
-    if msg.contains("outcome_unknown") {
-        return false;
-    }
-    msg.contains("unsupported_front_end")
-        || msg.contains("collection_store_not_bound")
-        || msg.contains("ambiguous_collection_store")
-        || msg.contains("collection_delete_unavailable")
-        || msg.contains("project_store_changed")
-        || msg.contains("project_changed")
-        || msg.contains("Open a Google Flow project")
 }
 
 /// Returns the nonempty list of asset IDs for a move request.
@@ -209,28 +189,14 @@ pub(crate) async fn handle_collections(
     engine: &ChromeEngine,
     req: CollectionsParams,
 ) -> Result<Value> {
+    let session = ProjectStoreSession::open(engine).await?;
     match req.action.as_str() {
-        "list" => {
-            let _guard = engine.lock_project_store().await;
-            Ok(json!({ "collections": snapshot_collections(engine).await? }))
-        }
+        "list" => Ok(json!({ "collections": session.list().await? })),
         "create" => {
             let name = req
                 .name
                 .context("flow_collections create requires 'name'")?;
-            let direct = async {
-                let session = ProjectStoreSession::open(engine).await?;
-                session.create(&name).await
-            }
-            .await;
-            match direct {
-                Ok(val) => Ok(val),
-                Err(err) if is_collection_fallback_eligible(&err) => {
-                    let _guard = engine.lock_project_store().await;
-                    create_collection_through_page(engine, &name).await
-                }
-                Err(err) => Err(err),
-            }
+            session.create(&name).await
         }
         "rename" => {
             let from = req
@@ -239,21 +205,8 @@ pub(crate) async fn handle_collections(
             let to = req.to.context("flow_collections rename requires 'to'")?;
             let to = to.trim();
             anyhow::ensure!(!to.is_empty(), "Target collection name must not be empty");
-            let direct = async {
-                let session = ProjectStoreSession::open(engine).await?;
-                let id = require_collection(&session, &from).await?;
-                session.rename(&id, to).await
-            }
-            .await;
-            let mut result = match direct {
-                Ok(val) => val,
-                Err(err) if is_collection_fallback_eligible(&err) => {
-                    let _guard = engine.lock_project_store().await;
-                    let id = require_snapshot_collection(engine, &from).await?;
-                    rename_collection_through_page(engine, &id, to).await?
-                }
-                Err(err) => return Err(err),
-            };
+            let id = require_collection(&session, &from).await?;
+            let mut result = session.rename(&id, to).await?;
             result["renamed"] = json!(true);
             result["from"] = json!(from);
             result["to"] = json!(to);
@@ -263,36 +216,14 @@ pub(crate) async fn handle_collections(
             let target = req
                 .collection
                 .context("flow_collections add requires 'collection'")?;
-            let ids = move_ids(req.ids, "add")?;
-            let direct = async {
-                let session = ProjectStoreSession::open(engine).await?;
-                session.move_assets(ids.clone(), Some(&target)).await
-            }
-            .await;
-            match direct {
-                Ok(val) => Ok(val),
-                Err(err) if is_collection_fallback_eligible(&err) => {
-                    let _guard = engine.lock_project_store().await;
-                    add_to_collection_through_page(engine, &ids, &target).await
-                }
-                Err(err) => Err(err),
-            }
+            session
+                .move_assets(move_ids(req.ids, "add")?, Some(&target))
+                .await
         }
         "remove" => {
-            let ids = move_ids(req.ids, "remove")?;
-            let direct = async {
-                let session = ProjectStoreSession::open(engine).await?;
-                session.move_assets(ids.clone(), None).await
-            }
-            .await;
-            match direct {
-                Ok(val) => Ok(val),
-                Err(err) if is_collection_fallback_eligible(&err) => {
-                    let _guard = engine.lock_project_store().await;
-                    remove_from_collection_through_page(engine, &ids).await
-                }
-                Err(err) => Err(err),
-            }
+            session
+                .move_assets(move_ids(req.ids, "remove")?, None)
+                .await
         }
         "delete" => {
             let target = req
@@ -300,21 +231,8 @@ pub(crate) async fn handle_collections(
                 .or(req.name)
                 .or(req.from)
                 .context("flow_collections delete requires 'collection', 'name', or 'from'")?;
-            let direct = async {
-                let session = ProjectStoreSession::open(engine).await?;
-                let id = require_collection(&session, &target).await?;
-                session.delete(&id).await
-            }
-            .await;
-            match direct {
-                Ok(val) => Ok(val),
-                Err(err) if is_collection_fallback_eligible(&err) => {
-                    let _guard = engine.lock_project_store().await;
-                    let id = require_snapshot_collection(engine, &target).await?;
-                    delete_collection_through_page(engine, &id).await
-                }
-                Err(err) => Err(err),
-            }
+            let id = require_collection(&session, &target).await?;
+            session.delete(&id).await
         }
         other => anyhow::bail!("Unknown collections action: {other}"),
     }

@@ -4,6 +4,7 @@
 //! CLI entry point for repository checks and CI gates.
 
 mod ci;
+mod contracts;
 mod examples;
 mod forbidden;
 mod headers;

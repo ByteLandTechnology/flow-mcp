@@ -4,7 +4,8 @@
 // Write and confirm character personality notes in the project store.
 
 import { readOwn } from "./angular";
-import { delay, findSnackbarMatch, isTrashedTile, setNativeValue } from "./dom";
+import { isTrashedTile } from "./dom";
+import { snapshotFormat } from "./frontend_builds";
 import { characterBioCompatibility } from "./frontend_compatibility";
 import {
   mutateAndVerify,
@@ -14,7 +15,6 @@ import {
   readProjectStore,
   refreshAfterUnknown,
 } from "./project_store";
-import { runtimeState } from "./state";
 import type { FlowTile } from "./types";
 
 /** Arguments for an operation on character personality notes. */
@@ -31,21 +31,45 @@ function entityField(message: unknown, field: number): unknown {
     : readOwn(sparse, String(field)) ?? message[field - 1];
 }
 
-/** Reads the notes from the character entity. Returns null when the entity cannot be read. */
-export function characterPersonalityNotes(tile: FlowTile): string | null {
-  const entity = readOwn(tile, "Rc");
+/** Extracts the serialized `character_info` protobuf array from a character tile. */
+function characterInfoMessage(tile: FlowTile): unknown[] | null {
+  const format = snapshotFormat()?.character;
+  const entity = readOwn(tile, format?.entity ?? "Rc");
   const serialize = readOwn(entity, "toJSON");
   if (typeof serialize !== "function") return null;
   try {
-    // The nested fields are entity_info (4), character_info (3), and personality_notes (3).
-    const info = entityField(entityField(serialize.call(entity), 4), 3);
-    if (!Array.isArray(info)) return null;
-    const notes = entityField(info, 3);
-    if (notes == null) return "";
-    return typeof notes === "string" ? notes : null;
+    const root = serialize.call(entity);
+    const info = entityField(
+      entityField(root, format?.entityInfoField ?? 4),
+      format?.characterInfoField ?? 3,
+    );
+    return Array.isArray(info) ? info : null;
   } catch {
     return null;
   }
+}
+
+/** Reads the notes from the character entity. Returns null when the entity cannot be read. */
+export function characterPersonalityNotes(tile: FlowTile): string | null {
+  const info = characterInfoMessage(tile);
+  if (!info) return null;
+  const notes = entityField(info, snapshotFormat()?.character.notesField ?? 3);
+  if (notes == null) return "";
+  return typeof notes === "string" ? notes : null;
+}
+
+/** Reads the assigned preset or custom voice ID from `character_info.audio_references`. */
+export function characterVoice(tile: FlowTile): string | null {
+  const info = characterInfoMessage(tile);
+  if (!info) return null;
+  const format = snapshotFormat()?.character;
+  const refs = entityField(info, format?.audioReferencesField ?? 2);
+  if (!Array.isArray(refs) || refs.length === 0) return null;
+  const first = refs[0];
+  const preset = entityField(first, format?.presetVoiceField ?? 2);
+  if (typeof preset === "string" && preset) return preset;
+  const custom = entityField(first, format?.customVoiceField ?? 1);
+  return typeof custom === "string" && custom ? custom : null;
 }
 
 /** Returns true for a character that can receive new notes. */
@@ -103,108 +127,4 @@ export async function characterBioOp(
   return after
     ? { ok: true }
     : { ok: false, error: "outcome_unknown", stage: "set_character_bio", project_id: projectId, id };
-}
-
-/** Finds the rendered personality notes textarea in the open character editor. */
-function findPersonalityTextarea(): HTMLTextAreaElement | null {
-  const candidates = Array.from(
-    document.querySelectorAll<HTMLTextAreaElement>(
-      'textarea[aria-label="Character personality"], flow-character-form textarea',
-    ),
-  );
-  return (
-    candidates.find((el) => {
-      const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0 && !el.disabled && !el.closest("[inert]");
-    }) ?? null
-  );
-}
-
-/** Reads personality notes from a store tile across protobuf and flat fields. */
-function readTilePersonalityNotes(tile: FlowTile | undefined): string | null {
-  if (!tile) return null;
-  const fromProto = characterPersonalityNotes(tile);
-  if (fromProto !== null) return fromProto;
-  if (typeof tile.personalityNotes === "string") return tile.personalityNotes;
-  if (typeof tile.Mv === "string") return tile.Mv;
-  return null;
-}
-
-/** Returns true when the discovered store queue still holds pending mutations. */
-function storeQueuePending(): boolean {
-  const svc = runtimeState.lService;
-  const getters = [svc?.lc?.ka, svc?._ap?.lc?.ka, svc?.ha?.lc?.ka];
-  for (const ka of getters) {
-    if (typeof ka !== "function") continue;
-    try {
-      const q = ka();
-      if (Array.isArray(q?.items) && q.items.length > 0) return true;
-    } catch {
-      // Ignore unreadable queue handles.
-    }
-  }
-  return false;
-}
-
-/** Saves and confirms character personality notes through the open character editor view. */
-export async function characterBioEditorOp(bio: string): Promise<unknown> {
-  let textarea: HTMLTextAreaElement | null = null;
-  for (let i = 0; i < 25; i++) {
-    textarea = findPersonalityTextarea();
-    if (textarea) break;
-    await delay(200);
-  }
-  if (!textarea) {
-    return { ok: false, error: "character_bio_editor_not_found" };
-  }
-
-  const expected = bio.trim();
-  const routeCharId = /\/character\/([^/?#]+)/.exec(location.pathname || "")?.[1] ?? null;
-  textarea.scrollIntoView({ block: "center" });
-  textarea.focus();
-  setNativeValue(textarea, bio, true);
-
-  let blurFired = false;
-  const onBlur = (): void => {
-    blurFired = true;
-  };
-  textarea.addEventListener("blur", onBlur, { once: true });
-  textarea.blur();
-  textarea.removeEventListener("blur", onBlur);
-  if (!blurFired) {
-    textarea.dispatchEvent(new FocusEvent("blur", { bubbles: false }));
-    textarea.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-  }
-
-  await delay(400);
-  for (let i = 0; i < 24; i++) {
-    const snackErr = findSnackbarMatch(/failed|error|unable|couldn't/i);
-    if (snackErr) {
-      return { ok: false, error: "character_bio_save_failed", detail: snackErr };
-    }
-    const live = findPersonalityTextarea() ?? textarea;
-    if (live.value.trim() !== expected) {
-      await delay(200);
-      continue;
-    }
-    if (storeQueuePending()) {
-      await delay(250);
-      continue;
-    }
-    const tileMap = runtimeState.store?.getTileMap?.();
-    const tile = routeCharId && tileMap instanceof Map ? tileMap.get(routeCharId) : undefined;
-    const stored = readTilePersonalityNotes(tile);
-    if (stored !== null) {
-      if (stored.trim() === expected) {
-        return { ok: true, confirmed: true, bio: live.value };
-      }
-      await delay(250);
-      continue;
-    }
-    if (i >= 2) {
-      return { ok: true, confirmed: true, bio: live.value };
-    }
-    await delay(250);
-  }
-  return { ok: false, error: "character_bio_not_confirmed" };
 }

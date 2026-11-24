@@ -15,7 +15,6 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::{Duration, sleep};
 
 use crate::agent_settings::{AgentSettingsPatch, has_text};
-use crate::config::FLOW_URL;
 use crate::engine::{BackgroundPage, ChromeEngine, checked_runtime_result};
 use crate::project::project_workspace_url;
 use crate::queue::JobQueue;
@@ -237,22 +236,6 @@ impl AgentParams {
                 | AgentAction::GetTurn
         )
     }
-
-    /// Returns the front-end compatibility gate that this request requires.
-    fn compatibility_operation(&self) -> &'static str {
-        match self.action {
-            AgentAction::GetSettings | AgentAction::UpdateSettings => "agent_settings",
-            _ if self.files.as_ref().is_some_and(|files| !files.is_empty())
-                || self
-                    .asset_ids
-                    .as_ref()
-                    .is_some_and(|asset_ids| !asset_ids.is_empty()) =>
-            {
-                "agent_attachments"
-            }
-            _ => "agent_chat",
-        }
-    }
 }
 
 /// Returns true for IDs that can be one Flow URL segment.
@@ -276,6 +259,8 @@ struct AgentPage {
     page: Arc<BackgroundPage>,
     /// Project loaded in this page.
     project_id: String,
+    /// Workspace URL that identifies the Flow host, route prefix, and Google account.
+    workspace_url: String,
 }
 
 impl AgentChat {
@@ -305,12 +290,12 @@ impl AgentChat {
             *state = Some(AgentPage {
                 page,
                 project_id: String::new(),
+                workspace_url: String::new(),
             });
         }
+        let reference_url = engine.current_url().await.unwrap_or_default();
         let agent = state.as_mut().context("Agent page unavailable")?;
-        agent
-            .open(&request.project_id, request.compatibility_operation())
-            .await?;
+        agent.open(&reference_url, &request.project_id).await?;
         let mut args = serde_json::to_value(&request)?;
         if let Some(fields) = args.as_object_mut() {
             fields.remove("files");
@@ -380,17 +365,11 @@ impl AgentChat {
 
 impl AgentPage {
     /// Loads the project and binds its Agent service.
-    async fn open(&mut self, project_id: &str, operation: &str) -> Result<()> {
-        if self.project_id == project_id
+    async fn open(&mut self, reference_url: &str, project_id: &str) -> Result<()> {
+        let route = project_workspace_url(reference_url, project_id);
+        if self.workspace_url == route
             && self.page.call("agentBound", json!([project_id])).await? == Value::Bool(true)
         {
-            let status = self
-                .page
-                .call("agentStatus", json!([project_id, operation]))
-                .await?;
-            if status["error"].as_str() == Some("unsupported_front_end") {
-                checked_runtime_result(status)?;
-            }
             return Ok(());
         }
         if !self.project_id.is_empty() {
@@ -400,19 +379,16 @@ impl AgentPage {
                 self.project_id
             );
         }
-        let route = project_workspace_url(FLOW_URL, project_id);
         self.page.navigate(&route).await?;
         self.project_id.clear();
+        self.workspace_url.clear();
         let mut last = Value::Null;
         for _ in 0..BIND_ATTEMPTS {
-            if let Ok(status) = self
-                .page
-                .call("agentStatus", json!([project_id, operation]))
-                .await
-            {
+            if let Ok(status) = self.page.call("agentStatus", json!([project_id])).await {
                 if status["ok"].as_bool() == Some(true) {
                     if self.page.bind_agent(project_id).await? {
                         self.project_id = project_id.to_string();
+                        self.workspace_url = route;
                         return Ok(());
                     }
                 } else if status["error"].as_str() == Some("unsupported_front_end") {

@@ -16,7 +16,7 @@ import {
 } from "./agent_chat";
 import { bindAngularViews } from "./angular";
 import { attachIngredients } from "./attach_ingredients";
-import { characterBioEditorOp, characterBioOp } from "./character_bio";
+import { characterBioOp } from "./character_bio";
 import { characterExtraOp } from "./character_extra";
 import { characterMediaOp } from "./character_media";
 import { characterOp } from "./character_ops";
@@ -27,7 +27,7 @@ import { bindProjectStore, projectStoreStatus } from "./project_store";
 import { discoverStore } from "./discover_store";
 import { fetchMedia } from "./fetch_media";
 import { readBuildLabel } from "./frontend_builds";
-import { probeStore } from "./frontend_compatibility";
+import { probeBuild, probeStore } from "./frontend_compatibility";
 import { openEditAsset } from "./open_edit_asset";
 import { uploadUiAction } from "./open_upload_trigger";
 import { tileDomOp } from "./tile_dom";
@@ -46,6 +46,7 @@ if (!window.__flowMcp) {
   window.__flowMcp = {
     checkAuth,
     buildLabel: readBuildLabel,
+    probeBuild,
     probeStore,
     locatePoint,
     tileDomOp,
@@ -79,7 +80,6 @@ if (!window.__flowMcp) {
     videoOp,
     characterOp,
     characterBioOp,
-    characterBioEditorOp,
     characterVoiceOp,
     characterMediaOp,
     characterExtraOp,

@@ -3,11 +3,44 @@
 
 // Trim Flow videos and drive the scene builder extend workflow.
 
-import { createScene, findRouter } from "./angular";
-import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import { buildProjectUrl, createScene, findRouter, navigateSpa, readAngularTooltip, withLViewMapCapture } from "./angular";
+import { findComposerWarning } from "./composer";
+import { delay, elText, hoverProbe, isDisabledProp, isVisibleEnabled, legacyTile, videoTrimBounds } from "./dom";
+import { activeProjectStoreFormat } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, VideoOpRequest } from "./types";
+
+/** Checks whether an observed start trim bound matches the requested start time. */
+function startBoundMatches(
+  actual: number | null,
+  expected: number | null,
+): boolean {
+  if (expected === null || Math.abs(expected) <= 0.01) {
+    return actual === null || Math.abs(actual) <= 0.01;
+  }
+  return typeof actual === "number" && Math.abs(actual - expected) <= 0.01;
+}
+
+/** Checks whether an observed end trim bound matches the requested end time. */
+function endBoundMatches(
+  actual: number | null,
+  expected: number | null,
+  before: number | null,
+  duration: number | null,
+): boolean {
+  if (expected === null) {
+    if (actual === null) return true;
+    return (
+      typeof actual === "number" &&
+      typeof duration === "number" &&
+      duration > 0 &&
+      (before === null || Math.abs(before - duration) > 0.01) &&
+      Math.abs(actual - duration) <= 0.01
+    );
+  }
+  return typeof actual === "number" && Math.abs(actual - expected) <= 0.01;
+}
 
 /** Trims video clip timestamps or orchestrates scene-builder video extension. */
 export async function videoOp(req: VideoOpRequest): Promise<unknown> {
@@ -17,18 +50,31 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
   const action = String(req?.action || "").toLowerCase();
 
   if (action === "trim") {
-    if (!(tileMap instanceof Map) || !helper?.mutate) {
+    if (!activeProjectStoreFormat()) {
+      clearStore();
+      return { ok: false, error: "unsupported_front_end" };
+    }
+    if (!helper || !helper.isCurrent()) {
+      if (helper) clearStore();
+      return { ok: false, error: "store_not_bound" };
+    }
+    if (!helper.isReady()) {
+      return { ok: false, error: "store_loading" };
+    }
+    if (!(tileMap instanceof Map) || !helper.mutate) {
       return { ok: false, error: "store_not_bound" };
     }
     const id = String(req?.asset_id || "").trim();
-    const tile = tileMap.get(id);
-    if (!tile) return { ok: false, error: `video_asset_not_found:${id}` };
+    const rawTile = tileMap.get(id);
+    if (!rawTile) return { ok: false, error: `video_asset_not_found:${id}` };
+    const tile = legacyTile(rawTile);
+    const before = videoTrimBounds(tile);
     const mediaId = String(
-      tile.primaryMediaId ||
-        tile.Fb?.id ||
-        tile.Fb?.mediaId ||
-        tile.fb?.mediaId ||
-        tile.mediaId ||
+      tile?.primaryMediaId ||
+        tile?.Fb?.id ||
+        tile?.Fb?.mediaId ||
+        tile?.fb?.mediaId ||
+        tile?.mediaId ||
         id,
     );
     const startSec =
@@ -36,8 +82,8 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     const endSec = typeof req.end_seconds === "number" ? req.end_seconds : null;
     await helper.mutate({
       type: "single_tile",
-      Xc: String(tile.id ?? id),
-      Uc: String(tile.id ?? id),
+      Xc: String(tile?.id ?? id),
+      Uc: String(tile?.id ?? id),
       Ve: {
         type: "set_video_trim_seconds",
         mediaId,
@@ -47,21 +93,66 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         Wf: endSec,
       },
     });
-    await delay(500);
-    return {
-      ok: true,
-      asset_id: id,
-      media_id: mediaId,
-      start_seconds: startSec,
-      end_seconds: endSec,
-    };
+    const duration =
+      typeof tile?.durationSeconds === "number"
+        ? tile.durationSeconds
+        : typeof tile?.duration === "number"
+          ? tile.duration
+          : typeof tile?.Fb?.durationSeconds === "number"
+            ? tile.Fb.durationSeconds
+            : typeof tile?.Fb?.duration === "number"
+              ? tile.Fb.duration
+              : typeof tile?.Fb?.Lf === "number"
+                ? tile.Fb.Lf
+                : typeof tile?.Lf === "number"
+                  ? tile.Lf
+                  : null;
+    const matchesStore = (
+      cand: { start: number | null; end: number | null },
+    ): boolean =>
+      startBoundMatches(cand.start, startSec) &&
+      endBoundMatches(cand.end, endSec, before.end, duration);
+    await delay(300);
+    for (let i = 0; i < 30; i++) {
+      const current = getMap()?.get(id);
+      if (current) {
+        const bounds = videoTrimBounds(current);
+        if (matchesStore(bounds)) {
+          await delay(200);
+          const settled = videoTrimBounds(getMap()?.get(id));
+          if (matchesStore(settled)) {
+            return {
+              ok: true,
+              confirmed: true,
+              asset_id: id,
+              media_id: mediaId,
+              start_seconds: settled.start,
+              end_seconds: settled.end,
+            };
+          }
+        }
+      }
+      await delay(200);
+    }
+    return { ok: false, error: "trim_not_confirmed" };
   }
 
   if (action === "prepare_extend") {
     const id = String(req?.asset_id || "").trim();
     const activeScene = /\/scene\/([^/?#]+)/.exec(location.pathname)?.[1];
     if (!activeScene || (req.scene_id && activeScene !== req.scene_id)) {
-      if (!(tileMap instanceof Map) || !helper?.mutate) {
+      if (!activeProjectStoreFormat()) {
+        clearStore();
+        return { ok: false, error: "unsupported_front_end" };
+      }
+      if (!helper || !helper.isCurrent()) {
+        if (helper) clearStore();
+        return { ok: false, error: "store_not_bound" };
+      }
+      if (!helper.isReady()) {
+        return { ok: false, error: "store_loading" };
+      }
+      if (!(tileMap instanceof Map) || !helper.mutate) {
         return { ok: false, error: "store_not_bound" };
       }
       let sceneId = req?.scene_id ? String(req.scene_id).trim() : null;
@@ -73,16 +164,12 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         }
         sceneId = created.id;
       }
-      const pm = /(\/(?:fx\/tools\/flow\/)?project\/([^/?#]+))/.exec(
-        location.pathname || "",
-      );
-      const pid = pm ? pm[2] : null;
+      const pm = /\/project\/([^/?#]+)/.exec(location.pathname || "");
+      const pid = pm ? pm[1] : helper?.projectId || null;
       const router = pid ? findRouter() : null;
       let navigatedSpa = false;
       if (router && pid) {
-        await router.navigate(["/project", pid, "scene", sceneId], {
-          queryParams: { hl: "en" },
-        });
+        await navigateSpa(router, ["/project", pid, "scene", sceneId]);
         for (let i = 0; i < 60; i++) {
           const onScene = (location.pathname || "").includes(
             `/scene/${sceneId}`,
@@ -98,11 +185,16 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       if (navigatedSpa) {
         clearStore();
         await delay(250);
-      } else {
-        const projPath = pm ? pm[1] : "";
+      } else if (pid) {
         return {
           ok: false,
-          need_navigate: `${location.origin}${projPath}/scene/${encodeURIComponent(sceneId)}?hl=en`,
+          need_navigate: buildProjectUrl(pid, ["scene", sceneId]),
+          scene_id: sceneId,
+        };
+      } else {
+        return {
+          ok: false,
+          error: "not_in_project_route",
           scene_id: sceneId,
         };
       }
@@ -173,8 +265,15 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
           'flow-scene-builder button[aria-label="Add clip"], flow-scene-timeline button[aria-label="Add clip"], button[aria-label="Add clip"]',
         );
         if (isVisibleEnabled(addClipBtn)) {
-          addClipBtn.click();
-          await delay(250);
+          if (!(runtimeState.ngLViewMap instanceof Map)) {
+            await withLViewMapCapture(async () => {
+              addClipBtn.click();
+              await delay(250);
+            });
+          } else {
+            addClipBtn.click();
+            await delay(250);
+          }
           // Angular renders the menu in an overlay outside the menu host.
           const menuScope = document.querySelector(".extend-menu-panel") ?? document;
           const optCandidates = Array.from(
@@ -199,13 +298,15 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
             const innerBtn =
               extendOpt.querySelector("button, [role='menuitem']") || extendOpt;
             if (!isVisibleEnabled(innerBtn) || !isVisibleEnabled(extendOpt)) {
-              const reason = (
-                extendOpt.getAttribute("mattooltip") ||
-                extendOpt.getAttribute("title") ||
-                innerBtn.getAttribute("mattooltip") ||
-                innerBtn.getAttribute("title") ||
-                "unavailable"
-              ).trim();
+              if (!(runtimeState.ngLViewMap instanceof Map)) {
+                await withLViewMapCapture(async () => {
+                  await hoverProbe([extendOpt, innerBtn], 40);
+                });
+              }
+              const reason =
+                readAngularTooltip(extendOpt) ||
+                readAngularTooltip(innerBtn) ||
+                "unavailable";
               return { ok: false, error: `extend_option_disabled:${reason}` };
             }
             innerBtn.click();
@@ -265,12 +366,31 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
 
     let submitBtn: HTMLElement | null = null;
     const exactSelector = 'button[aria-label="Start generation"]';
+    const checkExtendWarning = (): {
+      ok: false;
+      error: string;
+      detail: string;
+    } | null => {
+      const w = findComposerWarning([composer, document], true);
+      if (!w) return null;
+      const prefix =
+        w.kind === "credit"
+          ? "extend_credit_quota_exceeded"
+          : "extend_high_demand_warning";
+      return {
+        ok: false,
+        error: `${prefix}:${w.detail}`,
+        detail: w.detail,
+      };
+    };
     for (let i = 0; i < 120; i++) {
       const exact = composer.querySelector(exactSelector);
       if (isVisibleEnabled(exact)) {
         submitBtn = exact;
         break;
       }
+      const warning = checkExtendWarning();
+      if (warning) return warning;
       if (exact && exact.getClientRects().length > 0) {
         await delay(100);
       } else {
@@ -278,13 +398,26 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       }
     }
     if (!submitBtn) {
+      const warningAfter = checkExtendWarning();
+      if (warningAfter) return warningAfter;
       const exactAfter = composer.querySelector(exactSelector);
       if (
         exactAfter &&
         exactAfter.getClientRects().length > 0 &&
         !isVisibleEnabled(exactAfter)
       ) {
-        return { ok: false, error: "extend_start_generation_disabled" };
+        const validatorDetail =
+          runtimeState.promptState?.Ff?.N7a?.() ||
+          runtimeState.promptState?.lf?.jYa?.() ||
+          readAngularTooltip(exactAfter) ||
+          "";
+        return validatorDetail
+          ? {
+              ok: false,
+              error: `extend_start_generation_disabled:${validatorDetail}`,
+              detail: validatorDetail,
+            }
+          : { ok: false, error: "extend_start_generation_disabled" };
       }
       submitBtn =
         Array.from(composer.querySelectorAll('button, [role="button"]')).find(
@@ -292,7 +425,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
             if (b.tagName === "A" || !isVisibleEnabled(b)) return false;
             if (
               b.closest(
-                '.cdk-overlay-pane, [role="menu"], [role="listbox"], nav, aside',
+                'flow-credit-warning-button, flow-high-demand-warning-button, .cdk-overlay-pane, [role="menu"], [role="listbox"], nav, aside',
               )
             ) {
               return false;
@@ -330,15 +463,22 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
   }
 
   if (action === "poll_extend") {
-    const bodyText = elText(document.body);
-    const extending =
-      /\bExtending\b|Extending…/i.test(bodyText) ||
-      Boolean(
-        document.querySelector(
-          "flow-scene-timeline .is-extend-generating, flow-scene-timeline .pending-placeholder, flow-scene-timeline [aria-busy='true']",
-        ),
-      );
-    return { ok: true, extending };
+    const busyDom = Boolean(
+      document.querySelector(
+        "flow-scene-timeline .is-extend-generating, flow-scene-timeline .pending-placeholder, flow-scene-timeline [aria-busy='true']",
+      ),
+    );
+    const scope = document.querySelector("flow-scene-builder") ?? document.body;
+    const extendingText = Array.from(
+      scope.querySelectorAll(
+        '[class*="extend"], [class*="status"], [class*="progress"], [aria-live]',
+      ),
+    ).some(
+      (el) =>
+        !el.closest('[contenteditable="true"], textarea, input') &&
+        /\bExtending\b|Extending…/i.test(elText(el)),
+    );
+    return { ok: true, extending: busyDom || extendingText };
   }
 
   if (action === "done_scene") {
@@ -365,7 +505,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       const pid = pm ? pm[1] : null;
       const router = pid ? findRouter() : null;
       if (router && pid) {
-        await router.navigate(["/project", pid], { queryParams: { hl: "en" } });
+        await navigateSpa(router, ["/project", pid]);
         for (let i = 0; i < 25; i++) {
           await delay(100);
           if (!location.pathname.includes("/scene/")) break;

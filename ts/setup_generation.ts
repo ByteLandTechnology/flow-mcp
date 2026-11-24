@@ -114,23 +114,88 @@ function clickInsideGroup(
   return clickByText(regex, scopeRoot, false);
 }
 
+/** Finds the duration range input inside `roots` for `"Length"` or `"Extend Length"`. */
+function findDurationRangeInput(roots: ParentNode[]): HTMLInputElement | null {
+  const selectors = [
+    'flow-duration-slider input[type="range"][aria-label="Length" i]',
+    'flow-duration-slider input[type="range"][aria-label="Extend Length" i]',
+    'input[type="range"][aria-label="Length" i]',
+    'input[type="range"][aria-label="Extend Length" i]',
+    'flow-duration-slider input[type="range"]',
+  ];
+  for (const sel of selectors) {
+    for (const root of roots) {
+      const match = root.querySelector(sel);
+      if (match instanceof HTMLInputElement) return match;
+    }
+  }
+  return null;
+}
+
+/** Reads visible or text content from `node` for duration label parsing. */
+function readDurationContainerText(node: ParentNode): string {
+  if (node instanceof HTMLElement) {
+    return node.innerText || node.textContent || "";
+  }
+  return node.textContent || document.body?.innerText || document.body?.textContent || "";
+}
+
 /** Sets the video length slider of the Flow settings panel to `secs` seconds, and returns true when the slider accepts the value. */
-function setLengthSlider(secs: number, scopeRoot: ParentNode): boolean {
-  const root =
-    document.querySelector("flow-prompt-box-settings, .settings-content-overlay") || scopeRoot;
-  const input = root.querySelector('input[type="range"][aria-label="Length"]');
-  if (!(input instanceof HTMLInputElement)) return false;
-  const text = root instanceof HTMLElement ? root.innerText : document.body.innerText;
-  const shown = /Length\s*(\d+)\s*Sec/i.exec(text || "");
-  if (!shown) return false;
-  const target = secs - (Number(shown[1]) - Number(input.value));
-  if (target < Number(input.min) || target > Number(input.max)) return false;
+async function setLengthSlider(secs: number, scopeRoot: ParentNode): Promise<boolean> {
+  const overlay = document.querySelector(
+    "flow-prompt-box-settings, .settings-content-overlay",
+  );
+  const roots = overlay && overlay !== scopeRoot ? [overlay, scopeRoot] : [overlay || scopeRoot];
+  const input = findDurationRangeInput(roots);
+  if (!input) return false;
+  const min = Number(input.min);
+  const max = Number(input.max);
+  const rawStep = Number(input.step);
+  const step = Number.isFinite(rawStep) && rawStep > 0 ? rawStep : 1;
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max < min || (max - min) / step > 120) {
+    return false;
+  }
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (!setter) return false;
-  setter.call(input, String(target));
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
-  return true;
+
+  const slider = input.closest("flow-duration-slider");
+  const container: ParentNode = overlay || scopeRoot;
+  const readShownSecs = (): number | null => {
+    if (slider) {
+      const m = /\b(\d+)\s*Sec\b/i.exec(readDurationContainerText(slider));
+      if (m) return Number(m[1]);
+    }
+    const m = /(?:Extend\s+)?Length\s*(\d+)\s*Sec\b/i.exec(
+      readDurationContainerText(container),
+    );
+    return m ? Number(m[1]) : null;
+  };
+  const applyValue = (val: string): void => {
+    setter.call(input, val);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  const prior = input.value;
+  const initialSecs = readShownSecs();
+  if (initialSecs === null) return false;
+  if (initialSecs === secs) {
+    applyValue(prior);
+    return true;
+  }
+
+  const intSteps = Number.isInteger(min) && Number.isInteger(step);
+  for (let idx = min; idx <= max + 1e-9; idx += step) {
+    const candidate = String(intSteps ? Math.round(idx) : idx);
+    applyValue(candidate);
+    await delay(40);
+    if (readShownSecs() === secs) {
+      return true;
+    }
+  }
+
+  applyValue(prior);
+  return false;
 }
 
 /** Ensures `runtimeState.ngLViewMap` is populated via non-destructive hover or settings probes. */
@@ -256,10 +321,22 @@ export async function setupGeneration(
 
     try {
       if (cfg.duration && mode === "video") {
-        const d = escapeRegex(String(cfg.duration).replace(/s$/i, "").trim());
-        const durRe = new RegExp(`\\b${d}\\s*s\\b|\\b${d}\\b`, "i");
-        if (clickInsideGroup("Video duration", durRe, settingsScope())) {
-          await delay(120);
+        const rawDur = String(cfg.duration).replace(/s$/i, "").trim();
+        const secs = Number.parseInt(rawDur, 10);
+        const curScope = settingsScope();
+        if (Number.isFinite(secs) && await setLengthSlider(secs, curScope)) {
+          await delay(160);
+        } else {
+          const d = escapeRegex(rawDur);
+          const hasDurGroup = Boolean(
+            document.querySelector('[aria-label*="Video duration" i]'),
+          );
+          const durRe = hasDurGroup
+            ? new RegExp(`\\b${d}\\s*s\\b|\\b${d}\\b`, "i")
+            : new RegExp(`\\b${d}\\s*(?:s|sec)\\b`, "i");
+          if (clickInsideGroup("Video duration", durRe, curScope)) {
+            await delay(120);
+          }
         }
       }
     } catch {
@@ -327,7 +404,7 @@ export async function setupGeneration(
         }
         if (cfg.duration) {
           const secs = Number.parseInt(String(cfg.duration).replace(/s$/i, ""), 10);
-          if (Number.isFinite(secs) && setLengthSlider(secs, settingsScope())) {
+          if (Number.isFinite(secs) && await setLengthSlider(secs, settingsScope())) {
             await delay(160);
           }
         }
@@ -370,16 +447,26 @@ export async function setupGeneration(
           let lv: NgLView | null = resolveLView(settingsEl);
           for (let d = 0; d < 4 && Array.isArray(lv); d += 1) {
             const iw = lv.find(
-              (c): c is { Ula: (count: number) => void } =>
+              (
+                c,
+              ): c is {
+                Osa?: (count: number) => void;
+                Ula?: (count: number) => void;
+              } =>
                 Boolean(
                   c &&
                     typeof c === "object" &&
                     !(c instanceof Node) &&
-                    typeof (c as { Ula?: unknown }).Ula === "function",
+                    (typeof (c as { Osa?: unknown }).Osa === "function" ||
+                      typeof (c as { Ula?: unknown }).Ula === "function"),
                 ),
             );
             if (iw) {
-              iw.Ula(Number(cfg.count));
+              if (typeof iw.Osa === "function") {
+                iw.Osa(Number(cfg.count));
+              } else if (typeof iw.Ula === "function") {
+                iw.Ula(Number(cfg.count));
+              }
               await delay(100);
               break;
             }
