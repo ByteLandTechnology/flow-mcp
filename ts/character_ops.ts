@@ -3,19 +3,16 @@
 
 // Open, finish, create, and update profile fields for Google Flow characters.
 
-import { findRouter } from "./angular";
+import { buildProjectUrl, findRouter, navigateSpa, readOwn } from "./angular";
 import { clickButtonByRegex, delay, isVisibleEnabled, setNativeValue } from "./dom";
+import { activeProjectStoreFormat, characterCreateFormat } from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
-import { isStoreDestroyed } from "./store_shape";
 import type { CharacterOpRequest } from "./types";
 
 /** Creates, opens, updates, or finishes character entity editing in Google Flow. */
 export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
-  if ((runtimeState.lService || runtimeState.store) && isStoreDestroyed(runtimeState.lService)) {
-    clearStore();
-  }
   const helper = runtimeState.store;
-  const getMap = () => helper?.getTileMap?.();
+  const getMap = () => runtimeState.store?.getTileMap?.();
   const action = String(req?.action || "").toLowerCase();
 
   if (action === "open_editor") {
@@ -30,7 +27,7 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       if (!router) {
         return { ok: false, error: "angular_router_not_found" };
       }
-      await router.navigate(["/project", pid, "character", cid]);
+      await navigateSpa(router, ["/project", pid, "character", cid]);
     }
     let ready = false;
     for (let i = 0; i < 60; i += 1) {
@@ -53,12 +50,9 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
         path: location.pathname,
       };
     }
-    if (
-      runtimeState.projectId === pid &&
-      !isStoreDestroyed(runtimeState.lService)
-    ) {
+    if (runtimeState.projectId === pid && helper?.isCurrent()) {
       runtimeState.routePath = location.pathname;
-    } else if (runtimeState.lService || runtimeState.store) {
+    } else if (helper && !helper.isCurrent()) {
       clearStore();
     }
     return { ok: true, spa: true, path: location.pathname };
@@ -94,17 +88,27 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     return { ok: true, closed, in_workspace: inWorkspace };
   }
 
-  const tileMap = getMap();
-  const projectMatch = /(\/(?:fx\/tools\/flow\/)?project\/[^/?#]+)/.exec(
-    location.pathname || "",
-  );
-  const projectBasePath = projectMatch ? projectMatch[1] : null;
+  if (!activeProjectStoreFormat()) {
+    clearStore();
+    return { ok: false, error: "unsupported_front_end" };
+  }
+  if (helper && !helper.isCurrent()) clearStore();
+  const activeHelper = runtimeState.store;
+  const projectMatch = /\/project\/([^/?#]+)/.exec(location.pathname || "");
+  const currentPid = projectMatch ? projectMatch[1] : null;
   let charId = req?.character_id ? String(req.character_id).trim() : null;
 
   if (action === "create") {
-    if (!helper?.mutate) {
+    if (!activeHelper) {
+      return { ok: false, error: "store_not_bound" };
+    }
+    if (!activeHelper.isReady()) {
+      return { ok: false, error: "store_loading" };
+    }
+    if (!activeHelper.mutate) {
       return { ok: false, error: "store_mutate_missing" };
     }
+    const tileMap = activeHelper.getTileMap();
     const existingIds = new Set<string>();
     if (tileMap instanceof Map) {
       for (const [k, v] of tileMap.entries()) {
@@ -133,22 +137,25 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       },
     );
 
-    const mutatePromise = Promise.resolve(
-      helper.mutate({
-        type: "create_entity",
-        A3: 1,
-        AW: 1,
-        displayName: charName,
-        tb: undefined,
-        ub: undefined,
-        De: { resolve: resolveDe, reject: rejectDe },
-        ve: { resolve: resolveDe, reject: rejectDe },
-      }),
-    ).then(
+    const format = characterCreateFormat();
+    const completion = { resolve: resolveDe, reject: rejectDe };
+    const payload: Record<string, unknown> = {
+      type: "create_entity",
+      displayName: charName,
+    };
+    for (const key of format.entityKinds) payload[key] = 1;
+    for (const key of format.collections) payload[key] = undefined;
+    for (const key of format.completions) payload[key] = completion;
+
+    const mutatePromise = Promise.resolve(activeHelper.mutate(payload)).then(
       (v) => {
-        const resObj = v as { II?: unknown; MF?: unknown } | null;
-        const created = resObj?.MF ?? resObj?.II;
-        if (created && !resolvedTile) resolvedTile = created;
+        for (const key of format.created) {
+          const created = readOwn(v, key);
+          if (created) {
+            if (!resolvedTile) resolvedTile = created;
+            break;
+          }
+        }
       },
       (e) => {
         if (!mutateErr) {
@@ -230,13 +237,16 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
   if (action === "update") {
     if (!charId) return { ok: false, error: "missing_character_id" };
     if (!location.pathname.includes(`/character/${charId}`)) {
-      if (projectBasePath) {
+      if (currentPid) {
         return {
           ok: false,
-          need_navigate: `${location.origin}${projectBasePath}/character/${encodeURIComponent(charId)}?hl=en`,
+          need_navigate: buildProjectUrl(currentPid, ["character", charId]),
         };
       }
       return { ok: false, error: "not_in_project_route" };
+    }
+    if (activeHelper && !activeHelper.isReady()) {
+      return { ok: false, error: "store_loading" };
     }
 
     for (let i = 0; i < 50; i++) {
@@ -262,9 +272,16 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
         applied.push("ui_name");
         await delay(150);
       }
-      if (charId && helper?.rename) {
-        await helper.rename(charId, nameStr);
-        applied.push("store_name");
+      if (charId && activeHelper?.rename) {
+        try {
+          await activeHelper.rename(charId, nameStr);
+          applied.push("store_name");
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err ?? "rename_failed"),
+          };
+        }
       }
     }
 

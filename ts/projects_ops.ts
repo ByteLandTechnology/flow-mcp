@@ -3,8 +3,15 @@
 
 // List, rename, and delete Google Flow projects from the Flow UI.
 
-import { readOwn, resolveLView, type NgContextCarrier } from "./angular";
+import {
+  buildProjectUrl,
+  readOwn,
+  resolveLView,
+  withMapCapture,
+  type NgContextCarrier,
+} from "./angular";
 import { delay, elText, setNativeValue } from "./dom";
+import { projectTitleFormat } from "./frontend_builds";
 import type { ProjectsOpRequest } from "./types";
 
 /** Internal card descriptor captured on the Flow projects grid. */
@@ -86,15 +93,9 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
     }
 
     const seenMaps = new Set<Map<unknown, unknown>>();
-    const origGet = Map.prototype.get;
-    try {
-      Map.prototype.get = function (
-        this: Map<unknown, unknown>,
-        k: unknown,
-      ): unknown {
-        seenMaps.add(this);
-        return origGet.call(this, k);
-      };
+    await withMapCapture((map, _key, _value, write) => {
+      if (!write) seenMaps.add(map);
+    }, async () => {
       const cards = Array.from(document.querySelectorAll("flow-project-card"));
       for (const card of cards.slice(0, 50)) {
         const r = card.getBoundingClientRect();
@@ -114,9 +115,7 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         );
       }
       await delay(80);
-    } finally {
-      Map.prototype.get = origGet;
-    }
+    });
 
     const byId = new Map<string, ScannedProjectCard>();
     const cards = Array.from(document.querySelectorAll("flow-project-card"));
@@ -168,14 +167,11 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         .map((s) => s.trim())
         .find((s) => s.length > 0 && !/^(?:more_vert|delete)$/i.test(s));
       const key = pid || `card:${rawText || byId.size}`;
-      const projBase = location.pathname.includes("/fx/tools/flow")
-        ? "/fx/tools/flow/project"
-        : "/project";
       if (!byId.has(key)) {
         byId.set(key, {
           id: pid,
           title: rawText || null,
-          url: pid ? `${location.origin}${projBase}/${pid}?hl=en` : null,
+          url: pid ? buildProjectUrl(pid) : null,
           _card: card,
         });
       }
@@ -353,14 +349,19 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
           try {
             const lv = resolveLView(host);
             if (Array.isArray(lv)) {
+              const titleFormat = projectTitleFormat();
               for (const slot of lv) {
-                const tJa = readOwn(slot, "tJa") as { emit?: (v: string) => void } | undefined;
-                const state = readOwn(slot, "state") as { set?: (v: unknown) => void } | undefined;
+                const emitter = readOwn(slot, titleFormat.saveEmitter) as
+                  | { emit?: (v: string) => void }
+                  | undefined;
+                const state = readOwn(slot, titleFormat.stateSignal) as
+                  | { set?: (v: unknown) => void }
+                  | undefined;
                 if (
-                  typeof tJa?.emit === "function" &&
+                  typeof emitter?.emit === "function" &&
                   typeof state?.set === "function"
                 ) {
-                  tJa.emit(desired);
+                  emitter.emit(desired);
                   state.set({ state: "viewing" });
                   break;
                 }
@@ -374,18 +375,26 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       400,
       6000,
     );
-    for (let i = 0; i < 15; i++) {
-      if ((titleInput.value || "").trim() === desired) break;
-      await delay(100);
+    const isSettledTitle = (): boolean =>
+      !host?.querySelector(".editable-text-container.editing") &&
+      (titleInput.value || "").trim() === desired;
+    await delay(300);
+    for (let i = 0; i < 30; i++) {
+      if (isSettledTitle()) {
+        await delay(200);
+        if (isSettledTitle()) {
+          return { ok: true, confirmed: true, title: desired };
+        }
+      }
+      await delay(150);
     }
-    return { ok: true, title: (titleInput.value || desired).trim() };
+    return { ok: false, error: "project_title_not_confirmed" };
   }
 
   if (action === "delete") {
     const targetId = req?.project_id ? String(req.project_id).trim() : "";
     const targetTitle = req?.title ? String(req.title).trim() : "";
-    const items = await scanCards();
-    const hit = items.find((p) => {
+    const matchesTarget = (p: ScannedProjectCard): boolean => {
       if (targetId && p.id === targetId) return true;
       if (
         targetTitle &&
@@ -395,10 +404,14 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         return true;
       }
       return false;
-    });
+    };
+    const items = await scanCards();
+    const hit = items.find(matchesTarget);
     if (!hit || !hit._card) {
       return { ok: false, error: "project_card_not_found" };
     }
+    const beforeMatches = items.filter(matchesTarget).length;
+    const deletedId = hit.id;
     const card = hit._card;
     card.scrollIntoView({ block: "center" });
     await delay(100);
@@ -447,7 +460,7 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       await delay(100);
       const dialogs = Array.from(
         document.querySelectorAll(
-          '[role="dialog"], .mat-mdc-dialog-container, cdk-overlay-pane',
+          '[role="dialog"], .mat-mdc-dialog-container, .cdk-overlay-pane',
         ),
       );
       for (const dlg of dialogs) {
@@ -480,11 +493,26 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       if (!document.body.contains(card)) break;
       await delay(100);
     }
-    if (document.body.contains(card)) {
-      return { ok: false, error: "delete_card_still_present" };
-    }
+    const entryRemoved = (entries: ScannedProjectCard[]): boolean =>
+      deletedId
+        ? !entries.some((p) => p.id === deletedId)
+        : entries.filter(matchesTarget).length < beforeMatches;
     await delay(300);
-    return { ok: true, deleted_id: hit.id, deleted_title: hit.title };
+    for (let i = 0; i < 20; i++) {
+      if (entryRemoved(await scanCards())) {
+        await delay(250);
+        if (entryRemoved(await scanCards())) {
+          return {
+            ok: true,
+            confirmed: true,
+            deleted_id: hit.id,
+            deleted_title: hit.title,
+          };
+        }
+      }
+      await delay(250);
+    }
+    return { ok: false, error: "delete_card_still_present" };
   }
 
   return { ok: false, error: `unknown_project_action:${action}` };

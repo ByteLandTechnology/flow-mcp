@@ -105,7 +105,17 @@ function blocks(value: unknown, format: AgentWireFormat): ReplyBlock[] | undefin
         const card = receive(block.card, format.questionCard);
         const questions = (card.Qm as object[]).map((question) => {
           const data = receive(question, format.question);
-          return { ...data, options: (data.options as object[]).map((option) => receive(option, format.option)) };
+          return {
+            ...data,
+            options: (data.options as object[]).map((option) => {
+              const adapted = receive(option, format.option);
+              return {
+                ...adapted,
+                rma: format.option.rma ? Boolean(adapted.rma) : undefined,
+                recommended: format.option.recommended ? Boolean(adapted.recommended) : undefined,
+              };
+            }),
+          };
         });
         return { ...block, card: { ...card, Qm: questions } };
       }

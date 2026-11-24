@@ -27,6 +27,8 @@ npm install --global @flow-mcp/cli
 flow-mcp --help
 ```
 
+Run `flow-mcp doctor` to check the Chrome binary, `<home>` permissions, the live Google Flow front-end build, and the sign-in status. It exits with status `1` if any check fails.
+
 With `@flow-mcp/cli`, `npm` installs the matching optional package (`@flow-mcp/darwin-arm64`, `@flow-mcp/darwin-x64`, `@flow-mcp/linux-arm64`, `@flow-mcp/linux-x64`, `@flow-mcp/win32-arm64`, or `@flow-mcp/win32-x64`). Linux packages use `glibc`. On `musl` systems (for example Alpine Linux), build from source.
 
 > [!IMPORTANT]
@@ -82,7 +84,7 @@ Read the guide sections for each task:
 
 | Domain | Tools | Purpose |
 | :--- | :--- | :--- |
-| Session & Projects | `flow_status`, `flow_login`, `flow_new_project`, `flow_projects` | Check session state, sign in with Chrome, and manage projects |
+| Session & Projects | `flow_status`, `flow_login`, `flow_new_project`, `flow_projects` | Check session state and Flow build compatibility, sign in with Chrome, and manage projects |
 | Characters & Voices | `flow_voices`, `flow_character`, `flow_character_edit`, `flow_characters`, `flow_voice_preview` | List Flow voices, create or update characters with custom voices, preview voices, and store SQLite profiles |
 | Generation & Edit | `flow_generate`, `flow_edit` | Queue video and image generation or edit assets |
 | Agent Chat | `flow_agent` | Manage sessions and exchange messages with Flow Agent |

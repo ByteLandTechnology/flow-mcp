@@ -69,7 +69,8 @@ impl NormalizedCookie {
         obj.insert("sameSite".to_string(), json!(same_site));
         obj.insert("url".to_string(), json!(format!("https://{clean_domain}/")));
 
-        if !self.host_only {
+        let is_host_prefix = name.to_ascii_lowercase().starts_with("__host-");
+        if !(self.host_only || is_host_prefix) {
             obj.insert("domain".to_string(), json!(format!(".{clean_domain}")));
         }
 
@@ -125,16 +126,11 @@ pub(crate) fn read_cookies_file() -> Result<Vec<NormalizedCookie>> {
     Ok(parsed)
 }
 
-/// Infers whether `name` on `domain` should be treated as a host-only cookie.
+/// Infers whether `name` on `domain` has host-only scope.
 pub(crate) fn infer_host_only(name: &str, domain: &str) -> bool {
-    if domain.starts_with('.') {
-        false
-    } else {
-        let clean = domain.trim().to_ascii_lowercase();
-        name.to_ascii_lowercase().starts_with("__host-")
-            || clean == "accounts.google.com"
-            || (clean == "flow.google.com" && !name.starts_with("_ga"))
-    }
+    let trimmed = domain.trim();
+    !trimmed.is_empty()
+        && (!trimmed.starts_with('.') || name.trim().to_ascii_lowercase().starts_with("__host-"))
 }
 
 /// Keeps Google, Labs, and Flow domain cookies and normalizes `hostOnly` and `expires` fields.
@@ -158,11 +154,12 @@ pub(crate) fn normalize_cookies(raw_cookies: Vec<Value>) -> Vec<NormalizedCookie
             .and_then(|v| v.as_f64())
             .filter(|&e| e > 0.0 && e <= i64::MAX as f64)
             .map(|e| e as i64);
-        // Keep an explicit `hostOnly` flag when present; otherwise infer from name and host.
-        let host_only = c
-            .get("hostOnly")
-            .and_then(|v| v.as_bool())
-            .unwrap_or_else(|| infer_host_only(name, domain));
+        // Keep an explicit `hostOnly` flag unless `__Host-` requires host-only scope.
+        let is_host_prefix = name.trim().to_ascii_lowercase().starts_with("__host-");
+        let host_only = is_host_prefix
+            || c.get("hostOnly")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| infer_host_only(name, domain));
         persisted.push(NormalizedCookie {
             name: name.to_string(),
             value: value.to_string(),

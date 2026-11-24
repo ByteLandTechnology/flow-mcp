@@ -21,19 +21,27 @@ export async function fetchMedia(
   })();
 
   const env = fifeEnv();
+  const isDirectScheme =
+    parsed?.protocol === "data:" || parsed?.protocol === "blob:";
   const isSignedCdn = Boolean(parsed && env.isSignedCdnHost(parsed));
 
-  const modes: RequestCredentials[] = isSignedCdn
-    ? ["omit"]
-    : parsed && parsed.origin === location.origin
-      ? ["same-origin", "include"]
-      : ["same-origin", "include", "omit"];
+  const modes: RequestCredentials[] =
+    isSignedCdn || isDirectScheme
+      ? ["omit"]
+      : parsed && parsed.origin === location.origin
+        ? ["same-origin", "include"]
+        : ["include", "omit"];
 
   let r: Response | null = null;
   let lastErr: unknown = null;
   for (const mode of modes) {
     try {
-      const resp = await fetch(u, { credentials: mode });
+      const resp = await fetch(
+        u,
+        isSignedCdn
+          ? { credentials: mode, referrerPolicy: "no-referrer" }
+          : { credentials: mode },
+      );
       if (resp.ok) {
         r = resp;
         break;
@@ -51,7 +59,7 @@ export async function fetchMedia(
   const ct = r.headers.get("content-type") || null;
   if (
     ct &&
-    /^\s*(?:text\/|application\/(?:json|xml|dash\+xml|xhtml\+xml|vnd\.apple\.mpegurl)|audio\/mpegurl)\b/i.test(
+    /^\s*(?:text\/|application\/(?:json|xml|dash\+xml|xhtml\+xml|vnd\.apple\.mpegurl|x-mpegurl)|audio\/mpegurl)\b/i.test(
       ct,
     )
   ) {
@@ -59,6 +67,9 @@ export async function fetchMedia(
   }
   if (ct && kind === "video" && /^\s*(?:image|audio)\//i.test(ct)) {
     throw new Error(`Media URL returned non-video content-type: ${ct}`);
+  }
+  if (ct && kind === "audio" && /^\s*(?:image|video)\//i.test(ct)) {
+    throw new Error(`Media URL returned non-audio content-type: ${ct}`);
   }
   if (
     ct &&

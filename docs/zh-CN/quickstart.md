@@ -101,7 +101,7 @@ HTTP 选项与安全规则请参阅[工具参考](tools-reference.md#http-传输
 }
 ```
 
-在可见 Chrome 窗口中完成 Google 登录。登录完成后，`flow-mcp` 会关闭可见窗口并将数据刷盘到 `<home>/chrome-profile`。随后它会在同一配置目录上启动后台 CDP Chrome 并保存 `<home>/cookies.json`（Unix 权限 `0600`）。
+在可见 Chrome 窗口中完成 Google 登录。登录完成后，`flow-mcp` 会关闭可见窗口并将数据刷盘到 `<home>/chrome-profile`。随后它会在同一配置目录上启动后台 CDP Chrome 并验证 Google Flow 工作区会话。
 
 也可以在终端中运行 `flow-mcp login --home /path/to/.flow-mcp` 完成登录。请先停止 MCP 客户端，因为两个 `flow-mcp` 进程不能同时使用同一个 Chrome 配置目录。之后可运行 `flow-mcp status` 查看结果。
 
@@ -154,7 +154,7 @@ HTTP 选项与安全规则请参阅[工具参考](tools-reference.md#http-传输
 
 ## 常见问题排查
 
-- **检查安装状态**：运行 `flow-mcp doctor` 检查 Chrome 二进制文件、`<home>` 与文件权限、单实例锁以及登录状态。
+- **检查安装状态**：运行 `flow-mcp doctor` 检查 Chrome 二进制文件、`<home>` 与文件权限、单实例锁、线上 Google Flow 前端构建以及登录状态。任一检查失败时退出状态码为 `1`。
 - **缺少原生可执行文件包**：不带 `--omit=optional` 或 `--no-optional` 重新安装 `@flow-mcp/cli`。
 - **未找到 Chrome 二进制文件**：将 `--chrome <PATH>` 或 `FLOW_MCP_CHROME` 设为 Chrome 或 Chromium 可执行文件路径。
 - **Google 登录过期或遭拒绝**：调用 `flow_login` 传入 `{"action": "login", "force": true}` 以打开干净的 Chrome 窗口。或者调用 `{"action": "logout"}` 删除 `<home>/chrome-profile` 与 `<home>/cookies.json`。

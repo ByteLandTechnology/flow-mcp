@@ -5,6 +5,7 @@
 
 import { readOwn } from "./angular";
 import { isTrashedTile } from "./dom";
+import { snapshotFormat } from "./frontend_builds";
 import { characterBioCompatibility } from "./frontend_compatibility";
 import {
   mutateAndVerify,
@@ -30,21 +31,45 @@ function entityField(message: unknown, field: number): unknown {
     : readOwn(sparse, String(field)) ?? message[field - 1];
 }
 
-/** Reads the notes from the character entity. Returns null when the entity cannot be read. */
-export function characterPersonalityNotes(tile: FlowTile): string | null {
-  const entity = readOwn(tile, "Rc");
+/** Extracts the serialized `character_info` protobuf array from a character tile. */
+function characterInfoMessage(tile: FlowTile): unknown[] | null {
+  const format = snapshotFormat()?.character;
+  const entity = readOwn(tile, format?.entity ?? "Rc");
   const serialize = readOwn(entity, "toJSON");
   if (typeof serialize !== "function") return null;
   try {
-    // The nested fields are entity_info (4), character_info (3), and personality_notes (3).
-    const info = entityField(entityField(serialize.call(entity), 4), 3);
-    if (!Array.isArray(info)) return null;
-    const notes = entityField(info, 3);
-    if (notes == null) return "";
-    return typeof notes === "string" ? notes : null;
+    const root = serialize.call(entity);
+    const info = entityField(
+      entityField(root, format?.entityInfoField ?? 4),
+      format?.characterInfoField ?? 3,
+    );
+    return Array.isArray(info) ? info : null;
   } catch {
     return null;
   }
+}
+
+/** Reads the notes from the character entity. Returns null when the entity cannot be read. */
+export function characterPersonalityNotes(tile: FlowTile): string | null {
+  const info = characterInfoMessage(tile);
+  if (!info) return null;
+  const notes = entityField(info, snapshotFormat()?.character.notesField ?? 3);
+  if (notes == null) return "";
+  return typeof notes === "string" ? notes : null;
+}
+
+/** Reads the assigned preset or custom voice ID from `character_info.audio_references`. */
+export function characterVoice(tile: FlowTile): string | null {
+  const info = characterInfoMessage(tile);
+  if (!info) return null;
+  const format = snapshotFormat()?.character;
+  const refs = entityField(info, format?.audioReferencesField ?? 2);
+  if (!Array.isArray(refs) || refs.length === 0) return null;
+  const first = refs[0];
+  const preset = entityField(first, format?.presetVoiceField ?? 2);
+  if (typeof preset === "string" && preset) return preset;
+  const custom = entityField(first, format?.customVoiceField ?? 1);
+  return typeof custom === "string" && custom ? custom : null;
 }
 
 /** Returns true for a character that can receive new notes. */

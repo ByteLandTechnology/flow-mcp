@@ -4,19 +4,26 @@
 // Upload local media through the native Flow project services.
 
 import { isLiveLView, readOwn, resolveLView } from "./angular";
+import { cleanMediaId, delay, legacyMedia, legacyTile, readMediaUrl } from "./dom";
 import { projectUploadCompatibility } from "./frontend_compatibility";
 import { MEDIA_UPLOAD_EXPORTS } from "./frontend_builds";
 import type { MediaUploadFields, MediaUploadFormat, ProjectUploadFormat } from "./frontend_builds";
 import { uploadUiAction } from "./open_upload_trigger";
 import { projectStore } from "./project_store";
 import { runtimeState } from "./state";
-import type { FlowTile } from "./types";
+import type { FlowMediaPayload, FlowTile } from "./types";
 
 /** Maximum time for a local upload batch. */
 export const MEDIA_UPLOAD_TIMEOUT_MS = 100_000;
 
 /** Maximum video duration before Flow requires a trim. */
 const MAX_VIDEO_SECONDS = 30;
+
+/** Interval between project tile checks while Flow transcodes an uploaded video. */
+const TRANSCODE_POLL_INTERVAL_MS = 250;
+
+/** Poll count between explicit tile query refreshes for hidden tabs. */
+const TRANSCODE_REFETCH_STEPS = 6;
 
 /** Dimensions of a local image. */
 interface ImageSize {
@@ -85,6 +92,10 @@ interface UploadBinding {
   consent: object;
   /** Submits a mutation for the bound project. */
   submit: (request: Record<string, unknown>) => void;
+  /** Reads the live project tiles from the page store signal. */
+  tiles: () => FlowTile[];
+  /** Refreshes the project tile query when background polling is inactive. */
+  refetchTiles?: () => Promise<unknown>;
   /** Upload fields of the verified build. */
   fields: MediaUploadFields;
 }
@@ -93,13 +104,15 @@ interface UploadBinding {
 interface UploadInput {
   /** ID of the project that owns the uploads. */
   projectId: string;
+  /** Optional collection ID when the active route shows a collection view. */
+  collectionId?: string;
   /** Returns true while the bound project is active. */
   isCurrent: () => boolean;
   /** Time limit for the batch. */
   signal: AbortSignal;
   /** Local files that Chrome supplies. */
   files: File[];
-  /** Requires a readable video duration before the tool sends any files. */
+  /** True when the library requires a valid video duration before upload. */
   requireVideoDuration?: boolean;
 }
 
@@ -164,12 +177,21 @@ export async function waitForMedia<T>(run: () => Promise<T>, signal?: AbortSigna
 /** Connects the native upload services on a project page. */
 export function bindMediaUpload(page: object, format: MediaUploadFormat): UploadBinding | undefined {
   const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+  const store = readOwn(page, format.store);
+  const tiles = readOwn(store, format.tiles);
+  const tileQuery = readOwn(store, format.tileQuery);
+  const refetch = readOwn(tileQuery, "refetch");
   const dispatcher = readOwn(page, format.dispatcher);
   const submit = readOwn(dispatcher, "mutate");
   const injector = readOwn(page, format.injector);
   const get = readOwn(injector, "get");
   const consentType = readOwn(namespace, format.consent);
-  if (typeof submit !== "function" || typeof get !== "function" || typeof consentType !== "function") return;
+  if (
+    typeof tiles !== "function" ||
+    typeof submit !== "function" ||
+    typeof get !== "function" ||
+    typeof consentType !== "function"
+  ) return;
   const exports = MEDIA_UPLOAD_EXPORTS.map((name) => [name, readOwn(namespace, format.exports[name])] as const);
   if (exports.some(([, method]) => typeof method !== "function")) return;
   try {
@@ -179,10 +201,114 @@ export function bindMediaUpload(page: object, format: MediaUploadFormat): Upload
       flow: Object.fromEntries(exports) as unknown as MediaUploadExports,
       consent,
       submit: (request) => submit.call(dispatcher, request),
+      tiles: () => {
+        const current: unknown = tiles.call(store);
+        return Array.isArray(current) ? (current as FlowTile[]) : [];
+      },
+      refetchTiles: typeof refetch === "function"
+        ? () => Promise.resolve(refetch.call(tileQuery))
+        : undefined,
       fields: format.fields,
     };
   } catch {
     return undefined;
+  }
+}
+
+/** Returns true when a media status string indicates a finished or failed operation. */
+function isTerminalMediaStatus(status: string | undefined): boolean {
+  return status === "success" || status === "failed" || status === "canceled";
+}
+
+/** Reads the normalized primary media payload from a tile. */
+function tileMediaPayload(tile: FlowTile): FlowMediaPayload | undefined {
+  const container = legacyTile(tile)?.Fb;
+  const primaryId = cleanMediaId(tile.primaryMediaId);
+  const history = readOwn(tile, "history");
+  const fromHistory = primaryId && Array.isArray(history)
+    ? history.find(
+        (item): item is FlowMediaPayload =>
+          Boolean(item && typeof item === "object" && cleanMediaId(readOwn(item, "id")) === primaryId),
+      )
+    : undefined;
+  const historyMedia = fromHistory ? legacyMedia(fromHistory) : undefined;
+  const containerId = cleanMediaId(readOwn(container, "id"));
+  if (primaryId && containerId && primaryId !== containerId) return historyMedia;
+  if (container && historyMedia) {
+    const containerStatus = container.Zc?.toLowerCase();
+    const historyStatus = historyMedia.Zc?.toLowerCase();
+    if (!isTerminalMediaStatus(containerStatus) && isTerminalMediaStatus(historyStatus)) {
+      return historyMedia;
+    }
+    return container;
+  }
+  return container ?? historyMedia;
+}
+
+/** Formats a failure message from the native media error payload. */
+function transcodeFailureMessage(fileName: string, detail: unknown): string {
+  if (typeof detail === "string" && detail.trim()) {
+    return `Flow failed to transcode ${fileName}: ${detail.trim()}`;
+  }
+  const message = readOwn(detail, "message");
+  if (typeof message === "string" && message.trim()) {
+    return `Flow failed to transcode ${fileName}: ${message.trim()}`;
+  }
+  return `Flow failed to transcode ${fileName}`;
+}
+
+/** Evaluates whether an uploaded video tile is ready, still transcoding, or failed. */
+function videoTranscodeState(
+  tile: FlowTile,
+  fileName: string,
+): { state: "ready"; tile: UploadedTile } | { state: "pending" } | { state: "failed"; message: string } {
+  const media = tileMediaPayload(tile);
+  const status = media?.Zc?.toLowerCase();
+  const uploadedFlag = readOwn(media, "vp");
+  if (
+    tile.type === "FAILED_ASSET" ||
+    status === "failed" ||
+    status === "canceled"
+  ) {
+    return { state: "failed", message: transcodeFailureMessage(fileName, media?.nf ?? tile.nf ?? tile.Bf) };
+  }
+  const uploadedVideo = status === undefined && uploadedFlag === true &&
+    Boolean(media?.id && readMediaUrl(media));
+  return !tile.isPending && (status === "success" || uploadedVideo)
+    ? { state: "ready", tile: tile as UploadedTile }
+    : { state: "pending" };
+}
+
+/** Polls the project tile store until video transcoding finishes or fails. */
+async function waitForVideoTranscode(
+  binding: UploadBinding,
+  input: UploadInput,
+  initial: UploadedTile,
+  fileName: string,
+): Promise<UploadedTile> {
+  const first = videoTranscodeState(initial, fileName);
+  if (first.state === "failed") throw new Error(first.message);
+  if (first.state === "ready") return first.tile;
+
+  const initialMediaId = cleanMediaId(initial.primaryMediaId);
+  const matchesTile = (candidate: FlowTile): boolean =>
+    candidate.id === initial.id ||
+    (initialMediaId !== "" && cleanMediaId(candidate.primaryMediaId) === initialMediaId);
+
+  const refetchTiles = binding.refetchTiles;
+  for (let step = 1; ; step++) {
+    input.signal.throwIfAborted();
+    await waitForMedia(() => delay(TRANSCODE_POLL_INTERVAL_MS), input.signal);
+    if (!input.isCurrent()) throw new Error("The Flow project changed");
+    if (refetchTiles && step % TRANSCODE_REFETCH_STEPS === 0) {
+      await waitForMedia(() => refetchTiles().catch(() => undefined), input.signal);
+      if (!input.isCurrent()) throw new Error("The Flow project changed");
+    }
+    const current = binding.tiles().find(matchesTile);
+    if (!current) continue;
+    const next = videoTranscodeState(current, fileName);
+    if (next.state === "failed") throw new Error(next.message);
+    if (next.state === "ready") return next.tile;
   }
 }
 
@@ -193,10 +319,10 @@ async function prepareFile(
   if (flow.isVideo(file)) {
     const metadata = await flow.videoInfo(file);
     const duration = metadata[durationField];
-    if (requireVideoDuration && (!Number.isFinite(duration) || duration <= 0)) {
-      throw new Error(`Flow could not read the video duration for ${file.name}`);
+    if (requireVideoDuration && (!Number.isFinite(duration) || duration < 0)) {
+      throw new Error(`Cannot read the video duration of ${file.name}`);
     }
-    if (duration > MAX_VIDEO_SECONDS) {
+    if (typeof duration === "number" && Number.isFinite(duration) && duration > MAX_VIDEO_SECONDS) {
       throw new Error(`Trim ${file.name} to ${MAX_VIDEO_SECONDS} seconds or less before upload`);
     }
     return { file, video: true, aspectRatio: metadata.aspectRatio };
@@ -219,35 +345,40 @@ async function confirmFiles(
   }
 }
 
-/** Sends one upload and waits for the asset that the native request returns. */
+/** Sends one upload and waits until the asset and any video transcoding complete. */
 async function uploadFile(
-  { flow, submit, fields }: UploadBinding,
+  binding: UploadBinding,
   input: UploadInput,
   prepared: PreparedFile,
   progress: UploadProgress,
 ): Promise<UploadedTile> {
+  const { flow, submit, fields } = binding;
   const { signal } = input;
   const { file, video, aspectRatio, imageSize } = prepared;
   const [workflow, media] = await waitForMedia(() => Promise.all([flow.id(), flow.id()]), signal);
   signal.throwIfAborted();
   if (!input.isCurrent()) throw new Error("The Flow project changed");
-  const pending = new Promise<UploadedTile>((resolve, reject) => {
-    submit({
-      type: video ? "upload_video" : "upload_image",
-      ua: input.projectId,
-      [fields.workflow]: workflow,
-      [fields.media]: media,
-      fileName: file.name,
-      mimeType: file.type || flow.mimeType(file.name) ||
-        (video ? "video/mp4" : "application/octet-stream"),
-      aspectRatio,
-      [fields.file]: file,
-      [fields.date]: new Date(),
-      source: "FILE_PICKER",
-      [fields.dimensions]: imageSize,
-      [fields.completion]: { resolve, reject },
+  const pending = (async () => {
+    const initial = await new Promise<UploadedTile>((resolve, reject) => {
+      submit({
+        type: video ? "upload_video" : "upload_image",
+        ua: input.projectId,
+        ...(input.collectionId ? { tb: input.collectionId } : {}),
+        [fields.workflow]: workflow,
+        [fields.media]: media,
+        fileName: file.name,
+        mimeType: file.type || flow.mimeType(file.name) ||
+          (video ? "video/mp4" : "application/octet-stream"),
+        aspectRatio,
+        [fields.file]: file,
+        [fields.date]: new Date(),
+        source: "FILE_PICKER",
+        [fields.dimensions]: imageSize,
+        [fields.completion]: { resolve, reject },
+      });
     });
-  }).finally(() => { progress.inFlight = undefined; });
+    return video ? waitForVideoTranscode(binding, input, initial, file.name) : initial;
+  })().finally(() => { progress.inFlight = undefined; });
   progress.inFlight = pending;
   return waitForMedia(() => pending, signal);
 }
@@ -284,16 +415,26 @@ export async function uploadMediaFiles(
   }
 }
 
+/** Parses `/project/<id>` and `/project/<id>/collection/<collectionId>` routes. */
+function projectWorkspaceRoute(pathname: string): { projectId: string; collectionId?: string } | undefined {
+  const match = pathname.match(/\/project\/([^/?#]+)(?:\/collection\/([^/?#]+))?\/?$/);
+  if (!match) return undefined;
+  return {
+    projectId: match[1],
+    collectionId: match[2] ? decodeURIComponent(match[2]) : undefined,
+  };
+}
+
 /** Checks the route and lifecycle of a project workspace component. */
 function isCurrentPage(page: object, format: ProjectUploadFormat["page"], projectId: string): boolean {
-  if (location.pathname.match(/\/project\/([^/]+)\/?$/)?.[1] !== projectId) return false;
+  if (projectWorkspaceRoute(location.pathname)?.projectId !== projectId) return false;
   const project = readOwn(page, format.project);
   return readOwn(readOwn(page, format.lifecycle), format.destroyed) === false &&
     typeof project === "function" && project.call(page) === projectId;
 }
 
 /** Finds the live project page that owns the upload services. */
-function findProjectPage(format: ProjectUploadFormat["page"], projectId: string): object | undefined {
+export function findProjectPage(format: ProjectUploadFormat["page"], projectId: string): object | undefined {
   const host = document.querySelector("flow-project-page");
   const type = readOwn(readOwn(window, "default_AiSandboxAngularFrontend"), format.page);
   if (!host || typeof type !== "function") return;
@@ -326,6 +467,7 @@ export async function projectUpload(projectId: string, session: string, fileCoun
       name: "project_upload_service", ok: false, detail: "Project upload services",
     }]);
   }
+  const collectionId = projectWorkspaceRoute(location.pathname)?.collectionId;
   const isCurrent = () => projectStore(projectId, session) === store &&
     isCurrentPage(page, format.page, projectId);
   const signal = AbortSignal.timeout(MEDIA_UPLOAD_TIMEOUT_MS);
@@ -334,7 +476,7 @@ export async function projectUpload(projectId: string, session: string, fileCoun
   let unconfirmed = false;
   libraryUploadPending = true;
   try {
-    const input = { projectId, isCurrent, signal, files, requireVideoDuration: true };
+    const input = { projectId, collectionId, isCurrent, signal, files, requireVideoDuration: true };
     await uploadMediaFiles(binding, input, progress, (tile, file) => {
       if (!tile?.id || (tile.type !== "IMAGE" && tile.type !== "VIDEO")) {
         unconfirmed = true;
@@ -349,8 +491,9 @@ export async function projectUpload(projectId: string, session: string, fileCoun
     });
     return { ok: true, project_id: projectId, count: assets.length, assets };
   } catch (error) {
+    const interrupted = Boolean(progress.inFlight || unconfirmed || (signal.aborted && progress.file));
     return {
-      ok: false, error: progress.inFlight || unconfirmed ? "outcome_unknown" : "project_upload_failed",
+      ok: false, error: interrupted ? "outcome_unknown" : "project_upload_failed",
       project_id: projectId, assets,
       file: progress.file,
       detail: error instanceof Error ? error.message : String(error),

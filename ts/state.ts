@@ -6,7 +6,6 @@
 import type {
   CachedMediaInfo,
   FlowStoreHandle,
-  FlowStoreService,
   NgLView,
   PromptStateController,
 } from "./types";
@@ -15,11 +14,9 @@ import type {
 export interface RuntimeState {
   /** Captured Angular Ivy integer-keyed LView registry map. */
   ngLViewMap: Map<number, NgLView> | null;
-  /** Bound Angular project store service handle. */
-  lService: FlowStoreService | null;
-  /** Project identifier active when `lService` was bound. */
+  /** Project identifier at the time the runtime binds `store`. */
   projectId: string | null;
-  /** Location pathname active when `lService` was bound. */
+  /** Location pathname at the time the runtime binds `store`. */
   routePath: string | null;
   /** Normalized store mutation and snapshot handle. */
   store: FlowStoreHandle | null;
@@ -32,7 +29,6 @@ export interface RuntimeState {
 /** Single mutable runtime state container for the current page session. */
 export const runtimeState: RuntimeState = {
   ngLViewMap: null,
-  lService: null,
   projectId: null,
   routePath: null,
   store: null,
@@ -42,7 +38,6 @@ export const runtimeState: RuntimeState = {
 
 /** Clears bound store handles and cached route context. */
 export function clearStore(): void {
-  runtimeState.lService = null;
   runtimeState.projectId = null;
   runtimeState.routePath = null;
   runtimeState.store = null;

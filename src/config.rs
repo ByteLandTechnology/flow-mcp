@@ -99,9 +99,9 @@ pub(crate) fn chrome_profile_dir() -> PathBuf {
     home_dir().join("chrome-profile")
 }
 
-/// Returns `true` when persisted session data exists in `<home_dir>/chrome-profile` or `cookies.json`.
+/// Returns `true` when persisted session data exists in `<home_dir>/chrome-profile`.
 pub(crate) fn has_persisted_session() -> bool {
-    cookies_path().is_file() || chrome_profile_dir().join("Default").is_dir()
+    chrome_profile_dir().join("Default").is_dir()
 }
 
 /// Returns the fixed Chrome CDP port from `--cdp-port` or `FLOW_MCP_CDP_PORT`.

@@ -527,6 +527,15 @@ pub(crate) async fn run_generation(
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
     ensure_project_workspace_root(engine).await?;
     ensure_flow_store(engine).await?;
+    if scene.video_type.as_deref() == Some("frames") {
+        let count = scene.frames.as_ref().map_or(0, Vec::len)
+            + scene.asset_ids.as_ref().map_or(0, Vec::len)
+            + scene.characters.as_ref().map_or(0, Vec::len);
+        anyhow::ensure!(
+            count <= 2,
+            "Frame mode accepts at most two references, got {count}"
+        );
+    }
     // Upload local frames into the library first and attach them as assets, so that the
     // uploaded tiles are not counted as generated outputs.
     let uploaded_scene;
@@ -646,7 +655,7 @@ pub(crate) async fn run_edit(
                 label
             );
         }
-        if target.url.is_some() {
+        if target.url.is_some() || target.primary_media_id.is_some() {
             let local_path =
                 if let Some(cached) = db.find_existing_file_for_asset(&target.id).await? {
                     cached.file_path

@@ -3,19 +3,25 @@
 
 // Read all project tiles, scene clips, and collections from the bound store map.
 
-import { characterPersonalityNotes } from "./character_bio";
+import { readOwn } from "./angular";
+import { characterPersonalityNotes, characterVoice } from "./character_bio";
+import { activeProjectStoreFormat, snapshotFormat } from "./frontend_builds";
+import { currentProjectStore, projectInRoute } from "./project_store";
 import { sceneContents } from "./scene_tiles";
-
 import {
-  characterLooksOf,
+  asHttpOrDataUrl,
+  characterLookMedia,
   collectionIdOf,
   fifeEnv as getFifeEnv,
+  isNonAssetTileType,
   isTrashedTile,
   legacyMedia,
   legacyTile,
+  normalizeFlowMediaUrl,
+  readMediaUrl,
+  videoTrimBounds,
 } from "./dom";
 import { clearStore, runtimeState } from "./state";
-import { isStoreDestroyed } from "./store_shape";
 import type {
   FlowMediaPayload,
   FlowTile,
@@ -24,6 +30,134 @@ import type {
   SnapshotCollectionItem,
   StoreSnapshotResult,
 } from "./types";
+
+/** Explicit account credit label pattern (`Google Flow credit(s)` or `AI credit(s)`). */
+const ACCOUNT_CREDITS_RE = /(?:^|[^\w,])(\d[\d,]*)\s+(?:Google\s+Flow|Flow|AI)\s+credits?\b|\b(?:Google\s+Flow|Flow|AI)\s+credits?\s*[:–-]?\s*(\d[\d,]*)(?![\d,])/i;
+
+/** Selector matching generation credit cost estimates that are not account balances. */
+const COST_LABEL_SELECTOR = "flow-credit-cost-label, .credit-cost-label, .credit-cost-link";
+
+/** Locates an active Angular service instance matching `ServiceClass` in runtime state. */
+function findCreditsServiceInstance(
+  ServiceClass: abstract new (...args: never[]) => object,
+): object | null {
+  const seen = new Set<object>();
+  const checkObject = (candidate: unknown, depth: number): object | null => {
+    if (!candidate || typeof candidate !== "object" || candidate instanceof Node || seen.has(candidate)) {
+      return null;
+    }
+    if (candidate instanceof ServiceClass) return candidate;
+    if (depth <= 0) return null;
+    seen.add(candidate);
+    for (const key of Object.keys(candidate)) {
+      const hit = checkObject(readOwn(candidate, key), depth - 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+
+  const projectId = projectInRoute();
+  const fromStore = checkObject(projectId ? currentProjectStore(projectId)?.service : undefined, 2);
+  if (fromStore) return fromStore;
+
+  const views = runtimeState.ngLViewMap;
+  if (views instanceof Map) {
+    for (const view of views.values()) {
+      if (!Array.isArray(view)) continue;
+      for (const slot of view) {
+        const hit = checkObject(slot, 1);
+        if (hit) return hit;
+        const injector = readOwn(slot, "Ab") ?? slot;
+        const getFn = readOwn(injector, "get");
+        if (typeof getFn === "function") {
+          try {
+            const resolved: unknown = getFn.call(injector, ServiceClass, null);
+            if (resolved && typeof resolved === "object" && resolved instanceof ServiceClass) {
+              return resolved;
+            }
+          } catch {
+            // Ignore non-Angular get methods.
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Reads the spendable account credit balance from the verified build's credits service. */
+function readMappedCredits(): number | null {
+  const format = snapshotFormat()?.credits;
+  if (!format) return null;
+  const frontEnd = readOwn(window, "default_AiSandboxAngularFrontend");
+  const ServiceClass = readOwn(frontEnd, format.service);
+  if (typeof ServiceClass !== "function") return null;
+  const instance = findCreditsServiceInstance(
+    ServiceClass as abstract new (...args: never[]) => object,
+  );
+  if (!instance) return null;
+  try {
+    const totalFn = readOwn(instance, format.total);
+    if (typeof totalFn === "function") {
+      const total: unknown = totalFn.call(instance);
+      if (typeof total === "number" && Number.isFinite(total) && total >= 0) {
+        return Math.trunc(total);
+      }
+    }
+    const query = readOwn(instance, format.query);
+    const dataFn = readOwn(query, "data");
+    if (typeof dataFn === "function") {
+      const data: unknown = dataFn.call(query);
+      const balanceFn = readOwn(data, format.balanceMethod);
+      if (typeof balanceFn === "function") {
+        const balance: unknown = balanceFn.call(data);
+        if (typeof balance === "number" && Number.isFinite(balance) && balance >= 0) {
+          return Math.trunc(balance);
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/** Extracts an integer credit count from an explicit account credit string. */
+function parseAccountCreditsText(raw: string): number | null {
+  if (!raw) return null;
+  const cleaned = raw.replace(/\b(?:generate\s+for|generating\s+will\s+use)\s+\d[\d,]*\s+(?:(?:Google\s+Flow|AI|Flow)\s+)?credits?\b/gi, " ");
+  const match = ACCOUNT_CREDITS_RE.exec(cleaned);
+  if (!match) return null;
+  const parsed = parseInt((match[1] || match[2]).replace(/,/g, ""), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Reads explicit account credit labels from the DOM while ignoring generation cost labels. */
+function readDomAccountCredits(): number | null {
+  const creditNodes = document.querySelectorAll(
+    'header, nav, .cdk-overlay-container, [class*="credit"], [aria-label*="credit" i]',
+  );
+  for (const node of creditNodes) {
+    if (node.matches?.(COST_LABEL_SELECTOR) || node.closest?.(COST_LABEL_SELECTOR)) {
+      continue;
+    }
+    const ariaParsed = parseAccountCreditsText(node.getAttribute?.("aria-label") || "");
+    if (ariaParsed !== null) return ariaParsed;
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const parts: string[] = [];
+    let textNode = walker.nextNode();
+    while (textNode) {
+      if (!textNode.parentElement?.closest(COST_LABEL_SELECTOR)) {
+        const part = textNode.textContent?.trim();
+        if (part) parts.push(part);
+      }
+      textNode = walker.nextNode();
+    }
+    const parsed = parseAccountCreditsText(parts.join(" "));
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
 
 /** Normalizes nested voice descriptors into a display string. */
 function normalizeVoiceVal(v: unknown): string | null {
@@ -48,22 +182,14 @@ function normalizeVoiceVal(v: unknown): string | null {
 
 /** Reads project tiles, scenes, characters, and collections from bound runtime state. */
 export function readStoreSnapshot(): StoreSnapshotResult {
+  if (!activeProjectStoreFormat()) {
+    clearStore();
+    return { ok: false, error: "unsupported_front_end" };
+  }
   const match = /\/project\/([^/?#]+)/.exec(location.pathname || "");
   const projectId = match ? match[1] : null;
   const helper = runtimeState.store;
-  const l = runtimeState.lService;
-  if (
-    (helper || l) &&
-    (runtimeState.routePath !== location.pathname || isStoreDestroyed(l))
-  ) {
-    clearStore();
-    return { ok: false, error: "route_changed" };
-  }
-  if (typeof helper?.isReady === "function" && !helper.isReady()) {
-    return { ok: false, error: "store_loading" };
-  }
-  const tileMap = helper?.getTileMap?.();
-  if (!(tileMap instanceof Map)) {
+  if (!helper) {
     return { ok: false, error: "store_not_bound" };
   }
   if (
@@ -73,6 +199,17 @@ export function readStoreSnapshot(): StoreSnapshotResult {
   ) {
     clearStore();
     return { ok: false, error: "project_mismatch" };
+  }
+  if (!helper.isCurrent() || runtimeState.routePath !== location.pathname) {
+    clearStore();
+    return { ok: false, error: "route_changed" };
+  }
+  if (!helper.isReady()) {
+    return { ok: false, error: "store_loading" };
+  }
+  const tileMap = helper.getTileMap();
+  if (!(tileMap instanceof Map)) {
+    return { ok: false, error: "store_not_bound" };
   }
 
   const { assets, collections } = readStoreTiles(tileMap);
@@ -87,18 +224,7 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     .trim();
   const projectTitle = rawTitle || docTitle || null;
 
-  let credits: number | null = null;
-  const creditNodes = document.querySelectorAll(
-    'header, nav, [class*="credit"], [aria-label*="credit" i]',
-  );
-  for (const node of creditNodes) {
-    const txt = node.textContent || "";
-    const credMatch = txt.match(/(\d[\d,]*)\s*(?:credits|AI credits)/i);
-    if (credMatch) {
-      credits = parseInt(credMatch[1].replace(/,/g, ""), 10);
-      break;
-    }
-  }
+  const credits = readMappedCredits() ?? readDomAccountCredits();
 
   return { ok: true, projectId, projectTitle, credits, assets, collections };
 }
@@ -110,41 +236,17 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
 } {
   const cols = new Map<string, string>();
   const counts = new Map<string, number>();
-  const topLevelIds = new Set<string>();
+  const byId = new Map<string, Omit<SnapshotAssetItem, "collection_name">>();
   const sceneTiles: FlowTile[] = [];
   const rawList: Omit<SnapshotAssetItem, "collection_name">[] = [];
-  const asHttpOrDataUrl = (v: unknown): string | null =>
-    typeof v === "string" && /^(?:https?:|blob:|data:)/i.test(v) ? v : null;
   const env = getFifeEnv();
-  const fifeHost = env.fifeHost || "flow.google.com";
-  const authuser = env.authuser || null;
-
-  const normalizeFlowMediaUrl = (u: string, kind: string): string => {
-    if (typeof u !== "string" || !/^https?:\/\//i.test(u)) return u;
+  const collectionType = snapshotFormat()?.tileTypes.collection ?? "COLLECTION";
+  const isSignedUrlStr = (url: string | null): url is string => {
+    if (url === null) return false;
     try {
-      const parsed = new URL(u);
-      const host = parsed.hostname.toLowerCase();
-      const signed = env.isSignedCdnHost(parsed);
-      if (signed || !parsed.pathname.startsWith("/asb/")) {
-        return u;
-      }
-      if (
-        host.endsWith(".googleusercontent.com") ||
-        host.endsWith(".fife.usercontent.google.com") ||
-        host === fifeHost.toLowerCase()
-      ) {
-        parsed.hostname = fifeHost;
-        if (kind === "video" && !/=[^/]+$/.test(parsed.pathname)) {
-          parsed.pathname = `${parsed.pathname}=mm,22,15`;
-        }
-        if (authuser) {
-          parsed.searchParams.set("authuser", authuser);
-        }
-        return parsed.toString();
-      }
-      return u;
+      return env.isSignedCdnHost(new URL(url));
     } catch {
-      return u;
+      return false;
     }
   };
 
@@ -164,7 +266,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
 
   const collectionIds = new Set<string>();
   for (const [id, rawTile] of tileMap.entries()) {
-    if (String(rawTile?.type ?? "").toUpperCase() === "COLLECTION") {
+    if (String(rawTile?.type ?? "").toUpperCase() === collectionType) {
       collectionIds.add(String(rawTile.id ?? id));
     }
   }
@@ -178,84 +280,48 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     const tid = String(t.id ?? id);
     const tname = String(t.displayName ?? "");
     const ttype = String(t.type ?? "IMAGE").toUpperCase();
-    if (t.isPending === true && (ttype === "COLLECTION" || ttype === "SCENE")) {
+    if (t.isPending === true && (ttype === collectionType || ttype === "SCENE")) {
       continue;
     }
-    const cid = collectionIdOf(t, isCollectionId);
 
-    if (ttype === "COLLECTION") {
+    if (ttype === collectionType) {
       cols.set(tid, tname);
       if (!counts.has(tid)) counts.set(tid, 0);
       continue;
     }
+    if (isNonAssetTileType(ttype)) {
+      continue;
+    }
 
-    topLevelIds.add(tid);
+    const cid = collectionIdOf(t, isCollectionId);
     if (cid) {
       counts.set(cid, (counts.get(cid) ?? 0) + 1);
     }
 
-    const kind =
+    const rawMime = String(t.Fb?.mimeType ?? t.fb?.mimeType ?? t.mimeType ?? "").toLowerCase();
+    const baseKind =
       ttype === "VIDEO"
         ? "video"
-        : ttype === "SCENE"
-          ? "scene"
-          : ttype === "CHARACTER"
-            ? "character"
-            : "image";
-    if (kind === "scene") {
+        : ttype === "AUDIO" || ttype === "MUSIC" || ttype === "VOICE" || rawMime.startsWith("audio/")
+          ? "audio"
+          : ttype === "SCENE"
+            ? "scene"
+            : ttype === "CHARACTER"
+              ? "character"
+              : "image";
+    if (baseKind === "scene") {
       sceneTiles.push(t);
     }
 
-    let charFallbackUrl: string | null = null;
-    let charLookPrimaryMediaId: string | number | null = null;
-    if (kind === "character") {
-      charFallbackUrl = asHttpOrDataUrl(t.ue);
-      const looks = characterLooksOf(t);
-      if (looks) {
-        for (const entry of looks.values()) {
-          if (!entry) continue;
-          if (!charLookPrimaryMediaId && entry.primaryMediaId) {
-            charLookPrimaryMediaId = entry.primaryMediaId;
-          }
-          if (!charFallbackUrl) {
-            charFallbackUrl =
-              asHttpOrDataUrl(entry.Wb) ||
-              asHttpOrDataUrl(entry.fifeUrl) ||
-              asHttpOrDataUrl(entry.imageUrl) ||
-              asHttpOrDataUrl(entry.url) ||
-              asHttpOrDataUrl(entry.media?.Wb) ||
-              asHttpOrDataUrl(entry.media?.fifeUrl) ||
-              asHttpOrDataUrl(entry.media?.url);
-          }
-          if (!charFallbackUrl && Array.isArray(entry.history)) {
-            for (const h of entry.history) {
-              charFallbackUrl =
-                asHttpOrDataUrl(h?.Wb) ||
-                asHttpOrDataUrl(h?.fifeUrl) ||
-                asHttpOrDataUrl(h?.imageUrl) ||
-                asHttpOrDataUrl(h?.url) ||
-                asHttpOrDataUrl(h?.media?.Wb) ||
-                asHttpOrDataUrl(h?.media?.fifeUrl) ||
-                asHttpOrDataUrl(h?.media?.url);
-              if (charFallbackUrl) break;
-            }
-          }
-          if (charFallbackUrl && charLookPrimaryMediaId) break;
-        }
-      }
-    }
+    const charMedia = baseKind === "character" ? characterLookMedia(t) : { url: null, primaryMediaId: null };
+    const charFallbackUrl = charMedia.url;
+    const charLookPrimaryMediaId = charMedia.primaryMediaId;
 
     const videoMediaUrl =
-      kind === "video"
-        ? asHttpOrDataUrl(t.Fb?.Bd) ||
-          asHttpOrDataUrl(t.Fb?.uA) ||
-          asHttpOrDataUrl(t.Fb?.videoUrl) ||
-          asHttpOrDataUrl(t.Bd) ||
-          asHttpOrDataUrl(t.uA) ||
-          asHttpOrDataUrl(t.videoUrl) ||
-          asHttpOrDataUrl(t.fb?.Bd) ||
-          asHttpOrDataUrl(t.fb?.uA) ||
-          asHttpOrDataUrl(t.fb?.videoUrl)
+      baseKind === "video"
+        ? readMediaUrl(t.Fb, true) ||
+          readMediaUrl(t, true) ||
+          readMediaUrl(t.fb, true)
         : null;
 
     const mediaStatus = String(t.Fb?.Zc ?? t.fb?.Zc ?? t.Zc ?? "").toLowerCase();
@@ -268,43 +334,36 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       Boolean(t.Fb?.nf || t.fb?.nf || t.nf);
 
     const primaryMediaId =
+      charLookPrimaryMediaId ||
       t.primaryMediaId ||
       t.Fb?.id ||
       t.Fb?.mediaId ||
       t.fb?.mediaId ||
       t.mediaId ||
-      (kind === "character" ? charLookPrimaryMediaId : null) ||
       null;
 
-    const cachedVideoUrl =
-      kind === "video" && primaryMediaId
-        ? asHttpOrDataUrl(
-            runtimeState.mediaInfoCache.get(String(primaryMediaId))?.url,
-          )
-        : null;
+    const cachedEntry = primaryMediaId
+      ? runtimeState.mediaInfoCache.get(String(primaryMediaId))
+      : undefined;
+    const kind =
+      baseKind === "image" && cachedEntry?.media_kind === "audio"
+        ? "audio"
+        : baseKind;
+    const cachedMediaUrl = asHttpOrDataUrl(cachedEntry?.url);
 
-    const rawMediaUrl =
-      videoMediaUrl ||
-      t.Fb?.Wb ||
-      t.Fb?.fifeUrl ||
-      t.Fb?.videoUrl ||
-      t.Fb?.imageUrl ||
-      t.Fb?.mediaUrl ||
-      t.Fb?.url ||
-      t.Wb ||
-      t.fifeUrl ||
-      t.videoUrl ||
-      t.imageUrl ||
-      t.mediaUrl ||
-      t.url ||
-      t.fb?.Wb ||
-      t.fb?.fifeUrl ||
-      t.fb?.videoUrl ||
-      t.fb?.imageUrl ||
-      t.fb?.mediaUrl ||
+    const tileMediaUrl = baseKind === "character" && charLookPrimaryMediaId
+      ? charFallbackUrl
+      : videoMediaUrl ||
+      readMediaUrl(t.Fb) ||
+      readMediaUrl(t) ||
+      readMediaUrl(t.fb) ||
       charFallbackUrl ||
-      cachedVideoUrl ||
       null;
+    const rawMediaUrl = isSignedUrlStr(tileMediaUrl)
+      ? tileMediaUrl
+      : isSignedUrlStr(cachedMediaUrl)
+        ? cachedMediaUrl
+        : tileMediaUrl || cachedMediaUrl || null;
     const mediaUrl = mediaNotReady ? null : rawMediaUrl;
 
     const bio =
@@ -319,6 +378,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       null;
 
     const voiceRaw =
+      (ttype === "CHARACTER" ? normalizeVoiceVal(characterVoice(t)) : null) ??
       normalizeVoiceVal(t.voiceName) ??
       normalizeVoiceVal(t.voiceId) ??
       normalizeVoiceVal(t.voice) ??
@@ -328,34 +388,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       normalizeVoiceVal(t.audioReferences) ??
       null;
 
-    const trimStart =
-      kind === "video" && typeof t.Fb?.Jc === "number" ? t.Fb.Jc :
-      typeof t.trimStartSeconds === "number"
-        ? t.trimStartSeconds
-        : typeof t.Fb?.Ac === "number"
-          ? t.Fb.Ac
-          : typeof t.Ac === "number"
-            ? t.Ac
-            : typeof t.Cg === "number"
-              ? t.Cg
-              : typeof t.Fb?.Cg === "number"
-                ? t.Fb.Cg
-                : null;
-    const trimEnd =
-      kind === "video" && typeof t.Fb?.Pc === "number" ? t.Fb.Pc :
-      typeof t.trimEndSeconds === "number"
-        ? t.trimEndSeconds
-        : typeof t.Fb?.Ic === "number"
-          ? t.Fb.Ic
-          : typeof t.Ic === "number"
-            ? t.Ic
-            : typeof t.Rf === "number"
-              ? t.Rf
-              : typeof t.Fb?.Rf === "number"
-                ? t.Fb.Rf
-                : null;
+    const { start: trimStart, end: trimEnd } = videoTrimBounds(t);
 
-    rawList.push({
+    const topEntry: Omit<SnapshotAssetItem, "collection_name"> = {
       id: tid,
       name: tname,
       kind,
@@ -366,7 +401,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
           : t.prompt
             ? String(t.prompt)
             : null,
-      url: mediaUrl ? normalizeFlowMediaUrl(String(mediaUrl), kind) : null,
+      url: mediaUrl ? normalizeFlowMediaUrl(String(mediaUrl), kind, env) : null,
       collection_id: cid,
       primary_media_id: primaryMediaId ? String(primaryMediaId) : null,
       personality_notes: bio == null ? null : String(bio),
@@ -417,7 +452,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
             : t.createTime
               ? String(t.createTime)
               : null,
-    });
+    };
+    rawList.push(topEntry);
+    byId.set(tid, topEntry);
   }
 
   for (const st of sceneTiles) {
@@ -446,17 +483,34 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     }
 
     for (const [wfId, clip, rawMedia] of candidates) {
+      if (!wfId) continue;
       const mObj = legacyMedia(rawMedia);
-      if (!wfId || topLevelIds.has(wfId)) continue;
-      topLevelIds.add(wfId);
-      const mStatus = String(mObj?.Zc ?? clip?.Zc ?? "").toLowerCase();
-      const mError = formatMediaError(mObj?.nf ?? clip?.nf);
+      const cObj = legacyMedia(clip as FlowMediaPayload | null);
+      const mStatus = String(
+        mObj?.Zc ?? cObj?.Zc ?? clip?.Zc ?? "",
+      ).toLowerCase();
+      const mError = formatMediaError(mObj?.nf ?? cObj?.nf ?? clip?.nf);
+      const existing = byId.get(wfId);
+      if (existing) {
+        if (mStatus === "failed" || mStatus === "canceled" || mError) {
+          if (
+            existing.media_status !== "failed" &&
+            existing.media_status !== "canceled"
+          ) {
+            existing.media_status = mStatus || existing.media_status;
+          }
+          if (!existing.media_error && mError) {
+            existing.media_error = mError;
+          }
+        }
+        continue;
+      }
       const mNotReady =
         mStatus === "pending" ||
         mStatus === "scheduled" ||
         mStatus === "failed" ||
         mStatus === "canceled" ||
-        Boolean(mObj?.nf || clip?.nf);
+        Boolean(mObj?.nf || cObj?.nf || clip?.nf);
       const clipPrimaryMediaId = clip?.primaryMediaId
         ? String(clip.primaryMediaId)
         : mObj?.id
@@ -467,21 +521,17 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
             runtimeState.mediaInfoCache.get(clipPrimaryMediaId)?.url,
           )
         : null;
-      const rawClipUrl =
-        asHttpOrDataUrl(mObj?.Bd) ||
-        asHttpOrDataUrl(mObj?.uA) ||
-        asHttpOrDataUrl(mObj?.videoUrl) ||
-        asHttpOrDataUrl(mObj?.Wb) ||
-        asHttpOrDataUrl(mObj?.fifeUrl) ||
-        asHttpOrDataUrl(mObj?.mediaUrl) ||
-        asHttpOrDataUrl(mObj?.url) ||
-        asHttpOrDataUrl(clip?.Bd) ||
-        asHttpOrDataUrl(clip?.uA) ||
-        asHttpOrDataUrl(clip?.videoUrl) ||
-        asHttpOrDataUrl(clip?.Wb) ||
-        asHttpOrDataUrl(clip?.fifeUrl) ||
-        cachedClipVideoUrl ||
+      const tileClipUrl =
+        readMediaUrl(mObj, true) ||
+        readMediaUrl(clip, true) ||
+        readMediaUrl(mObj) ||
+        readMediaUrl(clip) ||
         null;
+      const rawClipUrl = isSignedUrlStr(tileClipUrl)
+        ? tileClipUrl
+        : isSignedUrlStr(cachedClipVideoUrl)
+          ? cachedClipVideoUrl
+          : tileClipUrl || cachedClipVideoUrl || null;
       const clipUrl = mNotReady ? null : rawClipUrl;
       const trimStartVal =
         typeof clip?.Ji === "number" ? clip.Ji :
@@ -529,12 +579,12 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               : st.hc
                 ? String(st.hc)
                 : null;
-      rawList.push({
+      const sceneEntry: Omit<SnapshotAssetItem, "collection_name"> = {
         id: wfId,
         name: String((mObj as FlowTile | null)?.displayName || st.displayName || ""),
         kind: "video",
         prompt: clipPrompt,
-        url: clipUrl ? normalizeFlowMediaUrl(String(clipUrl), "video") : null,
+        url: clipUrl ? normalizeFlowMediaUrl(String(clipUrl), "video", env) : null,
         collection_id: sceneCid,
         primary_media_id: clipPrimaryMediaId,
         personality_notes: null,
@@ -557,7 +607,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               : null,
         duration: durVal,
         created_at: clipCreated,
-      });
+      };
+      rawList.push(sceneEntry);
+      byId.set(wfId, sceneEntry);
     }
   }
 

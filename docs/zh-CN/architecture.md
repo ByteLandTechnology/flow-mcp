@@ -26,15 +26,15 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 ![双模式 Chrome 登录与会话交接](../assets/zh-CN/login-session-flow.svg)
 
 1. **`LoginChrome`（仅交互模式）**：
-   - 使用 `<home>/chrome-profile`（Unix 权限 `0700`）启动**不带** CDP 标志的标准可见 Chrome，并打开 Google 登录页（`?hl=en`）。
-   - 当 `wait=true`（默认，`timeout_secs=180`）时，`flow_login` 检查配置目录中的 Flow URL 与 Google Cookie，而不执行 CDP 探测。
+   - 使用 `<home>/chrome-profile`（Unix 权限 `0700`）启动**不带** CDP 标志的标准可见 Chrome，并打开 Google 登录页（`?hl=en`）。当 `force` 为 `false` 时保留现有配置目录，当 `force` 为 `true` 时先清空配置目录。
+   - 当 `wait=true`（默认，`timeout_secs=180`）时，`flow_login` 仅检查登录拒绝记录与新写入的 Google Cookie，不执行 CDP 探测或扫描原始会话文件。
    - 登录完成后，`ChromeEngine::promote_login_chrome` 停止 `LoginChrome`。随后 Chromium 将 Cookie 与 DBSC 密钥刷盘至 `<home>/chrome-profile`。
 2. **`ManagedChrome`（默认后台模式）**：
    - 在 `<home>/chrome-profile` 上启动带可见窗口的 Chrome（使用 `--headless` 时为无头 Chrome），并建立本地 WebSocket CDP 连接（`--cdp-port`、`FLOW_MCP_CDP_PORT` 或随机端口 `0`）。
-   - 在页面加载时执行内嵌的 `flow_runtime.js` IIFE 包，并将归一化后的 Cookie 原子写入 `<home>/cookies.json`（Unix 权限 `0600`）。
-3. **Cookie 归一化与原生配置优先级**：
-   - 归一化仅保留 `google.com`、`labs.google`、`googleusercontent.com` 与 `gstatic.com` 域名，同时保留 `__Host-` 前缀与 `hostOnly` 标志。
-   - 如果 `<home>/chrome-profile` 已保存有效的原生 Google Cookie，`flow-mcp` 会原样保留它们，不会用 `<home>/cookies.json` 中的旧数据覆盖。
+   - 在页面加载时执行内嵌的 `flow_runtime.js` IIFE 包，并通过 `WIZ_global_data` 令牌与只读 Flow 后端探测验证工作区访问权限。
+3. **显式 Cookie 导出与导入**：
+   - 常规登录、状态检查与下载流程直接使用 `<home>/chrome-profile`，不自动读写 `<home>/cookies.json`。
+   - 显式调用 `save_cookies` 与 `sync_cookies` 时，会将 `google.com`、`labs.google`、`googleusercontent.com` 与 `gstatic.com` 的归一化 Cookie 原子写入 `<home>/cookies.json`（Unix 权限 `0600`），同时保留 `__Host-` 前缀以及无前导点域名的仅主机作用域。
 4. **单实例锁与孤儿 Chrome**：
    - 启动 Chrome 前，`flow-mcp` 会对 `<home>/flow-mcp.lock`（Unix 权限 `0600`）加独占锁，并持有到进程结束。进程结束时（包括崩溃），操作系统会释放该锁。
    - 若锁已被其他进程持有，启动 Chrome、`login`、`status`、`logout` 以及 `flow_login` 的 `logout` 操作都会报错，`doctor` 会显示警告。
@@ -60,7 +60,7 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 | `<home>` 下路径 | Unix 权限 | 职责 |
 | :--- | :--- | :--- |
 | `chrome-profile/` | `0700` | 持久化 Chrome 配置目录、DBSC 密钥与实时会话 Cookie |
-| `cookies.json` | `0600` | `flow-mcp` 原子写入的归一化 Google 与 Flow Cookie 数组 |
+| `cookies.json` | `0600` | 供显式 `save_cookies` 与 `sync_cookies` 使用的归一化 Google 与 Flow Cookie 数组 |
 | `flow-mcp.lock` | `0600` | 进程可启动 Chrome 期间持有的单实例锁 |
 | `flow-mcp.db` | `0600` | `WAL` 模式 SQLite 数据库，包含 `downloads`、`character_looks` 与 `characters` |
 | `downloads/` | 私有目录 | 全部下载媒体的固定目录；`flow-mcp` 拒绝外部输出路径 |
@@ -68,7 +68,7 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 ### 媒体下载流程（`flow_download` 与任务下载）
 
 1. **URL 解析**：`flow-mcp` 从项目快照读取 `fifeUrl`、`videoUrl` 或 `imageUrl`。如果缺失，它调用 Flow `as29s` RPC 获取签名 URL。
-2. **主 HTTP 流（`reqwest`）**：`reqwest` 将字节流式写入临时文件。对于签名 CDN URL（`storage.googleapis.com` 与 `flow-content.google`），它不附加 Cookie 请求头；对于 Google URL，它发送 `Referer: https://flow.google.com/` 与 Chrome Cookie。
-3. **浏览器 `fetchMedia` 回退**：如果 HTTP 流失败，`ChromeEngine` 会在 Flow 页面内部运行 `fetchMedia` 并解码返回的 Base64 结果。
+2. **签名 HTTP 流与已认证 `fetchMedia`**：对于签名 CDN URL（`storage.googleapis.com`、`flow-content.google` 与 `video-downloads.googleusercontent.com`），`reqwest` 不附加 Cookie 请求头直接流式写入临时文件，失败时回退到 `fetchMedia`。
+3. **页面内认证抓取与实时 CDP Cookie 回退**：对于未签名的 Google 与 Flow URL，`ChromeEngine` 优先在 Flow 页面内执行 `fetchMedia`，失败时回退到带 `Referer: https://flow.google.com/` 与实时 Chrome CDP Cookie 的 `reqwest` 下载。
 4. **校验与自然命名**：`flow-mcp` 拒绝空字节文件并校验 `Content-Type` 与文件魔数。它按 `Content-Disposition`、URL 路径或 `<asset_id>.<ext>` 选择文件名，处理重名冲突并更新 SQLite（`downloads`）。
 5. **MCP 资源服务**：`flow-mcp` 将每个下载项注册为 `flow://downloads/{id}` 与 `flow://downloads/asset/{asset_id}`。`resources/list` 每页返回 `100` 条项目。`resources/read` 以 Base64 提供不超过 `64 MiB` 的文件，而 `flow_downloads`（`action="read_chunk"`）按分片读取更大的文件。
