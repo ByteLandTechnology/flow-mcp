@@ -3,7 +3,7 @@
 
 // Read and change collections in the active project without page controls.
 
-import { isTrashedTile, parentCollectionId } from "./dom";
+import { isNonAssetTileType, isTrashedTile, parentCollectionId } from "./dom";
 import { readBuildLabel } from "./frontend_builds";
 import type { CollectionWriteFormat } from "./frontend_builds";
 import { collectionWriteCompatibility } from "./frontend_compatibility";
@@ -71,7 +71,7 @@ function summarize(tiles: Map<string, FlowTile>): SnapshotCollectionItem[] {
     }
   }
   for (const tile of tiles.values()) {
-    if (isTrashedTile(tile) || tile.type === "COLLECTION" ||
+    if (isTrashedTile(tile) || tile.type === "COLLECTION" || isNonAssetTileType(tile.type) ||
         (tile.type === "SCENE" && tile.isPending)) continue;
     const id = parentCollectionId(tile);
     const parent = id === null ? undefined : collections.get(id);

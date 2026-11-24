@@ -70,7 +70,7 @@ export interface FlowMediaPayload {
   resolution?: number;
   /** Media width divided by media height. */
   aspectRatio?: number;
-  /** Submission time in the Flow front end from 2026-11-15 on. */
+  /** Direct media URL in build 20261120.00 or submission time in 2026-11-15 builds. */
   kc?: unknown;
   /** Text prompt used to generate the media. */
   prompt?: string;
@@ -114,8 +114,12 @@ export interface FlowMediaPayload {
 
 /** Character look history entry stored in tile look maps. */
 export interface CharacterLookEntry {
+  /** Media item identifier on look history entries. */
+  id?: string | number;
   /** Primary media identifier for the look. */
   primaryMediaId?: string | number;
+  /** Direct look image URL in build 20261120.00. */
+  kc?: unknown;
   /** FIFE look URL. */
   Wb?: string;
   /** Explicit FIFE URL alias. */
@@ -152,6 +156,8 @@ export interface SceneClipItem {
   Wb?: string;
   /** Explicit FIFE URL alias. */
   fifeUrl?: string;
+  /** Direct clip media URL in build 20261120.00. */
+  kc?: unknown;
   /** Trim start in seconds. */
   Mh?: number;
   /** Trim end in seconds. */
@@ -178,7 +184,7 @@ export interface FlowTile extends FlowMediaPayload {
   primaryMediaId?: string | number;
   /** Tile display title. */
   displayName?: string;
-  /** Uppercase tile kind (`IMAGE`, `VIDEO`, `SCENE`, `CHARACTER`, `COLLECTION`). */
+  /** Uppercase tile kind (`IMAGE`, `VIDEO`, `SCENE`, `CHARACTER`, `COLLECTION`, `TEXT_TILE`, `CUSTOM`). */
   type?: string;
   /** True while creation mutation is pending. */
   isPending?: boolean;
@@ -204,10 +210,16 @@ export interface FlowTile extends FlowMediaPayload {
   fb?: FlowMediaPayload;
   /** Primary media container in the Flow front end from 2026-11-15 on. */
   Eb?: FlowMediaPayload;
+  /** Primary media container in build 20261120.00. */
+  Kb?: FlowMediaPayload;
   /** Character preview fallback URL. */
   ue?: string;
+  /** Preview media identifier or fallback URL in build 20261120.00. */
+  Kd?: string;
   /** Character look slots map. */
   oi?: Map<unknown, CharacterLookEntry>;
+  /** Character look slots map in build 20261120.00. */
+  Ng?: Map<unknown, CharacterLookEntry>;
   /** Character personality biography notes. */
   personalityNotes?: string;
   /** Minified character personality notes. */

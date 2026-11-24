@@ -159,7 +159,7 @@ pub(crate) struct TrashParams {
     pub(crate) r#match: String,
 }
 
-/// Resolves missing direct media URLs on finished image or video tiles through `as29s` RPCs.
+/// Resolves missing direct media URLs on finished image, video, or character tiles through `as29s` RPCs.
 async fn populate_missing_media_urls(
     engine: &ChromeEngine,
     assets: &mut [FlowAsset],
@@ -167,7 +167,7 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
-        if !matches!(asset.kind.as_str(), "video" | "image")
+        if !matches!(asset.kind.as_str(), "video" | "image" | "character")
             || asset.url.is_some()
             || asset.media_error.is_some()
             || matches!(

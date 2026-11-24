@@ -3,7 +3,14 @@
 
 // Shared Angular Ivy LView traversal, router lookup, and scene creation helpers.
 
-import { delay, elText, fifeBase } from "./dom";
+import {
+  characterLookMedia,
+  delay,
+  elText,
+  fifeBase,
+  normalizeFlowMediaUrl,
+  readMediaUrl,
+} from "./dom";
 import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
@@ -297,13 +304,14 @@ export function pickerAssetMatches(
   if (target.primaryMediaId && aids.includes(String(target.primaryMediaId))) {
     return true;
   }
-  const aFife = fifeBase(
-    readOwn(a, "Wb") ||
-      readOwn(a, "fifeUrl") ||
-      readOwn(a, "imageUrl") ||
-      readOwn(a, "url"),
-  );
-  return Boolean(target.fife && aFife && target.fife === aFife);
+  const rawUrl =
+    readMediaUrl(a) ||
+    readMediaUrl(readOwn(a, "Kb")) ||
+    readMediaUrl(readOwn(a, "Fb")) ||
+    characterLookMedia(a as FlowTile).url;
+  const targetFife = target.fife ? fifeBase(normalizeFlowMediaUrl(target.fife)) : "";
+  const aFife = rawUrl ? fifeBase(normalizeFlowMediaUrl(rawUrl)) : "";
+  return Boolean(targetFife && aFife && targetFife === aFife);
 }
 
 /** Returns true when a visible picker DOM node matches `target` via Ivy data, title, or media URL. */
@@ -335,12 +343,13 @@ export function pickerElementMatches(
     if (txt && txt.includes(target.lowName)) return true;
   }
   if (target.url || target.fife) {
+    const targetFife = target.fife ? fifeBase(normalizeFlowMediaUrl(target.fife)) : "";
     for (const m of el.querySelectorAll(mediaSelector)) {
       const s = m.getAttribute("src") || "";
       if (!s) continue;
       if (
         (target.url && (s === target.url || target.url.includes(s))) ||
-        (target.fife && fifeBase(s) === target.fife)
+        (targetFife && fifeBase(normalizeFlowMediaUrl(s)) === targetFife)
       ) {
         return true;
       }

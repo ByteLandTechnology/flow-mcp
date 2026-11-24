@@ -529,10 +529,121 @@ const NOVEMBER_20_ATTACHMENTS: AgentAttachmentFormat = {
   },
 };
 
+/** Verified media payload fields used during snapshot reads. */
+export interface SnapshotMediaFormat {
+  /** Primary media payload property on an image or video tile. */
+  container: string;
+  /** Direct media URL property on a media payload or history item. */
+  url: string;
+  /** Lifecycle status property on a media payload. */
+  status: string;
+  /** Error payload property on a media payload. */
+  error: string;
+  /** Dimensions object property on a media payload. */
+  dimensions: string;
+  /** Video duration property in seconds on a media payload. */
+  duration: string;
+  /** Creation date property on a tile or media payload. */
+  date: string;
+}
+
+/** Verified character tile and entity protobuf fields used during snapshot reads. */
+export interface SnapshotCharacterFormat {
+  /** Serialized entity message property on a character tile. */
+  entity: string;
+  /** Look workflow map property on a character tile. */
+  looks: string;
+  /** Preview media ID property on a character tile. */
+  previewMediaId: string;
+  /** Protobuf field number for `entity_info` on the entity message. */
+  entityInfoField: number;
+  /** Protobuf field number for `character_info` on `entity_info`. */
+  characterInfoField: number;
+  /** Protobuf field number for `audio_references` on `character_info`. */
+  audioReferencesField: number;
+  /** Protobuf field number for a preset voice ID on an audio reference. */
+  presetVoiceField: number;
+  /** Protobuf field number for a custom voice workflow ID on an audio reference. */
+  customVoiceField: number;
+  /** Protobuf field number for `personality_notes` on `character_info`. */
+  notesField: number;
+}
+
+/** Verified tile type discriminants in the project tile store. */
+export interface SnapshotTileTypesFormat {
+  /** Collection tile type value. */
+  collection: string;
+  /** Asset tile type values included in project asset lists. */
+  assets: readonly string[];
+  /** Non-asset tile type values excluded from project asset lists and counts. */
+  ignored: readonly string[];
+}
+
+/** Verified account credits service and balance accessors. */
+export interface SnapshotCreditsFormat {
+  /** Exported credits service class on the Angular frontend namespace. */
+  service: string;
+  /** Signal method returning the spendable total credit balance. */
+  total: string;
+  /** Query property on the credits service. */
+  query: string;
+  /** Method on the credits query message returning total credits. */
+  balanceMethod: string;
+}
+
+/** Verified snapshot field map for one frontend build. */
+export interface SnapshotFormat {
+  /** Media payload and URL properties. */
+  media: SnapshotMediaFormat;
+  /** Character look, preview, and entity properties. */
+  character: SnapshotCharacterFormat;
+  /** Tile type discriminants for assets, collections, and non-asset items. */
+  tileTypes: SnapshotTileTypesFormat;
+  /** Credits service class and balance accessors. */
+  credits: SnapshotCreditsFormat;
+}
+
+/** Snapshot format of build 20261120.00. */
+const NOVEMBER_20_SNAPSHOT: SnapshotFormat = {
+  media: {
+    container: "Kb",
+    url: "kc",
+    status: "od",
+    error: "Bf",
+    dimensions: "Bc",
+    duration: "Cf",
+    date: "lc",
+  },
+  character: {
+    entity: "Rc",
+    looks: "Ng",
+    previewMediaId: "Kd",
+    entityInfoField: 4,
+    characterInfoField: 3,
+    audioReferencesField: 2,
+    presetVoiceField: 2,
+    customVoiceField: 1,
+    notesField: 3,
+  },
+  tileTypes: {
+    collection: "COLLECTION",
+    assets: ["IMAGE", "VIDEO", "SCENE", "CHARACTER"],
+    ignored: ["TEXT_TILE", "CUSTOM"],
+  },
+  credits: {
+    service: "EG",
+    total: "Ts",
+    query: "query",
+    balanceMethod: "YR",
+  },
+};
+
 /** Verified operations and store format of one build. */
 interface FrontendBuild {
   /** Layout for the project store. */
   projectStore: ProjectStoreFormat;
+  /** Snapshot field descriptors for verified store reads. */
+  snapshot?: SnapshotFormat;
   /** Operations with verified request formats. */
   operations: Partial<FrontendFormats>;
   /** Native fields used to confirm a character voice assignment. */
@@ -605,6 +716,7 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
   ["boq_labs-ai-sandbox-frontend_20261120.00_p0", {
     projectStore: NOVEMBER_20_STORE,
+    snapshot: NOVEMBER_20_SNAPSHOT,
     voiceConfirmation: {
       editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
       previewSaved: "MK", pickerSelection: "Qn",
@@ -638,6 +750,11 @@ export function readBuildLabel(): string | null {
 /** Returns the verified formats for an exact build label. */
 export function frontendBuild(label: string | null): FrontendBuild | undefined {
   return label === null ? undefined : VERIFIED_BUILDS.get(label);
+}
+
+/** Returns the verified snapshot field descriptors for the active build. */
+export function snapshotFormat(): SnapshotFormat | undefined {
+  return frontendBuild(readBuildLabel())?.snapshot;
 }
 
 /** Returns the layouts to check when the runtime binds the active project store. */
