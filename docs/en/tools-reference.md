@@ -337,7 +337,7 @@ List project assets or upload local images and videos to the active project.
 | `action` | `string` | No | `list` (default) or `upload`. |
 | `files` | `string[]` | For `upload` | Local image or video paths on the server. |
 | `query` | `string` | No | Case-insensitive substring matching asset ID, name, or prompt. |
-| `kind` | `string` | No | Filter by `"image"`, `"video"`, `"scene"`, `"character"`, or `"all"` (default). |
+| `kind` | `string` | No | Filter by `"image"`, `"video"`, `"scene"`, `"character"`, `"audio"`, or `"all"` (default). |
 | `collection` | `string` | No | Filter by collection ID, name substring, `"all"`, `"none"`, or `"uncollected"`. |
 | `limit` | `integer` | No | Maximum items to return (`>= 1`). |
 | `resolve_urls` | `boolean` | No | Resolve missing media URLs after the filters and limit. Default is `true`. The lookup has a 10-second limit. |
@@ -386,7 +386,7 @@ The tool checks the result of each write in a new read of the same project. The 
 
 ### `flow_download`
 
-Download a matching project image or video to `<home>/downloads` and index it in `flow-mcp.db`. Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
+Download a matching project image, video, character, or audio asset to `<home>/downloads` and index it in `flow-mcp.db`. Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
 
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
@@ -402,7 +402,7 @@ Query, check, stream Base64 slices from, prune, delete, or clear indexed downloa
 | `id` | `integer` | No | SQLite download row ID (`>= 1`) for `"get"`, `"read_chunk"`, or `"delete"`. |
 | `asset_id` | `string` | No | Flow asset ID for `"get"`, `"read_chunk"`, or `"delete"`. |
 | `query` | `string` | No | Case-insensitive substring matching ID, name, prompt, file name, or path (`"list"`). |
-| `kind` | `string` | No | Filter for `"list"`: `"image"`, `"video"`, `"scene"`, `"character"`, or `"all"` (default). |
+| `kind` | `string` | No | Filter for `"list"`: `"image"`, `"video"`, `"scene"`, `"character"`, `"audio"`, or `"all"` (default). |
 | `project_id` | `string` | No | Filter by project ID for `"list"`. |
 | `existing_only` | `boolean` | No | Return only rows whose file exists on disk for `"list"`. Default `false`. |
 | `limit` | `integer` | No | Page limit for `"list"` (`1..=500`, default `50`). |

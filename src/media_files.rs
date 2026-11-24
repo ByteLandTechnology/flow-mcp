@@ -14,7 +14,7 @@ use crate::assets::FlowAsset;
 use crate::config::downloads_dir;
 use crate::db::{DownloadRecord, FlowDb, effective_mime_type};
 
-/// Error marker used when a candidate URL serves HTML, JSON, playlists, or the wrong media type.
+/// Error tag for candidate URLs that return HTML, JSON, playlists, or the wrong media kind.
 pub(crate) const MEDIA_KIND_MISMATCH_TAG: &str = "[media_kind_mismatch]";
 
 /// Default chunk size (`1 MiB`) returned by `flow_downloads` `read_chunk`.
@@ -134,16 +134,56 @@ fn extract_disposition_filename(disposition: &str) -> Option<String> {
 
 /// Picks the default file extension from `content_type` or the asset kind.
 fn default_extension_for_asset(target: &FlowAsset, content_type: Option<&str>) -> &'static str {
+    let essence = mime_essence(content_type);
+    match essence.as_str() {
+        "video/mp4" => return "mp4",
+        "video/webm" => return "webm",
+        "video/x-msvideo" | "video/avi" => return "avi",
+        "image/png" => return "png",
+        "image/jpeg" | "image/jpg" => return "jpg",
+        "image/webp" => return "webp",
+        "image/gif" => return "gif",
+        "audio/mpeg" | "audio/mp3" => return "mp3",
+        "audio/mp4" | "audio/x-m4a" => return "m4a",
+        "audio/aac" | "audio/x-aac" => return "aac",
+        "audio/wav" | "audio/x-wav" | "audio/wave" | "audio/vnd.wave" => return "wav",
+        "audio/flac" | "audio/x-flac" => return "flac",
+        "audio/ogg" | "application/ogg" | "audio/opus" => return "ogg",
+        "audio/aiff" | "audio/x-aiff" => return "aiff",
+        "audio/webm" => return "webm",
+        _ => {}
+    }
     content_type
         .and_then(|ct| ct.parse::<mime_guess::Mime>().ok())
         .and_then(|m| mime_guess::get_mime_extensions(&m))
         .and_then(|exts| {
             exts.iter()
                 .copied()
-                .find(|&e| matches!(e, "mp4" | "png" | "jpg" | "webp" | "webm" | "gif"))
+                .find(|&e| {
+                    matches!(
+                        e,
+                        "mp4"
+                            | "png"
+                            | "jpg"
+                            | "webp"
+                            | "webm"
+                            | "gif"
+                            | "mp3"
+                            | "m4a"
+                            | "aac"
+                            | "wav"
+                            | "flac"
+                            | "ogg"
+                            | "aiff"
+                    )
+                })
                 .or_else(|| exts.first().copied())
         })
-        .unwrap_or(if target.kind == "video" { "mp4" } else { "png" })
+        .unwrap_or(match target.kind.as_str() {
+            "video" => "mp4",
+            "audio" => "wav",
+            _ => "png",
+        })
 }
 
 /// Resolves the natural download file name from HTTP headers, URL path, or `<asset_id>.<ext>`.
@@ -204,7 +244,9 @@ pub(crate) fn validate_content_type_header(ct: Option<&str>, expected_kind: &str
                 | "application/dash+xml"
                 | "application/xhtml+xml"
                 | "application/vnd.apple.mpegurl"
+                | "application/x-mpegurl"
                 | "audio/mpegurl"
+                | "audio/x-mpegurl"
         )
     {
         anyhow::bail!(
@@ -220,6 +262,19 @@ pub(crate) fn validate_content_type_header(ct: Option<&str>, expected_kind: &str
             MEDIA_KIND_MISMATCH_TAG,
             essence
         );
+    }
+    if expected_kind == "audio" {
+        if essence.starts_with("image/")
+            || (essence.starts_with("video/")
+                && !matches!(essence.as_str(), "video/mp4" | "video/webm"))
+        {
+            anyhow::bail!(
+                "{} Media URL returned '{}' instead of audio",
+                MEDIA_KIND_MISMATCH_TAG,
+                essence
+            );
+        }
+        return Ok(());
     }
     if expected_kind != "video" && (essence.starts_with("video/") || essence.starts_with("audio/"))
     {
@@ -275,11 +330,32 @@ pub(crate) async fn validate_downloaded_file(
     let is_png = hdr.starts_with(b"\x89PNG\r\n\x1a\n");
     let is_gif = hdr.starts_with(b"GIF87a") || hdr.starts_with(b"GIF89a");
     let is_webp = hdr.len() >= 12 && &hdr[0..4] == b"RIFF" && &hdr[8..12] == b"WEBP";
-    let is_mp4 = hdr.len() >= 8
+
+    let is_wav = hdr.len() >= 12 && &hdr[0..4] == b"RIFF" && &hdr[8..12] == b"WAVE";
+    let is_flac = hdr.starts_with(b"fLaC");
+    let is_ogg = hdr.starts_with(b"OggS");
+    let is_aiff =
+        hdr.len() >= 12 && &hdr[0..4] == b"FORM" && matches!(&hdr[8..12], b"AIFF" | b"AIFC");
+    let is_id3 = hdr.starts_with(b"ID3");
+    let is_mpeg_sync = hdr.len() >= 4
+        && hdr[0] == 0xFF
+        && (hdr[1] & 0xE0) == 0xE0
+        && hdr[1] != 0xFF
+        && (hdr[2] & 0xF0) != 0xF0;
+    let is_aac_adts = is_mpeg_sync && (hdr[1] & 0x06) == 0;
+    let is_mp3 = is_id3 || (is_mpeg_sync && (hdr[1] & 0x06) != 0);
+    let is_m4a_brand = hdr.len() >= 12
+        && &hdr[4..8] == b"ftyp"
+        && matches!(&hdr[8..12], b"M4A " | b"M4B " | b"M4P ");
+    let is_pure_audio =
+        is_wav || is_flac || is_ogg || is_aiff || is_mp3 || is_aac_adts || is_m4a_brand;
+
+    let is_iso_bmff = hdr.len() >= 8
         && matches!(
             &hdr[4..8],
             b"ftyp" | b"styp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip"
         );
+    let is_mp4_video = is_iso_bmff && !is_m4a_brand;
     let is_webm = hdr.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]);
     let is_avi = hdr.len() >= 12 && &hdr[0..4] == b"RIFF" && &hdr[8..12] == b"AVI ";
 
@@ -297,14 +373,20 @@ pub(crate) async fn validate_downloaded_file(
                 MEDIA_KIND_MISMATCH_TAG
             );
         }
-        if !(is_mp4 || is_webm || is_avi) {
+        if is_pure_audio {
+            anyhow::bail!(
+                "{} Media URL returned audio bytes instead of video",
+                MEDIA_KIND_MISMATCH_TAG
+            );
+        }
+        if !(is_mp4_video || is_webm || is_avi) {
             anyhow::bail!(
                 "{} Media URL did not return a valid MP4/WebM/AVI video container",
                 MEDIA_KIND_MISMATCH_TAG
             );
         }
         if generic_ct {
-            let inferred = if is_mp4 {
+            let inferred = if is_mp4_video {
                 "video/mp4"
             } else if is_webm {
                 "video/webm"
@@ -316,9 +398,51 @@ pub(crate) async fn validate_downloaded_file(
         return Ok(ct);
     }
 
-    if is_mp4 || is_webm || is_avi {
+    if expected_kind == "audio" {
+        if is_jpeg || is_png || is_gif || is_webp || is_avi {
+            anyhow::bail!(
+                "{} Media URL returned non-audio bytes instead of audio",
+                MEDIA_KIND_MISMATCH_TAG
+            );
+        }
+        if !(is_pure_audio || is_iso_bmff || is_webm) {
+            anyhow::bail!(
+                "{} Media URL did not return a valid WAV/MP3/AAC/FLAC/Ogg/AIFF/MP4/WebM audio file",
+                MEDIA_KIND_MISMATCH_TAG
+            );
+        }
+        if generic_ct {
+            let inferred = if is_wav {
+                "audio/wav"
+            } else if is_mp3 {
+                "audio/mpeg"
+            } else if is_aac_adts {
+                "audio/aac"
+            } else if is_flac {
+                "audio/flac"
+            } else if is_ogg {
+                "audio/ogg"
+            } else if is_aiff {
+                "audio/aiff"
+            } else if is_iso_bmff {
+                "audio/mp4"
+            } else {
+                "audio/webm"
+            };
+            return Ok(Some(inferred.to_string()));
+        }
+        return Ok(ct);
+    }
+
+    if is_mp4_video || is_webm || is_avi {
         anyhow::bail!(
             "{} Media URL returned video bytes instead of image",
+            MEDIA_KIND_MISMATCH_TAG
+        );
+    }
+    if is_pure_audio {
+        anyhow::bail!(
+            "{} Media URL returned audio bytes instead of image",
             MEDIA_KIND_MISMATCH_TAG
         );
     }

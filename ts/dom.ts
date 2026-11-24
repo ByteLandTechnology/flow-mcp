@@ -310,6 +310,73 @@ export async function dismissOverlay(): Promise<void> {
   }
 }
 
+/** Query parameter names (lowercased) that mark a pre-signed cloud storage or CDN URL. */
+const SIGNED_URL_QUERY_KEYS = new Set([
+  "signature",
+  "googleaccessid",
+  "x-goog-signature",
+  "x-goog-algorithm",
+  "x-goog-credential",
+  "x-goog-date",
+  "x-goog-expires",
+  "x-goog-signedheaders",
+]);
+
+/** Returns true when `parsed` targets a signed storage/CDN host or carries V2/V4 query signatures. */
+export function isSignedMediaUrl(parsed: URL): boolean {
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === "storage.googleapis.com" ||
+    host.endsWith(".storage.googleapis.com") ||
+    host === "flow-content.google" ||
+    host.endsWith(".flow-content.google") ||
+    host === "labs-flow.dev" ||
+    host.endsWith(".labs-flow.dev") ||
+    host === "video-downloads.googleusercontent.com" ||
+    host.endsWith(".video-downloads.googleusercontent.com")
+  ) {
+    return true;
+  }
+  for (const [key] of parsed.searchParams) {
+    if (SIGNED_URL_QUERY_KEYS.has(key.toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Returns true when a V2 (`Expires`) or V4 (`X-Goog-Date` + `X-Goog-Expires`) signed URL has expired. */
+export function isExpiredSignedUrl(rawUrl: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  const getParam = (target: string): string | null => {
+    for (const [k, v] of parsed.searchParams) {
+      if (k.toLowerCase() === target) return v;
+    }
+    return null;
+  };
+  const v2Expires = getParam("expires");
+  if (v2Expires && /^\d+$/.test(v2Expires)) {
+    const expSec = Number(v2Expires);
+    if (Number.isFinite(expSec) && expSec > 0 && Date.now() >= (expSec - 30) * 1000) return true;
+  }
+  const googDate = getParam("x-goog-date");
+  const googExpires = getParam("x-goog-expires");
+  if (googDate && googExpires && /^\d+$/.test(googExpires)) {
+    const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/i.exec(googDate.trim());
+    const ttlSec = Number(googExpires);
+    if (m && Number.isFinite(ttlSec) && ttlSec > 0) {
+      const issuedMs = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+      if (Number.isFinite(issuedMs) && Date.now() >= issuedMs + (ttlSec - 30) * 1000) return true;
+    }
+  }
+  return false;
+}
+
 /** Extracts active FIFE host, `authuser`, and signed-CDN detection from `window.WIZ_global_data`. */
 export function fifeEnv(): FifeEnv {
   const wiz = window.WIZ_global_data || {};
@@ -329,19 +396,7 @@ export function fifeEnv(): FifeEnv {
       : searchUser && searchUser !== "0"
         ? searchUser
         : null;
-  const isSignedCdnHost = (parsed: URL): boolean => {
-    const host = parsed.hostname.toLowerCase();
-    return (
-      host === "storage.googleapis.com" ||
-      host === "flow-content.google" ||
-      host.endsWith(".flow-content.google") ||
-      host === "video-downloads.googleusercontent.com" ||
-      parsed.searchParams.has("Signature") ||
-      parsed.searchParams.has("X-Goog-Signature") ||
-      parsed.searchParams.has("GoogleAccessId")
-    );
-  };
-  return { fifeHost, authuser, isSignedCdnHost };
+  return { fifeHost, authuser, isSignedCdnHost: isSignedMediaUrl };
 }
 
 /** Strips query parameters and FIFE size suffixes for base URL comparison. */

@@ -35,7 +35,7 @@ pub(crate) struct FlowAsset {
     pub(crate) id: String,
     /// Asset display name (`displayName` in the tile store).
     pub(crate) name: String,
-    /// Asset kind (`"video"`, `"image"`, `"scene"`, or `"character"`).
+    /// Asset kind (`"video"`, `"image"`, `"scene"`, `"character"`, or `"audio"`).
     pub(crate) kind: String,
     /// Generation prompt for the asset.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,7 +125,7 @@ pub(crate) struct AssetsParams {
     pub(crate) files: Option<Vec<String>>,
     /// Case-insensitive substring that matches asset ID, name, or prompt.
     pub(crate) query: Option<String>,
-    /// Asset kind filter: "image", "video", "scene", "character", or "all" (default).
+    /// Asset kind filter: "image", "video", "scene", "character", "audio", or "all" (default).
     pub(crate) kind: Option<String>,
     /// Collection filter: collection ID, name substring, "all", "none", or "uncollected".
     pub(crate) collection: Option<String>,
@@ -159,16 +159,18 @@ pub(crate) struct TrashParams {
     pub(crate) r#match: String,
 }
 
-/// Resolves missing direct media URLs on finished image or video tiles through `as29s` RPCs.
+/// Resolves missing direct media URLs on finished non-scene tiles within the optional deadline.
 async fn populate_missing_media_urls(
     engine: &ChromeEngine,
     assets: &mut [FlowAsset],
     deadline: Option<Instant>,
 ) {
-    let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut missing: HashMap<String, (String, Vec<usize>)> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
-        if !matches!(asset.kind.as_str(), "video" | "image")
-            || asset.url.is_some()
+        if !matches!(
+            asset.kind.as_str(),
+            "video" | "image" | "character" | "audio"
+        ) || asset.url.is_some()
             || asset.media_error.is_some()
             || matches!(
                 asset.media_status.as_deref(),
@@ -185,16 +187,20 @@ async fn populate_missing_media_urls(
         else {
             continue;
         };
-        missing.entry(media_id.to_string()).or_default().push(index);
+        missing
+            .entry(media_id.to_string())
+            .or_insert_with(|| (asset.kind.clone(), Vec::new()))
+            .1
+            .push(index);
     }
     let mut groups: Vec<_> = missing.into_iter().collect();
-    groups.sort_unstable_by_key(|(_, indices)| indices.first().copied());
+    groups.sort_unstable_by_key(|(_, (_, indices))| indices.first().copied());
     let lookups = stream::iter(groups)
-        .map(|(media_id, indices)| async move {
+        .map(|(media_id, (kind, indices))| async move {
             let timeout_ms = deadline.and_then(|at| {
                 u64::try_from(at.saturating_duration_since(Instant::now()).as_millis()).ok()
             });
-            let resolved = eval_resolve_media_url(engine, &media_id, timeout_ms)
+            let resolved = eval_resolve_media_url(engine, &media_id, timeout_ms, Some(&kind))
                 .await
                 .and_then(|val| {
                     val.get("url")
@@ -295,8 +301,8 @@ pub(crate) async fn resolve_asset(
     include_prompt: bool,
     context_label: &str,
 ) -> Result<(FlowAsset, Option<String>, Option<String>)> {
-    let snap = list_assets_with_project(engine).await?;
-    let target = match_asset(&snap.assets, match_str, include_prompt)
+    let snap = read_project_assets(engine).await?;
+    let mut target = match_asset(&snap.assets, match_str, include_prompt)
         .cloned()
         .with_context(|| {
             format!(
@@ -304,6 +310,14 @@ pub(crate) async fn resolve_asset(
                 match_str, context_label
             )
         })?;
+    if target.url.is_none() {
+        let deadline = Instant::now() + ASSET_LIST_URL_BUDGET;
+        let _ = tokio::time::timeout_at(
+            deadline,
+            populate_missing_media_urls(engine, std::slice::from_mut(&mut target), Some(deadline)),
+        )
+        .await;
+    }
     Ok((target, snap.project_id, snap.project_title))
 }
 

@@ -646,7 +646,7 @@ pub(crate) async fn run_edit(
                 label
             );
         }
-        if target.url.is_some() {
+        if target.url.is_some() || target.primary_media_id.is_some() {
             let local_path =
                 if let Some(cached) = db.find_existing_file_for_asset(&target.id).await? {
                     cached.file_path

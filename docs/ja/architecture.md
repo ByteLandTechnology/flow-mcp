@@ -67,8 +67,8 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
 
 ### メディアダウンロードパイプライン（`flow_download` とジョブダウンロード）
 
-1. **URL 解決**：`flow-mcp` はプロジェクトスナップショットから `fifeUrl`、`videoUrl`、または `imageUrl` を読み取ります。欠損時は Flow の `as29s` RPC を呼び出して署名付き URL を取得します。
-2. **主 HTTP ストリーム（`reqwest`）**：`reqwest` はバイト列を一時ファイルへストリーミングします。署名付き CDN URL（`storage.googleapis.com` と `flow-content.google`）では Cookie ヘッダーを省き、Google URL には `Referer: https://flow.google.com/` と Chrome Cookie を送信します。
-3. **ブラウザ `fetchMedia` フォールバック**：HTTP ストリームが失敗した場合、`ChromeEngine` は Flow ページ内で `fetchMedia` を実行し、Base64 結果をデコードします。
+1. **URL 解決**：`flow-mcp` はプロジェクトスナップショットとアクティブな TanStack `queryCache` からキャッシュ済み URL を読み取ります。キャッシュミス時は、検証済みビルドではネイティブの Flow メディアサービス（`RJ`）を呼び出し、未検証ビルドと音声アセットでは単一パスのスパース `as29s` デコードへフォールバックします。
+2. **主 HTTP ストリーム（`reqwest`）**：`reqwest` はバイト列を一時ファイルへストリーミングします。署名付きストレージおよび Flow CDN URL（`storage.googleapis.com` とそのサブドメイン、`flow-content.google`、`labs-flow.dev`、`video-downloads.googleusercontent.com`、および V2/V4 クエリ署名付き URL）では `Cookie` と `Referer` ヘッダーを省き、未署名の Google URL には `Referer: https://flow.google.com/` と Chrome Cookie を送信します。
+3. **ブラウザ `fetchMedia` フォールバック**：HTTP ストリームが失敗した場合、`ChromeEngine` は Flow ページ内で `fetchMedia`（署名付き CDN では `credentials: "omit"`）を実行し、Base64 結果をデコードします。
 4. **検証と自然な命名**：`flow-mcp` は 0 バイトファイルを拒否し、`Content-Type` とマジックバイトを確認します。`Content-Disposition`、URL パス、または `<asset_id>.<ext>` からファイル名を選択し、重複名を解決して SQLite（`downloads`）を更新します。
 5. **MCP リソース配信**：`flow-mcp` は各ダウンロードを `flow://downloads/{id}` と `flow://downloads/asset/{asset_id}` として登録します。`resources/list` は 1 ページ `100` 件を返します。`resources/read` は `64 MiB` までのファイルを Base64 として返し、より大きなファイルは `flow_downloads`（`action="read_chunk"`）がスライス単位で読み取ります。

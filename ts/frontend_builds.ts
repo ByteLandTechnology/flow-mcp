@@ -55,6 +55,29 @@ export interface FrontendFormats {
   asset_trash_store: AssetTrashFormat;
   /** Character personality note update. */
   character_bio: CharacterBioFormat;
+  /** Native media URL resolver and TanStack query cache fields. */
+  media_resolver: MediaResolverFormat;
+}
+
+/** Browser export keys verified for native media resolution. */
+export const MEDIA_RESOLVER_EXPORTS = [
+  "service",
+  "registerFife",
+  "resolveImage",
+  "resolveVideo",
+] as const;
+
+/** Key of one verified native media resolver export. */
+export type MediaResolverExport = (typeof MEDIA_RESOLVER_EXPORTS)[number];
+
+/** Service fields and Closure exports for native media URL resolution. */
+export interface MediaResolverFormat {
+  /** Field on the media URL service that holds the TanStack `QueryClient`. */
+  queryClient: string;
+  /** Field on the `VIDEO_URLS` result object that holds the stream/download URL. */
+  videoUrl: string;
+  /** Closure exports for the media URL service and its resolver functions. */
+  exports: Readonly<Record<MediaResolverExport, string>>;
 }
 
 /** Browser exports and service fields for Agent settings. */
@@ -625,6 +648,16 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       agent_attachments: NOVEMBER_20_ATTACHMENTS,
       project_upload: { page: NOVEMBER_20_AGENT, media: NOVEMBER_20_ATTACHMENTS },
       agent_settings: NOVEMBER_20_AGENT_SETTINGS,
+      media_resolver: {
+        queryClient: "Wa",
+        videoUrl: "Ak",
+        exports: {
+          service: "RJ",
+          registerFife: "NJ",
+          resolveImage: "OMb",
+          resolveVideo: "QMb",
+        },
+      },
     },
   }],
 ]);

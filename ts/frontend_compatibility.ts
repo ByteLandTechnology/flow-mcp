@@ -3,7 +3,13 @@
 
 // Check the build and runtime requirements of internal Flow operations.
 
-import { frontendBuild, MEDIA_UPLOAD_EXPORTS, readBuildLabel } from "./frontend_builds";
+import { isLiveLView, readOwn, resolveLView } from "./angular";
+import {
+  frontendBuild,
+  MEDIA_RESOLVER_EXPORTS,
+  MEDIA_UPLOAD_EXPORTS,
+  readBuildLabel,
+} from "./frontend_builds";
 import type {
   AgentAttachmentFormat,
   AgentChatFormat,
@@ -12,12 +18,291 @@ import type {
   CharacterBioFormat,
   CollectionWriteFormat,
   FrontendFormats,
+  MediaResolverFormat,
   ProjectUploadFormat,
 } from "./frontend_builds";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
 import { runtimeState } from "./state";
-import type { FlowTile, StoreProbeCheck, StoreProbeResult } from "./types";
+import type { FlowTile, NgLView, StoreProbeCheck, StoreProbeResult } from "./types";
+
+/** State snapshot on one TanStack Query entry. */
+export interface TanStackQueryState {
+  /** Query status (`"success"`, `"pending"`, or `"error"`). */
+  status?: string;
+  /** Resolved query payload when `status` is `"success"`. */
+  data?: unknown;
+  /** True when TanStack Query marks the cache entry as invalid. */
+  isInvalidated?: boolean;
+}
+
+/** Single entry in a TanStack `QueryCache`. */
+export interface TanStackQueryEntry {
+  /** Structured query key array, for example `["VIDEO_URLS", mediaId, false, true]`. */
+  queryKey: readonly unknown[];
+  /** Current state of the query. */
+  state?: TanStackQueryState;
+  /** Optional in-flight fetch promise when `state.status` is `"pending"`. */
+  promise?: Promise<unknown>;
+}
+
+/** Subset of TanStack `QueryCache` methods used to read active media queries. */
+export interface TanStackQueryCache {
+  /** Returns all cached query entries. */
+  getAll(): readonly TanStackQueryEntry[];
+  /** Returns cached query entries matching `filters`. */
+  findAll?(filters?: { queryKey?: readonly unknown[] }): readonly TanStackQueryEntry[];
+}
+
+/** Bound native media URL service, query cache, and Closure helper functions. */
+export interface MediaResolverBinding {
+  /** Verified format for the active build. */
+  format: MediaResolverFormat;
+  /** Bound Angular root media URL service (`_.RJ`). */
+  service: object;
+  /** Active TanStack `QueryCache` attached to `service`. */
+  queryCache: TanStackQueryCache;
+  /** Registers unsigned FIFE URLs on `service` (`_.NJ`). */
+  registerFife: (service: object, urls: string[]) => void;
+  /** Resolves an image URL via `service` (`_.OMb`). */
+  resolveImage: (
+    service: object,
+    options: {
+      mediaId: string;
+      me: boolean;
+      aspectRatio: number;
+      Bc: number;
+      signal?: AbortSignal;
+    },
+  ) => Promise<string>;
+  /** Resolves video URLs via `service` (`_.QMb`). */
+  resolveVideo: (
+    service: object,
+    options: {
+      mediaId: string;
+      me: boolean;
+      de: boolean;
+      signal?: AbortSignal;
+    },
+  ) => Promise<Record<string, unknown>>;
+}
+
+/** Host element selector list used to reach Angular Ivy views and injectors. */
+const ANGULAR_HOST_SELECTOR =
+  "flow-project-shell, flow-project-page, flow-character-edit-page, flow-editor-dispatcher, flow-editor-page, flow-scene-builder, router-outlet, aisandbox-root, app-root, main";
+
+/** Returns true when `cand` exposes the TanStack `QueryCache` lookup interface. */
+function isQueryCache(cand: unknown): cand is TanStackQueryCache {
+  return Boolean(
+    cand &&
+      typeof cand === "object" &&
+      typeof readOwn(cand, "getAll") === "function" &&
+      (typeof readOwn(cand, "findAll") === "function" ||
+        typeof readOwn(cand, "find") === "function"),
+  );
+}
+
+/** Extracts a `TanStackQueryCache` from a `QueryCache` or `QueryClient` candidate. */
+function extractQueryCache(cand: unknown): TanStackQueryCache | null {
+  if (isQueryCache(cand)) return cand;
+  const inner = readOwn(cand, "queryCache");
+  if (isQueryCache(inner)) return inner;
+  const getter = readOwn(cand, "getQueryCache");
+  if (typeof getter === "function") {
+    try {
+      const viaGetter: unknown = getter.call(cand);
+      if (isQueryCache(viaGetter)) return viaGetter;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Collects root and page Angular LViews from active DOM hosts and the view registry. */
+function collectSeedLViews(): NgLView[] {
+  const out: NgLView[] = [];
+  const seen = new Set<NgLView>();
+  for (const el of document.querySelectorAll(ANGULAR_HOST_SELECTOR)) {
+    const lv = resolveLView(el);
+    if (lv && isLiveLView(lv) && !seen.has(lv)) {
+      seen.add(lv);
+      out.push(lv);
+    }
+  }
+  if (runtimeState.ngLViewMap instanceof Map) {
+    let count = 0;
+    for (const lv of runtimeState.ngLViewMap.values()) {
+      if (isLiveLView(lv) && !seen.has(lv)) {
+        seen.add(lv);
+        out.push(lv);
+        if (++count >= 64) break;
+      }
+    }
+  }
+  return out;
+}
+
+/** Locates or injects a root Angular service of class `serviceType` from live Ivy views. */
+function locateAngularService(serviceType: Function): object | null {
+  const seenLViews = new Set<NgLView>();
+  const seenObjs = new Set<object>();
+  let fallbackInjector: object | null = null;
+
+  const inspectInjector = (injRoot: object): object | null => {
+    let inj: object | null = injRoot;
+    for (let depth = 0; depth < 8 && inj && typeof inj === "object"; depth += 1) {
+      if (seenObjs.has(inj)) break;
+      seenObjs.add(inj);
+      if (!fallbackInjector && typeof readOwn(inj, "get") === "function") {
+        fallbackInjector = inj;
+      }
+      const records = readOwn(inj, "records");
+      if (records instanceof Map && records.has(serviceType)) {
+        const rec = records.get(serviceType);
+        if (rec && typeof rec === "object" && rec instanceof serviceType) return rec;
+        const val = readOwn(rec, "value");
+        if (val && typeof val === "object") return val;
+      }
+      const parent = readOwn(inj, "parent");
+      inj = parent && typeof parent === "object" ? parent : null;
+    }
+    return null;
+  };
+
+  const queue: Array<[NgLView, number]> = collectSeedLViews().map((lv) => [lv, 0]);
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (!next) break;
+    const [lv, depth] = next;
+    if (seenLViews.has(lv)) continue;
+    seenLViews.add(lv);
+    for (const slot of lv) {
+      if (!slot || typeof slot !== "object" || slot instanceof Node) continue;
+      if (slot instanceof serviceType) return slot;
+      if (readOwn(slot, "records") instanceof Map || typeof readOwn(slot, "get") === "function") {
+        const found = inspectInjector(slot);
+        if (found) return found;
+      }
+    }
+    if (depth < 6) {
+      if (Array.isArray(lv[3])) queue.push([lv[3], depth + 1]);
+      if (Array.isArray(lv[15])) queue.push([lv[15], depth + 1]);
+    }
+  }
+
+  if (fallbackInjector) {
+    const get = readOwn(fallbackInjector, "get");
+    if (typeof get === "function") {
+      try {
+        const resolved: unknown = get.call(fallbackInjector, serviceType, null);
+        if (resolved && typeof resolved === "object") return resolved;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/** Binds the verified native media URL service and its Closure helper functions. */
+export function bindMediaResolver(
+  format?: MediaResolverFormat,
+): MediaResolverBinding | undefined {
+  const activeFormat =
+    format ?? frontendBuild(readBuildLabel())?.operations.media_resolver;
+  if (!activeFormat) return undefined;
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+  const serviceType = readOwn(namespace, activeFormat.exports.service);
+  const registerFife = readOwn(namespace, activeFormat.exports.registerFife);
+  const resolveImage = readOwn(namespace, activeFormat.exports.resolveImage);
+  const resolveVideo = readOwn(namespace, activeFormat.exports.resolveVideo);
+  if (
+    typeof serviceType !== "function" ||
+    typeof registerFife !== "function" ||
+    typeof resolveImage !== "function" ||
+    typeof resolveVideo !== "function"
+  ) {
+    return undefined;
+  }
+  const service = locateAngularService(serviceType);
+  if (!service) return undefined;
+  const queryCache = extractQueryCache(readOwn(service, activeFormat.queryClient));
+  if (!queryCache) return undefined;
+  return {
+    format: activeFormat,
+    service,
+    queryCache,
+    registerFife: registerFife as MediaResolverBinding["registerFife"],
+    resolveImage: resolveImage as MediaResolverBinding["resolveImage"],
+    resolveVideo: resolveVideo as MediaResolverBinding["resolveVideo"],
+  };
+}
+
+/** Discovers active TanStack `QueryCache` instances across verified and unverified builds. */
+export function findActiveQueryCaches(): TanStackQueryCache[] {
+  const caches: TanStackQueryCache[] = [];
+  const pushCache = (cand: unknown): void => {
+    const qc = extractQueryCache(cand);
+    if (qc && !caches.includes(qc)) {
+      caches.push(qc);
+    }
+  };
+
+  const binding = bindMediaResolver();
+  if (binding) {
+    pushCache(binding.queryCache);
+  }
+
+  const scanObjectProps = (obj: unknown, limit = 32): void => {
+    if (!obj || typeof obj !== "object" || obj instanceof Node) return;
+    pushCache(obj);
+    if (Array.isArray(obj) || obj instanceof Map || obj instanceof Set) return;
+    const keys = Object.keys(obj);
+    for (let i = 0; i < keys.length && i < limit; i += 1) {
+      pushCache(readOwn(obj, keys[i]));
+    }
+  };
+
+  if (runtimeState.lService) {
+    scanObjectProps(runtimeState.lService);
+    scanObjectProps(runtimeState.lService._ap);
+    scanObjectProps(runtimeState.lService._uo);
+  }
+
+  const seenInj = new Set<object>();
+  const inspectInjector = (injRoot: object): void => {
+    let inj: object | null = injRoot;
+    for (let depth = 0; depth < 8 && inj && typeof inj === "object"; depth += 1) {
+      if (seenInj.has(inj)) break;
+      seenInj.add(inj);
+      const records = readOwn(inj, "records");
+      if (records instanceof Map) {
+        for (const rec of records.values()) {
+          pushCache(rec);
+          const val = readOwn(rec, "value");
+          scanObjectProps(val, 16);
+        }
+      }
+      const parent = readOwn(inj, "parent");
+      inj = parent && typeof parent === "object" ? parent : null;
+    }
+  };
+
+  for (const lv of collectSeedLViews()) {
+    for (const slot of lv) {
+      if (!slot || typeof slot !== "object" || slot instanceof Node) continue;
+      pushCache(slot);
+      if (readOwn(slot, "records") instanceof Map || "parent" in slot) {
+        inspectInjector(slot);
+      } else {
+        scanObjectProps(slot, 16);
+      }
+    }
+  }
+
+  return caches;
+}
 
 /** Compatibility failure returned before a request is sent. */
 interface UnsupportedFrontend {
@@ -146,6 +431,42 @@ export function assetTrashCompatibility(): FrontendCompatibility<AssetTrashForma
   return checkOperation("asset_trash_store", readBuildLabel(), projectWriteChecks("project"));
 }
 
+/** Returns the native media resolver format when its exports, service, and query cache are ready. */
+export function mediaResolverCompatibility(
+  checks: StoreProbeCheck[] = [],
+): FrontendCompatibility<MediaResolverFormat> {
+  const build = readBuildLabel();
+  const format = frontendBuild(build)?.operations.media_resolver;
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+  const runtimeChecks: StoreProbeCheck[] = [];
+  if (format) {
+    for (const name of MEDIA_RESOLVER_EXPORTS) {
+      runtimeChecks.push({
+        name,
+        ok: typeof readOwn(namespace, format.exports[name]) === "function",
+        detail: "Media resolver export",
+      });
+    }
+    const serviceType = readOwn(namespace, format.exports.service);
+    const service =
+      typeof serviceType === "function" ? locateAngularService(serviceType) : null;
+    runtimeChecks.push({
+      name: "resolver_service",
+      ok: Boolean(service),
+      detail: service ? "bound" : "unavailable",
+    });
+    const qc = service
+      ? extractQueryCache(readOwn(service, format.queryClient))
+      : null;
+    runtimeChecks.push({
+      name: "query_cache",
+      ok: Boolean(qc),
+      detail: qc ? "ready" : "missing",
+    });
+  }
+  return checkOperation("media_resolver", build, [...runtimeChecks, ...checks]);
+}
+
 /** Counts readable image and video tiles in the first 200 tiles. */
 function tileLayout(tiles: Iterable<FlowTile>): StoreProbeCheck {
   let readable = 0;
@@ -220,6 +541,7 @@ export function probeStore(): StoreProbeResult {
       collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
       character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
       asset_trash_store: operationStatus(assetTrashCompatibility()),
+      media_resolver: operationStatus(mediaResolverCompatibility()),
     },
   };
 }

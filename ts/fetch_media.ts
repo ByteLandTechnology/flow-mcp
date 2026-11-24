@@ -22,18 +22,29 @@ export async function fetchMedia(
 
   const env = fifeEnv();
   const isSignedCdn = Boolean(parsed && env.isSignedCdnHost(parsed));
+  const host = parsed ? parsed.hostname.toLowerCase() : "";
+  const isGoogleCookieHost =
+    host === "flow.google.com" ||
+    host.endsWith(".google.com") ||
+    host.endsWith(".googleusercontent.com") ||
+    host.endsWith(".fife.usercontent.google.com");
 
   const modes: RequestCredentials[] = isSignedCdn
     ? ["omit"]
     : parsed && parsed.origin === location.origin
       ? ["same-origin", "include"]
-      : ["same-origin", "include", "omit"];
+      : isGoogleCookieHost
+        ? ["include", "omit"]
+        : ["omit"];
 
   let r: Response | null = null;
   let lastErr: unknown = null;
   for (const mode of modes) {
     try {
-      const resp = await fetch(u, { credentials: mode });
+      const init: RequestInit = isSignedCdn
+        ? { credentials: "omit", referrerPolicy: "no-referrer" }
+        : { credentials: mode };
+      const resp = await fetch(u, init);
       if (resp.ok) {
         r = resp;
         break;
@@ -51,7 +62,7 @@ export async function fetchMedia(
   const ct = r.headers.get("content-type") || null;
   if (
     ct &&
-    /^\s*(?:text\/|application\/(?:json|xml|dash\+xml|xhtml\+xml|vnd\.apple\.mpegurl)|audio\/mpegurl)\b/i.test(
+    /^\s*(?:text\/|application\/(?:json|xml|dash\+xml|xhtml\+xml|vnd\.apple\.mpegurl|x-mpegurl)|audio\/(?:x-)?mpegurl)\b/i.test(
       ct,
     )
   ) {
@@ -66,6 +77,14 @@ export async function fetchMedia(
     /^\s*(?:video|audio)\//i.test(ct)
   ) {
     throw new Error(`Media URL returned non-image content-type: ${ct}`);
+  }
+  if (
+    ct &&
+    kind === "audio" &&
+    (/^\s*image\//i.test(ct) ||
+      (/^\s*video\//i.test(ct) && !/^\s*video\/(?:mp4|webm)\b/i.test(ct)))
+  ) {
+    throw new Error(`Media URL returned non-audio content-type: ${ct}`);
   }
   const buf = await r.arrayBuffer();
   const bytes = new Uint8Array(buf);

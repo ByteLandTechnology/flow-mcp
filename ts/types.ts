@@ -763,8 +763,12 @@ export interface FlowMcpRuntime {
   ) => Promise<unknown>;
   /** Fetches a media URL with page credentials and returns Base64 payload metadata. */
   fetchMedia: (u: string, expectedKind: string) => Promise<FetchedMediaPayload>;
-  /** Resolves stream and download URLs for a primary media identifier via `as29s`. */
-  resolveVideoUrl: (primaryMediaId: string) => Promise<ResolvedMediaResult>;
+  /** Resolves stream and download URLs for a primary media identifier. */
+  resolveVideoUrl: (
+    primaryMediaId: string,
+    timeoutMs?: number | null,
+    expectedKind?: string | null,
+  ) => Promise<ResolvedMediaResult>;
   /** Configures generation mode, video type, aspect ratio, count, duration, resolution, and model. */
   setupGeneration: (cfg: GenerationConfig) => Promise<{ ok: boolean; error?: string }>;
   /** Attaches ingredient assets or characters and writes the generation prompt. */
