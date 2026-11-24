@@ -52,8 +52,10 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     if (
       runtimeState.projectId === pid &&
       runtimeState.lService &&
-      !runtimeState.lService.Ca?.Va &&
-      !runtimeState.lService._ap?.Ca?.Va
+      !(typeof runtimeState.lService.Ba === "object" && runtimeState.lService.Ba?.Va) &&
+      !(typeof runtimeState.lService.Ca === "object" && runtimeState.lService.Ca?.Va) &&
+      !(typeof runtimeState.lService._ap?.Ba === "object" && runtimeState.lService._ap?.Ba?.Va) &&
+      !(typeof runtimeState.lService._ap?.Ca === "object" && runtimeState.lService._ap?.Ca?.Va)
     ) {
       runtimeState.routePath = location.pathname;
     }
@@ -132,6 +134,7 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     const mutatePromise = Promise.resolve(
       helper.mutate({
         type: "create_entity",
+        pM: 1,
         A3: 1,
         AW: 1,
         displayName: charName,
@@ -142,8 +145,8 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       }),
     ).then(
       (v) => {
-        const resObj = v as { II?: unknown; MF?: unknown } | null;
-        const created = resObj?.MF ?? resObj?.II;
+        const resObj = v as { NH?: unknown; MF?: unknown; II?: unknown } | null;
+        const created = resObj?.NH ?? resObj?.MF ?? resObj?.II;
         if (created && !resolvedTile) resolvedTile = created;
       },
       (e) => {

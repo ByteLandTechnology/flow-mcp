@@ -319,6 +319,23 @@ struct PageMediaRequest<'a> {
     replace_portrait: bool,
 }
 
+/// Runs a character media operation and binds the preview Angular views on demand.
+async fn call_character_media_op(engine: &ChromeEngine, payload: Value) -> Result<Value> {
+    let request = json!([payload]);
+    let res = engine
+        .call_flow_async("characterMediaOp", request.clone())
+        .await?;
+    if res.get("error").and_then(Value::as_str) == Some("character_preview_not_bound")
+        && engine
+            .bind_angular_views("flow-character-preview-panel, flow-character-image-preview")
+            .await
+            .unwrap_or(false)
+    {
+        return engine.call_flow_async("characterMediaOp", request).await;
+    }
+    Ok(res)
+}
+
 /// Applies voice, reference assets, and optional look generation inside an open `/character/<id>` page.
 async fn apply_character_page_media(
     engine: &ChromeEngine,
@@ -340,17 +357,16 @@ async fn apply_character_page_media(
         return Ok(None);
     }
 
-    let m_res = engine
-        .call_flow_async(
-            "characterMediaOp",
-            json!([{
-                "action": "attach_and_look",
-                "character_id": char_id,
-                "asset_ids": asset_ids,
-                "look_prompt": look_prompt,
-            }]),
-        )
-        .await?;
+    let m_res = call_character_media_op(
+        engine,
+        json!({
+            "action": "attach_and_look",
+            "character_id": char_id,
+            "asset_ids": asset_ids,
+            "look_prompt": look_prompt,
+        }),
+    )
+    .await?;
     if m_res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
             "{}",
@@ -602,24 +618,15 @@ pub(crate) async fn create_or_update_character_job(
         for (idx, ref_path) in refs.iter().take(2).enumerate() {
             let slot = if idx == 0 { "portrait" } else { "body" };
             on_progress(format!("uploading character {slot} reference image"));
-            let request = json!([{
-                "action": "open_upload",
-                "slot": slot,
-                "character_id": char_id,
-            }]);
-            let mut open_res = engine
-                .call_flow_async("characterMediaOp", request.clone())
-                .await?;
-            if open_res.get("error").and_then(Value::as_str) == Some("character_preview_not_bound")
-                && engine
-                    .bind_angular_views(
-                        "flow-character-preview-panel, flow-character-image-preview",
-                    )
-                    .await
-                    .unwrap_or(false)
-            {
-                open_res = engine.call_flow_async("characterMediaOp", request).await?;
-            }
+            let open_res = call_character_media_op(
+                engine,
+                json!({
+                    "action": "open_upload",
+                    "slot": slot,
+                    "character_id": char_id,
+                }),
+            )
+            .await?;
             let opened = checked_runtime_result(open_res).map_err(|err| {
                 anyhow::anyhow!("Failed to open the {slot} upload for character '{char_id}': {err}")
             })?;

@@ -354,13 +354,20 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
             const lv = resolveLView(host);
             if (Array.isArray(lv)) {
               for (const slot of lv) {
+                const hsa = readOwn(slot, "HSa") as { emit?: (v: string) => void } | undefined;
                 const tJa = readOwn(slot, "tJa") as { emit?: (v: string) => void } | undefined;
+                const emitter =
+                  typeof hsa?.emit === "function"
+                    ? hsa
+                    : typeof tJa?.emit === "function"
+                      ? tJa
+                      : undefined;
                 const state = readOwn(slot, "state") as { set?: (v: unknown) => void } | undefined;
                 if (
-                  typeof tJa?.emit === "function" &&
+                  typeof emitter?.emit === "function" &&
                   typeof state?.set === "function"
                 ) {
-                  tJa.emit(desired);
+                  emitter.emit(desired);
                   state.set({ state: "viewing" });
                   break;
                 }
@@ -447,7 +454,7 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       await delay(100);
       const dialogs = Array.from(
         document.querySelectorAll(
-          '[role="dialog"], .mat-mdc-dialog-container, cdk-overlay-pane',
+          '[role="dialog"], .mat-mdc-dialog-container, .cdk-overlay-pane',
         ),
       );
       for (const dlg of dialogs) {

@@ -15,13 +15,21 @@ import type { AngularLifecycleHandle, CharacterVoiceOpRequest } from "./types";
 
 /** Minified Angular character form component hosting voice signals. */
 interface CharacterFormComponent extends AngularLifecycleHandle {
-  /** Voice map signal accessor. */
+  /** Voice map signal accessor in build 20261120.00. */
+  o_?: () => Map<unknown, RawVoiceEntry> | null | undefined;
+  /** Legacy voice map signal accessor. */
   bW?: () => Map<unknown, RawVoiceEntry> | null | undefined;
-  /** Selected voice ID signal setter. */
+  /** Selected voice ID signal setter in build 20261120.00. */
+  A3?: (() => unknown) & { set?: (id: string) => void };
+  /** Legacy selected voice ID signal setter. */
   zZ?: (() => unknown) & { set?: (id: string) => void };
-  /** Selected voice record signal setter. */
+  /** Selected voice record signal setter in build 20261120.00. */
+  Pua?: { set?: (raw: RawVoiceEntry) => void };
+  /** Legacy selected voice record signal setter. */
   Kna?: { set?: (raw: RawVoiceEntry) => void };
-  /** Voice change emitter. */
+  /** Voice change emitter in build 20261120.00. */
+  Pea?: { emit?: (id: string) => void };
+  /** Legacy voice change emitter. */
   p$?: { emit?: (id: string) => void };
   /** Busy signal accessor. */
   yb?: () => boolean;
@@ -64,8 +72,13 @@ export async function characterVoiceOp(
   function getCharacterFormInstance(): CharacterFormComponent | null {
     const form = document.querySelector("flow-character-form");
     if (!form) return null;
+    const isDisposed = (cand: AngularLifecycleHandle): boolean =>
+      Boolean(
+        (typeof cand.Ba === "object" && cand.Ba?.Va) ||
+          (typeof cand.Ca === "object" && cand.Ca?.Va),
+      );
     const cached = formComponents.get(form);
-    if (cached && !cached.Ca?.Va) {
+    if (cached && !isDisposed(cached)) {
       return cached;
     }
     const isBasicObj = (cand: unknown): cand is CharacterFormComponent =>
@@ -78,15 +91,16 @@ export async function characterVoiceOp(
           !(cand instanceof Set) &&
           cand !== window &&
           cand !== document &&
-          !(cand as AngularLifecycleHandle).Ca?.Va,
+          !isDisposed(cand as AngularLifecycleHandle),
       );
+    const hasVoiceSignals = (cand: CharacterFormComponent): boolean =>
+      (typeof cand.o_ === "function" && typeof cand.A3 === "function") ||
+      (typeof cand.bW === "function" && typeof cand.zZ === "function");
     const isExactComp = (cand: unknown): cand is CharacterFormComponent =>
-      isBasicObj(cand) &&
-      typeof cand.bW === "function" &&
-      typeof cand.zZ === "function";
+      isBasicObj(cand) && hasVoiceSignals(cand);
     const isFormComp = (cand: unknown): cand is CharacterFormComponent => {
       if (!isBasicObj(cand)) return false;
-      if (typeof cand.bW === "function" && typeof cand.zZ === "function") {
+      if (hasVoiceSignals(cand)) {
         return true;
       }
       try {
@@ -224,6 +238,24 @@ export async function characterVoiceOp(
     return null;
   }
 
+  function readVoiceMap(
+    comp: CharacterFormComponent | null,
+  ): Map<unknown, RawVoiceEntry> | null {
+    if (!comp) return null;
+    try {
+      const mapFn =
+        typeof comp.o_ === "function"
+          ? comp.o_
+          : typeof comp.bW === "function"
+            ? comp.bW
+            : null;
+      const voiceMap = mapFn ? mapFn.call(comp) : null;
+      return voiceMap instanceof Map ? voiceMap : null;
+    } catch {
+      return null;
+    }
+  }
+
   function readVoicesFromComponent(
     comp: CharacterFormComponent | null,
   ): NormalizedVoiceItem[] {
@@ -245,13 +277,9 @@ export async function characterVoiceOp(
         _raw: entry,
       });
     };
-    try {
-      const bw = typeof comp.bW === "function" ? comp.bW() : null;
-      if (bw instanceof Map) {
-        for (const v of bw.values()) pushItem(v);
-      }
-    } catch {
-      // Ignore disposed signal access.
+    const voiceMap = readVoiceMap(comp);
+    if (voiceMap) {
+      for (const v of voiceMap.values()) pushItem(v);
     }
     return items;
   }
@@ -282,9 +310,18 @@ export async function characterVoiceOp(
         if (form) probedForms.delete(form);
       }
       lastComp = getCharacterFormInstance();
+      const voiceMap = readVoiceMap(lastComp);
       const voices = readVoicesFromComponent(lastComp);
       if (voices.length > 0) {
         return { comp: lastComp, voices };
+      }
+      if (
+        lastComp &&
+        voiceMap &&
+        voiceMap.size === 0 &&
+        !(typeof lastComp.yb === "function" && lastComp.yb())
+      ) {
+        return { comp: lastComp, voices: [] };
       }
       await delay(100);
     }
@@ -327,7 +364,7 @@ export async function characterVoiceOp(
     for (let i = 0; i < 60; i++) {
       await delay(100);
       const overlay = document.querySelector(
-        'cdk-overlay-pane, [role="dialog"]',
+        '.cdk-overlay-pane, [role="dialog"]',
       );
       if (!overlay || overlay.querySelector(".loading-container")) {
         continue;
@@ -354,7 +391,7 @@ export async function characterVoiceOp(
         items.push(v);
       }
     }
-    const overlay = document.querySelector('cdk-overlay-pane, [role="dialog"]');
+    const overlay = document.querySelector('.cdk-overlay-pane, [role="dialog"]');
     const root: ParentNode = overlay || document;
     const ctrlRe =
       /^(?:select a voice|add to character|close|cancel|done|search|clear search)$/i;
@@ -466,19 +503,38 @@ export async function characterVoiceOp(
       });
     const matchedComp =
       findVoice(compVoices, true) || findVoice(compVoices, false);
+    const recordSetter =
+      typeof comp?.Pua?.set === "function"
+        ? comp.Pua
+        : typeof comp?.Kna?.set === "function"
+          ? comp.Kna
+          : null;
+    const idSetter =
+      typeof comp?.A3?.set === "function"
+        ? comp.A3
+        : typeof comp?.zZ?.set === "function"
+          ? comp.zZ
+          : null;
+    const changeEmitter =
+      typeof comp?.Pea?.emit === "function"
+        ? comp.Pea
+        : typeof comp?.p$?.emit === "function"
+          ? comp.p$
+          : null;
     if (
+      comp &&
       matchedComp?._raw &&
-      typeof comp?.Kna?.set === "function" &&
-      typeof comp?.zZ?.set === "function" &&
-      typeof comp?.p$?.emit === "function"
+      typeof recordSetter?.set === "function" &&
+      typeof idSetter?.set === "function" &&
+      typeof changeEmitter?.emit === "function"
     ) {
       for (let i = 0; i < 20; i++) {
         if (typeof comp.yb !== "function" || !comp.yb()) break;
         await delay(100);
       }
-      comp.Kna.set(matchedComp._raw);
-      comp.zZ.set(matchedComp.id);
-      comp.p$.emit(matchedComp.id);
+      recordSetter.set(matchedComp._raw);
+      idSetter.set(matchedComp.id);
+      changeEmitter.emit(matchedComp.id);
       await delay(700);
       return { ok: true, id: charId, applied: ["voice"] };
     }
@@ -488,7 +544,7 @@ export async function characterVoiceOp(
       return { ok: false, error: "voice_picker_not_available", id: charId };
     }
     const overlay =
-      document.querySelector('cdk-overlay-pane, [role="dialog"]') || document;
+      document.querySelector('.cdk-overlay-pane, [role="dialog"]') || document;
     const ctrlRe =
       /^(?:select a voice|add to character|close|cancel|done|search|clear search)$/i;
     const assetItems = Array.from(

@@ -30,6 +30,8 @@ export interface AngularRouter {
 
 /** Destroyable Angular component or service lifecycle handle. */
 export interface AngularLifecycleHandle {
+  /** Lifecycle destroy marker in the Flow front end from 2026-11-18 on. */
+  Ba?: { Va?: boolean };
   /** Ivy destroy marker containing the disposed flag `Va`. */
   Ca?: { Va?: boolean };
 }
