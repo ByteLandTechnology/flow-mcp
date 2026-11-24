@@ -18,11 +18,11 @@ flow-mcp [OPTIONS] <COMMAND>
 | `login [--timeout <SECS>] [--force] [--json]` | Google サインイン用に可視 Chrome ウィンドウを開き、サインインの完了まで待機します。`--timeout` は最大待機秒数です（既定 `180`、`15..=3600`）。`--force` は保存済みの Cookie とセッションを先に消去します。 |
 | `status [--json]` | サインイン状態を表示します。保存済みのセッションがある場合は、バックグラウンドの Chrome を起動します。 |
 | `logout [--json]` | `<home>/chrome-profile` と `<home>/cookies.json` を削除します。 |
-| `doctor [--json]` | Chrome バイナリ、`<home>` とファイル権限、インスタンスロック、サインイン状態を確認します。 |
+| `doctor [--json]` | Chrome バイナリ、`<home>` とファイル権限、インスタンスロック、サインイン状態、および Google Flow フロントエンドビルドの互換性を確認します。 |
 
 `login`、`status`、`logout` は `flow_login` と同じアクションを使用し、結果フィールドごとに `key: value` を 1 行ずつ出力します。`--json` を付けると、`flow_login` の結果オブジェクトを出力します。`doctor` はチェックごとに 1 行を出力し、ステータスは `ok`、`warn`、`fail`、`skip` のいずれかです。
 
-サブコマンドが最後まで実行されると、終了ステータスは `0` です。未サインインの場合や `doctor` のチェックが失敗した場合も同じです。エラーが発生した場合（たとえばサインインのタイムアウトや、実行中の別の `flow-mcp` が Chrome プロファイルを使用している場合）は `1` です。フラグの値が無効な場合は `2` です。
+サブコマンドが最後まで実行され、`doctor` のどのチェックも `fail` を報告しなかった場合、終了ステータスは `0` です（未サインインなどの `warn` でも `0` になります）。`doctor` のチェックが 1 つでも `fail` を報告した場合（未検証の Google Flow ビルドや不正なファイル権限など）、またはエラーが発生した場合（たとえばサインインのタイムアウトや、実行中の別の `flow-mcp` が Chrome プロファイルを使用している場合）は `1` です。フラグの値が無効な場合は `2` です。
 
 ### HTTP トランスポート
 
@@ -90,7 +90,7 @@ Google Flow 認証状態、アクティブプロジェクト、`JobQueue`、SQLi
 
 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }` を返します。プロジェクトを自動的に開いたり作成したりしません。
 
-アクティブなページがプロジェクトの場合、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、`checks` が入ります。各チェックには `name`、`ok`、`detail` があり、このフロントエンドビルドのプロジェクト store をランタイムが使えるかを示します。チェックはプロジェクトを変更しません。 `operations` には、現在のビルドと store で `project_upload`、`collection_write`、`character_bio`、`asset_trash_store` が使えるかが表示されます。各操作には `ok` と `failed_checks` が含まれます。
+Google Flow のランディングページまたはホームページでは、`flow.frontend` に `build`（Flow フロントエンドのビルドラベル。`null` の場合あり）、`ok`、および `verified_build` を含む `checks` が入ります。プロジェクトページでは、`checks` にプロジェクトを変更せずにプロジェクト store とメディア URL を読み取れるかも含まれ、`operations` には現在のビルドと store で 7 つの管理対象操作（`agent_chat`、`agent_attachments`、`agent_settings`、`project_upload`、`collection_write`、`character_bio`、`asset_trash_store`）が実行可能かが表示されます。各操作には `ok` と `failed_checks` が含まれます。ビルドが検証済みで、すべての store チェックと 7 つの操作すべてが通過したときのみ、`flow.frontend.ok` は `true` になります。
 
 ### `flow_login`
 

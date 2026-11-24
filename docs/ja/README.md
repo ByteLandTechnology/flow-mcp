@@ -82,7 +82,7 @@ MCP stdio クライアント設定（`mcpServers`）へ `@flow-mcp/cli` を追�
 
 | 領域 | ツール | 用途 |
 | :--- | :--- | :--- |
-| セッション・プロジェクト | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | セッション状態確認、Chrome サインイン、プロジェクト管理 |
+| セッション・プロジェクト | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | セッション状態とフロントエンドビルドの準備状況の確認、Chrome サインイン、プロジェクト管理 |
 | キャラクター・ボイス | `flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters`、`flow_voice_preview` | Flow ボイス一覧取得、キャラクターとカスタムボイスの作成・更新、ボイス試聴、SQLite プロファイル保存 |
 | 生成と編集 | `flow_generate`、`flow_edit` | 動画と画像を生成し、アセットを編集 |
 | Agent チャット | `flow_agent` | セッションの管理と Flow Agent とのメッセージ送受信 |

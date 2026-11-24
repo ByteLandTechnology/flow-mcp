@@ -101,13 +101,17 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
           if (!charPrimaryMediaId && entry.primaryMediaId) {
             charPrimaryMediaId = entry.primaryMediaId;
           }
+          const asStr = (v: unknown): string | null =>
+            typeof v === "string" && v ? v : null;
           if (!charUrl) {
             charUrl =
               entry.Wb ||
+              asStr(entry.kc) ||
               entry.fifeUrl ||
               entry.imageUrl ||
               entry.url ||
               entry.media?.Wb ||
+              asStr(entry.media?.kc) ||
               entry.media?.fifeUrl ||
               entry.media?.url ||
               null;
@@ -116,10 +120,12 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
             for (const h of entry.history) {
               const candidateUrl =
                 h?.Wb ||
+                asStr(h?.kc) ||
                 h?.fifeUrl ||
                 h?.imageUrl ||
                 h?.url ||
                 h?.media?.Wb ||
+                asStr(h?.media?.kc) ||
                 h?.media?.fifeUrl ||
                 h?.media?.url ||
                 null;

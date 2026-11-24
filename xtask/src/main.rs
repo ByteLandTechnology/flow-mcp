@@ -3,6 +3,8 @@
 
 //! CLI entry point for repository checks and CI gates.
 
+mod builds;
+mod builds_parse;
 mod ci;
 mod examples;
 mod forbidden;

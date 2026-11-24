@@ -82,7 +82,7 @@ Read the guide sections for each task:
 
 | Domain | Tools | Purpose |
 | :--- | :--- | :--- |
-| Session & Projects | `flow_status`, `flow_login`, `flow_new_project`, `flow_projects` | Check session state, sign in with Chrome, and manage projects |
+| Session & Projects | `flow_status`, `flow_login`, `flow_new_project`, `flow_projects` | Check session state and front-end build readiness, sign in with Chrome, and manage projects |
 | Characters & Voices | `flow_voices`, `flow_character`, `flow_character_edit`, `flow_characters`, `flow_voice_preview` | List Flow voices, create or update characters with custom voices, preview voices, and store SQLite profiles |
 | Generation & Edit | `flow_generate`, `flow_edit` | Queue video and image generation or edit assets |
 | Agent Chat | `flow_agent` | Manage sessions and exchange messages with Flow Agent |

@@ -297,8 +297,10 @@ export function pickerAssetMatches(
   if (target.primaryMediaId && aids.includes(String(target.primaryMediaId))) {
     return true;
   }
+  const kc = readOwn(a, "kc");
   const aFife = fifeBase(
     readOwn(a, "Wb") ||
+      (typeof kc === "string" ? kc : null) ||
       readOwn(a, "fifeUrl") ||
       readOwn(a, "imageUrl") ||
       readOwn(a, "url"),

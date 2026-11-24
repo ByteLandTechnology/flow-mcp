@@ -18,11 +18,11 @@ flow-mcp [OPTIONS] <COMMAND>
 | `login [--timeout <SECS>] [--force] [--json]` | Open a visible Chrome window for Google Sign-In and wait until sign-in completes. `--timeout` sets the maximum wait in seconds (`180` default, `15..=3600`). `--force` clears the saved cookies and session first. |
 | `status [--json]` | Show the sign-in status. If a saved session exists, this subcommand starts background Chrome. |
 | `logout [--json]` | Delete `<home>/chrome-profile` and `<home>/cookies.json`. |
-| `doctor [--json]` | Check the Chrome binary, `<home>` and file permissions, the instance lock, and the sign-in status. |
+| `doctor [--json]` | Check the Chrome binary, `<home>` and file permissions, the instance lock, the sign-in status, and the live Google Flow front-end build. |
 
 `login`, `status`, and `logout` use the same actions as `flow_login`. They write one `key: value` line for each result field. With `--json`, they write the `flow_login` result object. `doctor` writes one line for each check with the status `ok`, `warn`, `fail`, or `skip`.
 
-The exit status is `0` when the subcommand runs to completion. This is also true when you are not signed in or when a `doctor` check fails. The exit status is `1` when an error occurs, for example a sign-in timeout or a Chrome profile that another running `flow-mcp` uses. The exit status is `2` when a flag value is not valid.
+The exit status is `0` when the subcommand runs to completion and no `doctor` check reports `fail`. A `warn` check (for example when you are not signed in) still exits with status `0`. The exit status is `1` when a `doctor` check reports `fail` (for example an unverified Google Flow build or wrong file permissions) or when an error occurs (for example a sign-in timeout or a Chrome profile that another running `flow-mcp` uses). The exit status is `2` when a flag value is not valid.
 
 ### HTTP transport
 
@@ -90,7 +90,7 @@ Check Google Flow authentication state, active project, `JobQueue`, SQLite index
 
 Returns `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`. Does not open or create projects.
 
-When the active page is a project, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks`. Each check has `name`, `ok`, and `detail`. The checks show whether the runtime can use the project store of this front-end build. They do not change the project. The `operations` field reports whether `project_upload`, `collection_write`, `character_bio`, and `asset_trash_store` can run with the active build and store. Each operation has `ok` and `failed_checks`.
+On a Google Flow landing or home page, `flow.frontend` holds `build` (the Flow front-end build label, or `null`), `ok`, and `checks` with `verified_build`. On a project page, `checks` also shows whether the runtime can read the project store and media URLs without changing the project, and `operations` reports whether `agent_chat`, `agent_attachments`, `agent_settings`, `project_upload`, `collection_write`, `character_bio`, and `asset_trash_store` can run with the active build and store. Each operation has `ok` and `failed_checks`. `flow.frontend.ok` is `true` only when the build is verified, every store check passes, and all seven operations pass.
 
 ### `flow_login`
 

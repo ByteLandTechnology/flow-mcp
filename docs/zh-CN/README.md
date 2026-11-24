@@ -82,7 +82,7 @@ cargo build --release
 
 | 领域 | 工具 | 用途 |
 | :--- | :--- | :--- |
-| 会话与项目 | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | 检查会话状态、使用 Chrome 登录以及管理项目 |
+| 会话与项目 | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | 检查会话状态与前端构建就绪度、使用 Chrome 登录以及管理项目 |
 | 角色与音色 | `flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters`、`flow_voice_preview` | 列出 Flow 音色、创建或更新角色与自定义音色、试听音色并保存 SQLite 资料 |
 | 生成与编辑 | `flow_generate`、`flow_edit` | 提交视频和图像生成任务或编辑资产 |
 | Agent 对话 | `flow_agent` | 管理会话并与 Flow Agent 收发消息 |

@@ -3,6 +3,8 @@
 
 //! Browser session for direct project store operations.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use tokio::sync::MutexGuard;
@@ -75,10 +77,130 @@ impl<'a> ProjectStoreSession<'a> {
     }
 }
 
-/// Prepares the direct store for a status check without changing the page.
-pub(crate) async fn prepare_project_store_status(engine: &ChromeEngine, project_id: &str) {
-    if let Some(_guard) = engine.try_lock_project_store() {
-        let _ = bind_current_store(engine, project_id).await;
+/// Maximum retry attempts while a fresh project page loads its initial store or workspace module.
+const STATUS_PREPARE_ATTEMPTS: usize = 10;
+
+/// Pause between status preparation retries on a fresh project page.
+const STATUS_PREPARE_DELAY: Duration = Duration::from_millis(250);
+
+/// Prepares the project store under the store lock and probes compatibility without changing the page.
+pub(crate) async fn prepare_project_store_status(
+    engine: &ChromeEngine,
+    project_id: &str,
+) -> Result<Value> {
+    let _guard = engine.lock_project_store().await;
+    ensure_open_project_snapshot(engine, project_id).await;
+    let bind_result = bind_store_with_retry(engine, project_id).await;
+    let mut probe = probe_after_workspace_load(engine, project_id).await?;
+    if let Err(err) = bind_result {
+        record_bind_failure(&mut probe, &format!("{err:#}"));
+    }
+    Ok(probe)
+}
+
+/// Returns `true` when the active page URL still targets `project_id`.
+async fn on_requested_project(engine: &ChromeEngine, project_id: &str) -> bool {
+    engine
+        .current_url()
+        .await
+        .ok()
+        .and_then(|url| project_id_from_url(&url))
+        .as_deref()
+        == Some(project_id)
+}
+
+/// Discovers the general runtime store on an already-open project page when no snapshot is bound yet.
+async fn ensure_open_project_snapshot(engine: &ChromeEngine, project_id: &str) {
+    for attempt in 0..STATUS_PREPARE_ATTEMPTS {
+        if let Ok(snap) = engine.call_flow_js("readStoreSnapshot", json!([])).await
+            && snap.get("ok").and_then(Value::as_bool) == Some(true)
+        {
+            return;
+        }
+        if !on_requested_project(engine, project_id).await {
+            return;
+        }
+        let _ = engine.call_flow_async("discoverStore", json!([])).await;
+        if let Ok(snap) = engine.call_flow_js("readStoreSnapshot", json!([])).await
+            && snap.get("ok").and_then(Value::as_bool) == Some(true)
+        {
+            return;
+        }
+        if attempt + 1 < STATUS_PREPARE_ATTEMPTS {
+            tokio::time::sleep(STATUS_PREPARE_DELAY).await;
+        }
+    }
+}
+
+/// Binds the direct project store, retrying briefly while initial project tile queries finish loading.
+async fn bind_store_with_retry(engine: &ChromeEngine, project_id: &str) -> Result<()> {
+    for attempt in 0..STATUS_PREPARE_ATTEMPTS {
+        let status = bind_current_store(engine, project_id).await?;
+        if status.get("ok").and_then(Value::as_bool) == Some(true) {
+            return Ok(());
+        }
+        let retryable =
+            status.get("error").and_then(Value::as_str) == Some("collection_store_not_bound");
+        if !retryable
+            || attempt + 1 >= STATUS_PREPARE_ATTEMPTS
+            || !on_requested_project(engine, project_id).await
+        {
+            return checked_runtime_result(status).map(|_| ());
+        }
+        tokio::time::sleep(STATUS_PREPARE_DELAY).await;
+    }
+    Ok(())
+}
+
+/// Runs `probeStore`, waiting briefly when a verified build is still loading its workspace chunk.
+async fn probe_after_workspace_load(engine: &ChromeEngine, project_id: &str) -> Result<Value> {
+    for attempt in 0..STATUS_PREPARE_ATTEMPTS {
+        let probe = engine.call_flow_js("probeStore", json!([])).await?;
+        if !workspace_chunk_pending(&probe)
+            || attempt + 1 >= STATUS_PREPARE_ATTEMPTS
+            || !on_requested_project(engine, project_id).await
+        {
+            return Ok(probe);
+        }
+        tokio::time::sleep(STATUS_PREPARE_DELAY).await;
+    }
+    engine.call_flow_js("probeStore", json!([])).await
+}
+
+/// Returns `true` when the build is verified but the lazy project workspace class is not loaded yet.
+fn workspace_chunk_pending(probe: &Value) -> bool {
+    let verified = probe
+        .get("checks")
+        .and_then(Value::as_array)
+        .is_some_and(|checks| {
+            checks.iter().any(|c| {
+                c.get("name").and_then(Value::as_str) == Some("verified_build")
+                    && c.get("ok").and_then(Value::as_bool) == Some(true)
+            })
+        });
+    let page_missing = probe
+        .pointer("/operations/agent_chat/failed_checks")
+        .and_then(Value::as_array)
+        .is_some_and(|failed| {
+            failed
+                .iter()
+                .any(|c| c.get("name").and_then(Value::as_str) == Some("agent_page"))
+        });
+    verified && page_missing
+}
+
+/// Marks the probe as failed and records the direct project store binding failure.
+fn record_bind_failure(probe: &mut Value, detail: &str) {
+    let Some(obj) = probe.as_object_mut() else {
+        return;
+    };
+    obj.insert("ok".to_string(), Value::Bool(false));
+    if let Some(checks) = obj.get_mut("checks").and_then(Value::as_array_mut) {
+        checks.push(json!({
+            "name": "project_store_bind",
+            "ok": false,
+            "detail": detail,
+        }));
     }
 }
 

@@ -15,7 +15,10 @@ use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{Duration, Instant};
 
-use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
+use crate::auth::{
+    check_page_signed_in, is_about_landing_url, is_flow_host_url, is_signed_in_flow_url,
+    redirect_sso_if_about,
+};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
 use crate::project_store::prepare_project_store_status;
@@ -273,10 +276,14 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     }
 
     let mut url = engine.current_url().await.unwrap_or_default();
+    let mut landing_frontend = None;
     if !probe {
         if url.is_empty() || url == "about:blank" {
             let _ = engine.navigate(FLOW_URL).await;
             url = engine.current_url().await.unwrap_or_default();
+        }
+        if is_about_landing_url(&url) {
+            landing_frontend = engine.call_flow_js("probeFrontend", json!([])).await.ok();
         }
         let _ = redirect_sso_if_about(engine, &mut url).await;
     }
@@ -348,11 +355,40 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
     }
 
-    let frontend = if let Some(project_id) = &project_id {
-        prepare_project_store_status(engine, project_id).await;
-        engine.call_flow_js("probeStore", json!([])).await.ok()
+    let mut error = None;
+    let frontend = if let Some(pid) = &project_id {
+        let probe_res = match prepare_project_store_status(engine, pid).await {
+            Ok(value) => Some(value),
+            Err(err) => {
+                error = Some(format!("Failed to probe the project store: {err:#}"));
+                None
+            }
+        };
+        if assets_count.is_none()
+            && let Ok(snap) = engine.call_flow_js("readStoreSnapshot", json!([])).await
+            && snap.get("ok").and_then(Value::as_bool) == Some(true)
+        {
+            if let Some(t) = snap.get("projectTitle").and_then(Value::as_str)
+                && !t.is_empty()
+            {
+                project = Some(t.to_string());
+            }
+            credits = snap.get("credits").and_then(Value::as_i64);
+            assets_count = snap.get("assets").and_then(Value::as_array).map(Vec::len);
+            collections_count = snap
+                .get("collections")
+                .and_then(Value::as_array)
+                .map(Vec::len);
+        }
+        probe_res
+    } else if is_flow_host_url(&url) {
+        engine
+            .call_flow_js("probeFrontend", json!([]))
+            .await
+            .ok()
+            .or(landing_frontend)
     } else {
-        None
+        landing_frontend
     };
 
     FlowStatus {
@@ -367,7 +403,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         page_ready: true,
         engine: ENGINE_NAME.to_string(),
         frontend,
-        error: None,
+        error,
     }
 }
 

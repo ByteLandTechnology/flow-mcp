@@ -222,10 +222,12 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
           if (!charFallbackUrl) {
             charFallbackUrl =
               asHttpOrDataUrl(entry.Wb) ||
+              asHttpOrDataUrl(entry.kc) ||
               asHttpOrDataUrl(entry.fifeUrl) ||
               asHttpOrDataUrl(entry.imageUrl) ||
               asHttpOrDataUrl(entry.url) ||
               asHttpOrDataUrl(entry.media?.Wb) ||
+              asHttpOrDataUrl(entry.media?.kc) ||
               asHttpOrDataUrl(entry.media?.fifeUrl) ||
               asHttpOrDataUrl(entry.media?.url);
           }
@@ -233,10 +235,12 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
             for (const h of entry.history) {
               charFallbackUrl =
                 asHttpOrDataUrl(h?.Wb) ||
+                asHttpOrDataUrl(h?.kc) ||
                 asHttpOrDataUrl(h?.fifeUrl) ||
                 asHttpOrDataUrl(h?.imageUrl) ||
                 asHttpOrDataUrl(h?.url) ||
                 asHttpOrDataUrl(h?.media?.Wb) ||
+                asHttpOrDataUrl(h?.media?.kc) ||
                 asHttpOrDataUrl(h?.media?.fifeUrl) ||
                 asHttpOrDataUrl(h?.media?.url);
               if (charFallbackUrl) break;
@@ -287,19 +291,22 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
 
     const rawMediaUrl =
       videoMediaUrl ||
-      t.Fb?.Wb ||
+      asHttpOrDataUrl(t.Fb?.Wb) ||
+      asHttpOrDataUrl(t.Fb?.kc) ||
       t.Fb?.fifeUrl ||
       t.Fb?.videoUrl ||
       t.Fb?.imageUrl ||
       t.Fb?.mediaUrl ||
       t.Fb?.url ||
-      t.Wb ||
+      asHttpOrDataUrl(t.Wb) ||
+      asHttpOrDataUrl(t.kc) ||
       t.fifeUrl ||
       t.videoUrl ||
       t.imageUrl ||
       t.mediaUrl ||
       t.url ||
-      t.fb?.Wb ||
+      asHttpOrDataUrl(t.fb?.Wb) ||
+      asHttpOrDataUrl(t.fb?.kc) ||
       t.fb?.fifeUrl ||
       t.fb?.videoUrl ||
       t.fb?.imageUrl ||
@@ -474,6 +481,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         asHttpOrDataUrl(mObj?.uA) ||
         asHttpOrDataUrl(mObj?.videoUrl) ||
         asHttpOrDataUrl(mObj?.Wb) ||
+        asHttpOrDataUrl(mObj?.kc) ||
         asHttpOrDataUrl(mObj?.fifeUrl) ||
         asHttpOrDataUrl(mObj?.mediaUrl) ||
         asHttpOrDataUrl(mObj?.url) ||
@@ -481,6 +489,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         asHttpOrDataUrl(clip?.uA) ||
         asHttpOrDataUrl(clip?.videoUrl) ||
         asHttpOrDataUrl(clip?.Wb) ||
+        asHttpOrDataUrl(clip?.kc) ||
         asHttpOrDataUrl(clip?.fifeUrl) ||
         cachedClipVideoUrl ||
         null;

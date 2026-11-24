@@ -35,19 +35,28 @@ pub(crate) struct LoginParams {
     pub(crate) cookies: Option<Vec<Map<String, Value>>>,
 }
 
-/// Returns `true` when `raw` points to a non-landing Google Flow host route.
-pub(crate) fn is_signed_in_flow_url(raw: &str) -> bool {
+/// Returns `true` when `raw` points to a Google Flow host route, including landing pages.
+pub(crate) fn is_flow_host_url(raw: &str) -> bool {
     let Ok(parsed) = Url::parse(raw) else {
         return false;
     };
     if parsed.scheme() != "https" && parsed.scheme() != "http" {
         return false;
     }
-    let Some(host) = parsed.host_str().map(|h| h.to_ascii_lowercase()) else {
+    parsed.host_str().is_some_and(|h| {
+        let host = h.to_ascii_lowercase();
+        host == "flow.google.com" || host == "labs.google" || host.ends_with(".labs.google")
+    })
+}
+
+/// Returns `true` when `raw` points to a non-landing Google Flow host route.
+pub(crate) fn is_signed_in_flow_url(raw: &str) -> bool {
+    if !is_flow_host_url(raw) {
+        return false;
+    }
+    let Ok(parsed) = Url::parse(raw) else {
         return false;
     };
-    let flow_host =
-        host == "flow.google.com" || host == "labs.google" || host.ends_with(".labs.google");
     let path = parsed.path().to_ascii_lowercase();
     let blocked = path.starts_with("/about")
         || path.starts_with("/fx/about")
@@ -55,7 +64,7 @@ pub(crate) fn is_signed_in_flow_url(raw: &str) -> bool {
         || path.starts_with("/age-restricted")
         || path.starts_with("/unavailable")
         || path.starts_with("/login");
-    flow_host && !blocked
+    !blocked
 }
 
 /// Returns `true` when the active Flow page shows an authenticated session shell.

@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -385,16 +386,9 @@ fn check_instance_lock() -> (Value, bool) {
     }
 }
 
-/// Checks the Google Flow sign-in status in background Chrome when this process holds the `<home>` lock.
-async fn check_sign_in(locked: bool) -> Value {
-    if !locked {
-        return check(
-            "sign-in",
-            "skip",
-            "Another flow-mcp uses the data directory; use the flow_login tool there",
-        );
-    }
-    match run_login_action(login_params("status")).await {
+/// Formats the `sign-in` check from a `handle_login("status")` result.
+fn format_sign_in_check(result: Result<Value>) -> Value {
+    match result {
         Err(e) => check("sign-in", "fail", format!("{e:#}")),
         Ok(res) if res.get("signedIn").and_then(Value::as_bool) == Some(true) => {
             let url = res.get("url").map(plain_value).unwrap_or_default();
@@ -404,20 +398,122 @@ async fn check_sign_in(locked: bool) -> Value {
     }
 }
 
-/// Runs all `doctor` checks and writes the report.
-async fn run_doctor(as_json: bool) -> Result<()> {
-    let mut checks = vec![check_chrome().await];
+/// Opens Google Flow when needed and probes `WIZ_global_data.cfb2h` against `VERIFIED_BUILDS`.
+async fn probe_live_frontend(engine: &ChromeEngine) -> Result<Value> {
+    engine.ensure_page().await?;
+    let cur = engine.current_url().await.unwrap_or_default();
+    if !auth::is_flow_host_url(&cur) {
+        engine.navigate(config::FLOW_URL).await?;
+    }
+    for _ in 0..12 {
+        let probe = engine.call_flow_js("probeFrontend", json!([])).await?;
+        if probe.get("build").is_some_and(|b| !b.is_null()) {
+            return Ok(probe);
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    engine.call_flow_js("probeFrontend", json!([])).await
+}
+
+/// Formats the `frontend-build` check from a `probeFrontend` result.
+fn format_frontend_build_check(result: Result<Value>) -> Value {
+    match result {
+        Err(e) => check("frontend-build", "fail", format!("{e:#}")),
+        Ok(probe) => {
+            let ok = probe.get("ok").and_then(Value::as_bool) == Some(true);
+            let build = probe.get("build").and_then(Value::as_str);
+            if ok {
+                let label = build.unwrap_or("verified");
+                check(
+                    "frontend-build",
+                    "ok",
+                    format!("Verified Google Flow build ({label})"),
+                )
+            } else if let Some(label) = build {
+                check(
+                    "frontend-build",
+                    "fail",
+                    format!("Unverified Google Flow build ({label})"),
+                )
+            } else {
+                check(
+                    "frontend-build",
+                    "fail",
+                    "Google Flow page did not publish WIZ_global_data.cfb2h",
+                )
+            }
+        }
+    }
+}
+
+/// Checks Google Flow sign-in status and `WIZ_global_data.cfb2h` compatibility in background Chrome.
+async fn check_live_flow(locked: bool, chrome_ok: bool) -> Result<(Value, Value)> {
+    if !locked {
+        return Ok((
+            check(
+                "sign-in",
+                "skip",
+                "Another flow-mcp uses the data directory; use the flow_login tool there",
+            ),
+            check(
+                "frontend-build",
+                "skip",
+                "Another flow-mcp uses the data directory; use the flow_status tool there",
+            ),
+        ));
+    }
+    if !chrome_ok {
+        return Ok((
+            check("sign-in", "skip", "Chrome binary unavailable"),
+            check(
+                "frontend-build",
+                "fail",
+                "Cannot inspect WIZ_global_data.cfb2h without Chrome",
+            ),
+        ));
+    }
+    let had_session = config::has_persisted_session();
+    let engine = ChromeEngine::new();
+    let checks = run_with_engine(&engine, async {
+        let sign_in =
+            format_sign_in_check(auth::handle_login(&engine, login_params("status")).await);
+        let frontend = format_frontend_build_check(probe_live_frontend(&engine).await);
+        Ok((sign_in, frontend))
+    })
+    .await;
+    if !had_session && !config::cookies_path().is_file() {
+        let _ = std::fs::remove_dir_all(config::chrome_profile_dir());
+    }
+    checks
+}
+
+/// Runs all `doctor` checks, writes the report, and returns a non-zero exit code when any check fails.
+async fn run_doctor(as_json: bool) -> Result<ExitCode> {
+    let chrome_check = check_chrome().await;
+    let chrome_ok = chrome_check.get("status").and_then(Value::as_str) == Some("ok");
+    let mut checks = vec![chrome_check];
     checks.extend(check_home());
     let (lock_check, locked) = check_instance_lock();
     checks.push(lock_check);
-    checks.push(check_sign_in(locked).await);
+    let (sign_in_check, frontend_check) = check_live_flow(locked, chrome_ok).await?;
+    checks.push(sign_in_check);
+    checks.push(frontend_check);
+
+    let failed = checks
+        .iter()
+        .any(|c| c.get("status").and_then(Value::as_str) == Some("fail"));
+    let code = if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    };
 
     if as_json {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({ "checks": checks }))?
         );
-        return Ok(());
+        return Ok(code);
     }
     for c in &checks {
         let status = c.get("status").map(plain_value).unwrap_or_default();
@@ -425,7 +521,7 @@ async fn run_doctor(as_json: bool) -> Result<()> {
         let detail = c.get("detail").map(plain_value).unwrap_or_default();
         println!("[{status:<4}] {name}: {detail}");
     }
-    Ok(())
+    Ok(code)
 }
 
 /// Starts the MCP server over standard input and output, or over HTTP when `http` is set,
@@ -445,7 +541,7 @@ async fn run_serve(http: Option<HttpOptions>) -> Result<()> {
 }
 
 /// Stores the parsed settings and runs the selected subcommand.
-pub(crate) async fn run(cli: Cli) -> Result<()> {
+pub(crate) async fn run(cli: Cli) -> Result<ExitCode> {
     config::init_settings(Settings {
         home: cli.home,
         chrome: cli.chrome,
@@ -459,7 +555,8 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 addr,
                 token: http_token,
             }))
-            .await
+            .await?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Login {
             timeout,
@@ -475,13 +572,16 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             eprintln!(
                 "Complete the sign-in in the browser window. flow-mcp continues when it detects the sign-in, or when you close the window."
             );
-            print_result(&run_login_action(params).await?, json)
+            print_result(&run_login_action(params).await?, json)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Status { json } => {
-            print_result(&run_login_action(login_params("status")).await?, json)
+            print_result(&run_login_action(login_params("status")).await?, json)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Logout { json } => {
-            print_result(&run_login_action(login_params("logout")).await?, json)
+            print_result(&run_login_action(login_params("logout")).await?, json)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Doctor { json } => run_doctor(json).await,
     }

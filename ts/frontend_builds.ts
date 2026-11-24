@@ -534,7 +534,7 @@ interface FrontendBuild {
   /** Layout for the project store. */
   projectStore: ProjectStoreFormat;
   /** Operations with verified request formats. */
-  operations: Partial<FrontendFormats>;
+  operations: FrontendFormats;
   /** Native fields used to confirm a character voice assignment. */
   voiceConfirmation?: VoiceConfirmationFormat;
   /** Native fields of the character preview panel. */
@@ -575,27 +575,16 @@ export interface VoiceConfirmationFormat {
   pickerSelection: string;
 }
 
-/** Request formats by exact build label. Include only verified operations. */
+/** Request formats by exact build label. Every verified build covers all managed operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
-  ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
-    projectStore: NOVEMBER_17_STORE,
-    operations: {
-      collection_write: { tileId: "Uc", tileChange: "df", moveTarget: "Sj", moveTiles: "Bb" },
-      asset_trash_store: {
-        entries: "Kv",
-        tile: "Oa",
-        trashed: "Ab",
-        date: "jc",
-        destination: "Dm",
-        sceneWorkflows: "qg",
-      },
-      character_bio: { tileId: "Uc", tileChange: "df", notes: "mx" },
-    },
-  }],
   ["boq_labs-ai-sandbox-frontend_20261118.14_p0", {
     projectStore: NOVEMBER_18_STORE,
     operations: {
       collection_write: { tileId: "Vc", tileChange: "jf", moveTarget: "Wj", moveTiles: "Ab" },
+      asset_trash_store: {
+        entries: "dw", tile: "Na", trashed: "Bb", date: "kc", destination: "Tm",
+        sceneWorkflows: "vg",
+      },
       character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
       agent_chat: NOVEMBER_18_AGENT,
       agent_attachments: NOVEMBER_18_ATTACHMENTS,
@@ -643,5 +632,5 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
 /** Returns the layouts to check when the runtime binds the active project store. */
 export function projectStoreFormats(): readonly ProjectStoreFormat[] {
   const format = frontendBuild(readBuildLabel())?.projectStore;
-  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE];
+  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE, NOVEMBER_20_STORE];
 }

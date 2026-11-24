@@ -70,7 +70,7 @@ export interface FlowMediaPayload {
   resolution?: number;
   /** Media width divided by media height. */
   aspectRatio?: number;
-  /** Submission time in the Flow front end from 2026-11-15 on. */
+  /** Submission time in the 2026-11-15 front end, or FIFE media URL in build 20261120.00. */
   kc?: unknown;
   /** Text prompt used to generate the media. */
   prompt?: string;
@@ -118,6 +118,8 @@ export interface CharacterLookEntry {
   primaryMediaId?: string | number;
   /** FIFE look URL. */
   Wb?: string;
+  /** Look URL in build 20261120.00, or submission date in earlier builds. */
+  kc?: unknown;
   /** Explicit FIFE URL alias. */
   fifeUrl?: string;
   /** Image URL alias. */
@@ -150,6 +152,8 @@ export interface SceneClipItem {
   videoUrl?: string;
   /** Clip FIFE thumbnail or media URL. */
   Wb?: string;
+  /** Clip FIFE URL in build 20261120.00, or submission date in earlier builds. */
+  kc?: unknown;
   /** Explicit FIFE URL alias. */
   fifeUrl?: string;
   /** Trim start in seconds. */
@@ -196,6 +200,8 @@ export interface FlowTile extends FlowMediaPayload {
   yb?: boolean;
   /** Minified trash flag of the 2026-11-15 front end. */
   Ab?: boolean;
+  /** Trash flag in build 20261118.14. */
+  Bb?: boolean;
   /** Trash flag in build 20261120.00. */
   Cb?: boolean;
   /** Primary uppercase media container. */
@@ -703,14 +709,18 @@ export interface StoreProbeCheck {
   detail: string;
 }
 
-/** Result of the non-mutating project store probe. */
-export interface StoreProbeResult {
+/** Result of checking front-end build compatibility on any Flow page. */
+export interface FrontendProbeResult {
   /** Front-end build label, or null when the page publishes none. */
   build: string | null;
   /** True when every check passed. */
   ok: boolean;
   /** Individual checks in run order. */
   checks: StoreProbeCheck[];
+}
+
+/** Result of the non-mutating project store probe. */
+export interface StoreProbeResult extends FrontendProbeResult {
   /** Compatibility of each managed internal operation. */
   operations: Record<string, { ok: boolean; failed_checks: StoreProbeCheck[] }>;
 }
@@ -795,6 +805,8 @@ export interface FlowMcpRuntime {
   characterExtraOp: (req: CharacterExtraOpRequest) => Promise<unknown>;
   /** Returns the front-end build label of the page, or null. */
   buildLabel: () => string | null;
+  /** Checks whether the page publishes a verified front-end build label. */
+  probeFrontend: () => FrontendProbeResult;
   /** Checks the bound project store shape without calling a mutation. */
   probeStore: () => StoreProbeResult;
   /** Returns the click point of a visible control by accessible name, or null. */
