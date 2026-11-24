@@ -90,9 +90,9 @@ export function findProjectPageInstance(): ProjectPageInstance | null {
     if (!cand || typeof cand !== "object" || cand instanceof Node) return false;
     const obj = cand as Partial<ProjectPageInstance>;
     return (
-      typeof obj.Ph === "function" &&
       Boolean(obj.Qa) &&
-      typeof obj.ub?.mutate === "function"
+      (typeof obj.he?.mutate === "function" ||
+        typeof obj.ub?.mutate === "function")
     );
   };
   const scanLv = (lv: unknown): ProjectPageInstance | null =>

@@ -146,26 +146,31 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     }
   }
 
-  if (ingredientTargets.length > 0 && !onEditPage) {
-    const staleRemoveBtns = Array.from(
-      document.querySelectorAll(
-        'flow-prompt-box button[aria-label*="Remove" i], flow-prompt-box [class*="chip"] button',
-      ),
-    ).filter((el): el is HTMLElement => {
-      if (!isVisibleEnabled(el)) return false;
-      const lbl = (el.getAttribute("aria-label") || elText(el)).trim();
-      return /^remove\b|remove ingredient|remove reference|remove frame/i.test(
-        lbl,
-      );
-    });
-    for (const btn of staleRemoveBtns) {
-      btn.click();
-    }
-    if (staleRemoveBtns.length > 0) await delay(100);
-  }
-
   const initialTb = onEditPage ? findTextbox(true) : await ensureManualComposer();
   if (!onEditPage && !initialTb) return { ok: false, error: "manual_prompt_not_ready" };
+
+  if (ingredientTargets.length > 0 && !onEditPage) {
+    for (let pass = 0; pass < 4; pass += 1) {
+      const staleRemoveBtns = Array.from(
+        document.querySelectorAll(
+          'flow-prompt-box flow-image-ingredient-chip button, flow-prompt-box button[aria-label*="Remove" i], flow-prompt-box [class*="chip"] button',
+        ),
+      ).filter((el): el is HTMLElement => {
+        if (!isVisibleEnabled(el)) return false;
+        if (el.closest("flow-image-ingredient-chip")) return true;
+        const lbl = (el.getAttribute("aria-label") || elText(el)).trim();
+        return /^remove\b|remove ingredient|remove reference|remove frame/i.test(
+          lbl,
+        );
+      });
+      if (staleRemoveBtns.length === 0) break;
+      for (const btn of staleRemoveBtns) {
+        btn.click();
+      }
+      await delay(100);
+    }
+  }
+
   const scope: ParentNode = (() => {
     let cur: Element | null | undefined = initialTb?.parentElement;
     for (let i = 0; i < 6 && cur; i++) {
@@ -180,52 +185,128 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     return document;
   })();
 
-  for (const target of ingredientTargets) {
+  const readPageItems = (
+    page: ReturnType<typeof findProjectPageInstance>,
+    ux?: ReturnType<typeof findLiveBasePromptBox>,
+  ): Array<Record<string, unknown>> | null => {
+    const raw =
+      page?.Qa?.oc?.all?.() ??
+      page?.Qa?.kc?.all?.() ??
+      page?.oc?.all?.() ??
+      ux?.Qa?.oc?.all?.() ??
+      ux?.Qa?.kc?.all?.();
+    return Array.isArray(raw) ? raw : null;
+  };
+
+  if (
+    ingredientTargets.length > 0 &&
+    !onEditPage &&
+    !(runtimeState.ngLViewMap instanceof Map)
+  ) {
+    const tipEls = Array.from(
+      document.querySelectorAll("[mattooltip], button[aria-label]"),
+    ).slice(0, 8);
+    await withLViewMapCapture(async () => {
+      await hoverProbe(tipEls, 50);
+    });
+  }
+
+  const promptBoxEl = !onEditPage
+    ? document.querySelector("flow-prompt-box")
+    : null;
+  const ingSearchRoots: ParentNode[] = [
+    ...(promptBoxEl ? [promptBoxEl] : []),
+    ...(scope && scope !== document && scope !== promptBoxEl ? [scope] : []),
+    document,
+  ];
+  const initialPage = !onEditPage ? findProjectPageInstance() : null;
+  const initialUx = !onEditPage
+    ? findLiveBasePromptBox(false, findPromptBoxHost(initialPage))
+    : null;
+  const initialQaMode = String(
+    initialPage?.Qa?.config?.mode?.() || initialUx?.Qa?.config?.mode?.() || "",
+  );
+  const hasAddIngredientsBtn = ingSearchRoots.some((root) =>
+    Array.from(root.querySelectorAll('button, [role="button"]')).some(
+      (el) =>
+        isVisibleEnabled(el) &&
+        /add ingredients to the prompt box|\bingredients\b/i.test(
+          (
+            el.getAttribute("aria-label") ||
+            elText(el) ||
+            el.getAttribute("title") ||
+            ""
+          ).trim(),
+        ),
+    ),
+  );
+  const hasFrameSlotBtn = ingSearchRoots.some((root) =>
+    Array.from(root.querySelectorAll('button, [role="button"]')).some(
+      (el) =>
+        isVisibleEnabled(el) &&
+        /^(?:start|end)$/i.test(
+          (el.getAttribute("aria-label") || elText(el)).trim(),
+        ),
+    ),
+  );
+  const isVideoFrames =
+    !onEditPage &&
+    (initialQaMode
+      ? initialQaMode === "VIDEO_FRAMES"
+      : (/^frames?$/i.test(String(cfg.video_type || "").trim()) &&
+          String(cfg.mode || "video").toLowerCase() === "video") ||
+        (!hasAddIngredientsBtn && hasFrameSlotBtn));
+
+  if (isVideoFrames && ingredientTargets.length > 2) {
+    return { ok: false, error: "ingredient_attach_failed" };
+  }
+
+  let attachedSteps = 0;
+
+  for (let idx = 0; idx < ingredientTargets.length; idx += 1) {
+    const target = ingredientTargets[idx];
     if (!onEditPage && target.tile) {
-      if (!(runtimeState.ngLViewMap instanceof Map)) {
-        const tipEls = Array.from(
-          document.querySelectorAll("[mattooltip], button[aria-label]"),
-        ).slice(0, 8);
-        await withLViewMapCapture(async () => {
-          await hoverProbe(tipEls, 50);
-        });
-      }
       const projPage = findProjectPageInstance();
       if (projPage && typeof projPage.Ph === "function") {
-        const beforeItems = projPage.Qa?.kc?.all?.() || [];
-        const prevCount = Array.isArray(beforeItems) ? beforeItems.length : 0;
+        const beforeItems = readPageItems(projPage) || [];
+        const prevCount = beforeItems.length;
         try {
           projPage.Ph(target.tile);
           await delay(180);
         } catch {
           // Fall back to DOM picker below.
         }
-        const afterItems = projPage.Qa?.kc?.all?.() || [];
+        const afterItems = readPageItems(projPage) || [];
         const added =
-          Array.isArray(afterItems) &&
-          (afterItems.length > prevCount ||
-            afterItems.some((item) => {
-              const vals = [
-                item?.id,
-                item?.workflowId,
-                item?.entityId,
-                item?.mediaId,
-                item?.primaryMediaId,
-              ]
-                .filter(Boolean)
-                .map(String);
-              return (
-                vals.includes(target.id) ||
-                (target.primaryMediaId &&
-                  vals.includes(String(target.primaryMediaId)))
-              );
-            }));
-        if (added) continue;
+          afterItems.length > prevCount ||
+          afterItems.some((item) => {
+            const vals = [
+              item?.id,
+              item?.workflowId,
+              item?.entityId,
+              item?.mediaId,
+              item?.primaryMediaId,
+            ]
+              .filter(Boolean)
+              .map(String);
+            return (
+              vals.includes(target.id) ||
+              (target.primaryMediaId &&
+                vals.includes(String(target.primaryMediaId)))
+            );
+          });
+        if (added) {
+          attachedSteps += 1;
+          continue;
+        }
       }
     }
 
-    const ingSearchRoots: ParentNode[] =
-      scope && scope !== document ? [scope, document] : [document];
+    const slotPattern = isVideoFrames
+      ? idx === 0
+        ? /^start$/i
+        : /^end$/i
+      : /add ingredients to the prompt box|\bingredients\b|\badd frame\b/i;
     let ingBtn: HTMLElement | null = null;
     for (const root of ingSearchRoots) {
       ingBtn =
@@ -238,12 +319,28 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
               el.getAttribute("title") ||
               ""
             ).trim();
-            return /add ingredients to the prompt box|\bingredients\b|\badd frame\b/i.test(
-              label,
-            );
+            return slotPattern.test(label);
           },
         ) || null;
       if (ingBtn) break;
+    }
+    if (!ingBtn && isVideoFrames) {
+      for (const root of ingSearchRoots) {
+        ingBtn =
+          Array.from(root.querySelectorAll('button, [role="button"]')).find(
+            (el): el is HTMLElement => {
+              if (!isVisibleEnabled(el)) return false;
+              const label = (
+                el.getAttribute("aria-label") ||
+                elText(el) ||
+                el.getAttribute("title") ||
+                ""
+              ).trim();
+              return /\badd frame\b/i.test(label);
+            },
+          ) || null;
+        if (ingBtn) break;
+      }
     }
     if (!ingBtn) break;
     const activeIngBtn = ingBtn;
@@ -297,6 +394,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
       ka?: () => unknown[];
       Hi?: ((item?: unknown) => unknown) | undefined;
       r9?: (item: unknown) => void;
+      Qda?: (item: unknown) => void;
     }
     if (popEl) {
       const findPopInst = (lv: NgLView | null): PopoverComponent | null => {
@@ -306,7 +404,8 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
             cand &&
             typeof cand === "object" &&
             !(cand instanceof Node) &&
-            (typeof (cand as PopoverComponent).r9 === "function" ||
+            (typeof (cand as PopoverComponent).Qda === "function" ||
+              typeof (cand as PopoverComponent).r9 === "function" ||
               typeof (cand as PopoverComponent).Hi === "function")
           ) {
             return cand as PopoverComponent;
@@ -353,7 +452,10 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
               : null)
           : null;
         if (m) {
-          if (typeof popInst.r9 === "function") {
+          if (typeof popInst.Qda === "function") {
+            popInst.Qda(m);
+            attached = true;
+          } else if (typeof popInst.r9 === "function") {
             popInst.r9(m);
             attached = true;
           } else if (typeof popInst.Hi === "function") {
@@ -397,6 +499,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     }
 
     if (attached) {
+      attachedSteps += 1;
       await delay(220);
       const confirmBtn = Array.from(
         overlay.querySelectorAll('button, [role="button"]'),
@@ -439,23 +542,37 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         }
       }
     }
+
+    if (isVideoFrames && !attached) break;
   }
 
-  if (ingredientTargets.length > 0 && !onEditPage) {
-    const projPage = findProjectPageInstance();
-    if (projPage?.Qa?.kc?.all) {
+  if (ingredientTargets.length > 0) {
+    const projPage = !onEditPage ? findProjectPageInstance() : null;
+    const liveUx = !onEditPage
+      ? findLiveBasePromptBox(false, findPromptBoxHost(projPage))
+      : null;
+    if (!onEditPage && readPageItems(projPage, liveUx) !== null) {
       for (let w = 0; w < 25; w += 1) {
-        const items = projPage.Qa.kc.all();
+        const items = readPageItems(projPage, liveUx);
         const stillLoading =
           Array.isArray(items) &&
           items.some(
             (x) =>
               x &&
-              (x.tl === "INVALID_CHARACTER_NO_IMAGES" || x.isLoading === true),
+              (x.Rp === "INVALID_CHARACTER_NO_IMAGES" ||
+                x.tl === "INVALID_CHARACTER_NO_IMAGES" ||
+                x.isLoading === true),
           );
         if (!stillLoading) break;
         await delay(100);
       }
+    }
+    const finalItems = !onEditPage ? readPageItems(projPage, liveUx) : null;
+    if (
+      attachedSteps < ingredientTargets.length ||
+      (finalItems !== null && finalItems.length < ingredientTargets.length)
+    ) {
+      return { ok: false, error: "ingredient_attach_failed" };
     }
   }
 

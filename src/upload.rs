@@ -21,6 +21,12 @@ pub(crate) const PROMPT_INGREDIENTS_MENU: &str = "Add ingredients to the prompt 
 /// Menu item text (without the icon name) that uploads media into the prompt box.
 pub(crate) const PROMPT_UPLOAD_ITEM: &str = "Upload media";
 
+/// Alternate menu item text (without the icon name) that uploads files into the prompt box.
+const PROMPT_UPLOAD_FILES_ITEM: &str = "Upload files";
+
+/// Frame slot button labels in `VIDEO_FRAMES` mode (`Start` first, then `End`).
+const FRAME_SLOT_BUTTONS: [&str; 2] = ["Start", "End"];
+
 /// Verifies local paths and returns the absolute paths that Chrome uses.
 pub(crate) async fn local_upload_paths(files: &[String], label: &str) -> Result<Vec<String>> {
     validate_local_files(Some(files), label).await?;
@@ -104,16 +110,29 @@ async fn click_when_visible(engine: &ChromeEngine, by: &str, name: &str) -> Resu
     anyhow::bail!("{} is not visible", name)
 }
 
-/// Clicks `menu` and its `upload <item>` entry, and assigns `files` to the file input that the page opens.
-async fn upload_steps(
-    engine: &ChromeEngine,
-    menu: &str,
-    item: &str,
-    files: &[String],
-) -> Result<()> {
-    click_when_visible(engine, "aria-label", menu).await?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    click_when_visible(engine, "text", &format!("upload {item}")).await?;
+/// Clicks `upload <item>` (or `upload Upload files` for prompt uploads) when visible.
+async fn click_upload_item(engine: &ChromeEngine, item: &str) -> Result<()> {
+    let primary = format!("upload {item}");
+    if item != PROMPT_UPLOAD_ITEM {
+        return click_when_visible(engine, "text", &primary).await;
+    }
+    let alt = format!("upload {PROMPT_UPLOAD_FILES_ITEM}");
+    for _ in 0..20 {
+        for candidate in [&primary, &alt] {
+            let point = engine
+                .call_flow_js("locatePoint", json!([{ "by": "text", "name": candidate }]))
+                .await?;
+            if engine.click_point(&point).await? {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    anyhow::bail!("Neither '{primary}' nor '{alt}' is visible")
+}
+
+/// Waits for `window.__fmUploadInput` to capture a file input and assigns `files` to it.
+async fn assign_opened_chooser(engine: &ChromeEngine, item: &str, files: &[String]) -> Result<()> {
     let mut opened = false;
     for _ in 0..30 {
         let v = eval_value(engine, "!!window.__fmUploadInput").await?;
@@ -128,6 +147,90 @@ async fn upload_steps(
         .upload_files_to("window.__fmUploadInput", files)
         .await
         .context("Failed to assign files to the Flow upload input")
+}
+
+/// Clicks `menu` (or `Start` and `End` frame slots when `menu` is hidden) and uploads `files`.
+async fn upload_steps(
+    engine: &ChromeEngine,
+    menu: &str,
+    item: &str,
+    files: &[String],
+) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    if menu != PROMPT_INGREDIENTS_MENU {
+        click_when_visible(engine, "aria-label", menu).await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        click_upload_item(engine, item).await?;
+        return assign_opened_chooser(engine, item, files).await;
+    }
+
+    for _ in 0..20 {
+        let menu_point = engine
+            .call_flow_js("locatePoint", json!([{ "by": "aria-label", "name": menu }]))
+            .await?;
+        if engine.click_point(&menu_point).await? {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            click_upload_item(engine, item).await?;
+            return assign_opened_chooser(engine, item, files).await;
+        }
+
+        let start_point = engine
+            .call_flow_js(
+                "locatePoint",
+                json!([{ "by": "text", "name": FRAME_SLOT_BUTTONS[0] }]),
+            )
+            .await?;
+        let end_point = engine
+            .call_flow_js(
+                "locatePoint",
+                json!([{ "by": "text", "name": FRAME_SLOT_BUTTONS[1] }]),
+            )
+            .await?;
+        if (!start_point.is_null() || !end_point.is_null())
+            && files.len() > FRAME_SLOT_BUTTONS.len()
+        {
+            anyhow::bail!(
+                "Frame mode accepts at most {} files, got {}",
+                FRAME_SLOT_BUTTONS.len(),
+                files.len()
+            );
+        }
+        if engine.click_point(&start_point).await? {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            click_upload_item(engine, item).await?;
+            assign_opened_chooser(engine, item, &files[..1]).await?;
+            if files.len() == 2 {
+                tokio::time::sleep(Duration::from_millis(350)).await;
+                let _ = engine
+                    .call_flow_js("uploadUiAction", json!(["accept_consent"]))
+                    .await;
+                eval_value(engine, HOOK_JS).await?;
+                click_when_visible(engine, "text", FRAME_SLOT_BUTTONS[1]).await?;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                click_upload_item(engine, item).await?;
+                assign_opened_chooser(engine, item, &files[1..2]).await?;
+            }
+            return Ok(());
+        }
+        if files.len() == 1 {
+            let has_start_chip = eval_value(
+                engine,
+                "!!document.querySelector('flow-prompt-box flow-image-ingredient-chip')",
+            )
+            .await?
+            .as_bool()
+                == Some(true);
+            if has_start_chip && engine.click_point(&end_point).await? {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                click_upload_item(engine, item).await?;
+                return assign_opened_chooser(engine, item, &files[..1]).await;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    anyhow::bail!("{} is not visible", menu)
 }
 
 /// Uploads `files` through the `menu` button and its `upload <item>` entry.

@@ -321,6 +321,10 @@ export interface PromptStateController {
     mode?: () => string;
     outputCount?: () => number;
   };
+  /** Attached item signal container in legacy builds. */
+  kc?: { all?: () => Array<Record<string, unknown>> };
+  /** Attached item signal container in build 20261120.00 and later. */
+  oc?: { all?: () => Array<Record<string, unknown>> };
 }
 
 /** Angular component controller for a base prompt box. */
@@ -349,12 +353,16 @@ export interface PromptBoxHost {
 
 /** Angular project page component instance. */
 export interface ProjectPageInstance {
-  /** Attaches a tile reference directly into composer state. */
-  Ph: (tile: FlowTile) => void;
+  /** Attaches a tile reference directly into composer state on legacy builds. */
+  Ph?: (tile: FlowTile) => void;
   /** Prompt state and attached item signal container. */
-  Qa: PromptStateController & { kc?: { all?: () => Array<Record<string, unknown>> } };
-  /** Store/mode mutation signal container. */
-  ub: { mutate: (value: unknown) => unknown };
+  Qa: PromptStateController;
+  /** Store or mode mutation signal container. */
+  ub?: { mutate?: (value: unknown) => unknown };
+  /** Store mutation dispatcher on the project page. */
+  he?: { mutate?: (value: unknown) => unknown };
+  /** Optional attached item signal container alias. */
+  oc?: { all?: () => Array<Record<string, unknown>> };
   /** Secondary agent state signal container. */
   Ta?: { mutate?: (value: unknown) => void };
   /** Returns the prompt box host component. */
