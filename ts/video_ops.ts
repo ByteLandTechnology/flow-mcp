@@ -3,8 +3,20 @@
 
 // Trim Flow videos and drive the scene builder extend workflow.
 
-import { createScene, findRouter } from "./angular";
-import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import {
+  createScene,
+  findRouter,
+  readAngularTooltip,
+  withLViewMapCapture,
+} from "./angular";
+import { findComposerWarning } from "./composer";
+import {
+  delay,
+  elText,
+  hoverProbe,
+  isDisabledProp,
+  isVisibleEnabled,
+} from "./dom";
 import { writePromptBox } from "./prompt_writer";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, VideoOpRequest } from "./types";
@@ -173,8 +185,15 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
           'flow-scene-builder button[aria-label="Add clip"], flow-scene-timeline button[aria-label="Add clip"], button[aria-label="Add clip"]',
         );
         if (isVisibleEnabled(addClipBtn)) {
-          addClipBtn.click();
-          await delay(250);
+          if (!(runtimeState.ngLViewMap instanceof Map)) {
+            await withLViewMapCapture(async () => {
+              addClipBtn.click();
+              await delay(250);
+            });
+          } else {
+            addClipBtn.click();
+            await delay(250);
+          }
           // Angular renders the menu in an overlay outside the menu host.
           const menuScope = document.querySelector(".extend-menu-panel") ?? document;
           const optCandidates = Array.from(
@@ -199,13 +218,15 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
             const innerBtn =
               extendOpt.querySelector("button, [role='menuitem']") || extendOpt;
             if (!isVisibleEnabled(innerBtn) || !isVisibleEnabled(extendOpt)) {
-              const reason = (
-                extendOpt.getAttribute("mattooltip") ||
-                extendOpt.getAttribute("title") ||
-                innerBtn.getAttribute("mattooltip") ||
-                innerBtn.getAttribute("title") ||
-                "unavailable"
-              ).trim();
+              if (!(runtimeState.ngLViewMap instanceof Map)) {
+                await withLViewMapCapture(async () => {
+                  await hoverProbe([extendOpt, innerBtn], 40);
+                });
+              }
+              const reason =
+                readAngularTooltip(extendOpt) ||
+                readAngularTooltip(innerBtn) ||
+                "unavailable";
               return { ok: false, error: `extend_option_disabled:${reason}` };
             }
             innerBtn.click();
@@ -265,12 +286,31 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
 
     let submitBtn: HTMLElement | null = null;
     const exactSelector = 'button[aria-label="Start generation"]';
+    const checkExtendWarning = (): {
+      ok: false;
+      error: string;
+      detail: string;
+    } | null => {
+      const w = findComposerWarning([composer, document], true);
+      if (!w) return null;
+      const prefix =
+        w.kind === "credit"
+          ? "extend_credit_quota_exceeded"
+          : "extend_high_demand_warning";
+      return {
+        ok: false,
+        error: `${prefix}:${w.detail}`,
+        detail: w.detail,
+      };
+    };
     for (let i = 0; i < 120; i++) {
       const exact = composer.querySelector(exactSelector);
       if (isVisibleEnabled(exact)) {
         submitBtn = exact;
         break;
       }
+      const warning = checkExtendWarning();
+      if (warning) return warning;
       if (exact && exact.getClientRects().length > 0) {
         await delay(100);
       } else {
@@ -278,13 +318,26 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       }
     }
     if (!submitBtn) {
+      const warningAfter = checkExtendWarning();
+      if (warningAfter) return warningAfter;
       const exactAfter = composer.querySelector(exactSelector);
       if (
         exactAfter &&
         exactAfter.getClientRects().length > 0 &&
         !isVisibleEnabled(exactAfter)
       ) {
-        return { ok: false, error: "extend_start_generation_disabled" };
+        const validatorDetail =
+          runtimeState.promptState?.Ff?.N7a?.() ||
+          runtimeState.promptState?.lf?.jYa?.() ||
+          readAngularTooltip(exactAfter) ||
+          "";
+        return validatorDetail
+          ? {
+              ok: false,
+              error: `extend_start_generation_disabled:${validatorDetail}`,
+              detail: validatorDetail,
+            }
+          : { ok: false, error: "extend_start_generation_disabled" };
       }
       submitBtn =
         Array.from(composer.querySelectorAll('button, [role="button"]')).find(
@@ -292,7 +345,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
             if (b.tagName === "A" || !isVisibleEnabled(b)) return false;
             if (
               b.closest(
-                '.cdk-overlay-pane, [role="menu"], [role="listbox"], nav, aside',
+                'flow-credit-warning-button, flow-high-demand-warning-button, .cdk-overlay-pane, [role="menu"], [role="listbox"], nav, aside',
               )
             ) {
               return false;

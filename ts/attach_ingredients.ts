@@ -511,12 +511,23 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     prompt_len: tbLen.length,
     settings_open: Boolean(!onEditPage && settingsOpen()),
     sk_agent:
-      typeof finalHost?.Sk === "function" ? Boolean(finalHost.Sk()) : null,
+      typeof finalHost?.Nl === "function"
+        ? Boolean(finalHost.Nl())
+        : typeof finalHost?.Sk === "function"
+          ? Boolean(finalHost.Sk())
+          : null,
     qa_mode: finalUx?.Qa?.config?.mode?.() || null,
     prompt_empty:
-      typeof finalUx?.Qa?.prompt?.Le === "function"
-        ? Boolean(finalUx.Qa.prompt.Le())
-        : null,
-    qf: typeof finalUx?.qf === "function" ? Boolean(finalUx.qf()) : null,
+      typeof finalUx?.Qa?.prompt?.Ke === "function"
+        ? Boolean(finalUx.Qa.prompt.Ke())
+        : typeof finalUx?.Qa?.prompt?.Le === "function"
+          ? Boolean(finalUx.Qa.prompt.Le())
+          : null,
+    qf:
+      typeof finalUx?.wf === "function"
+        ? Boolean(finalUx.wf())
+        : typeof finalUx?.qf === "function"
+          ? Boolean(finalUx.qf())
+          : null,
   };
 }

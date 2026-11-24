@@ -348,3 +348,82 @@ export function pickerElementMatches(
   }
   return false;
 }
+
+/** Reads a trimmed string property or zero-argument Angular input signal from `cand`. */
+function readTooltipSlotValue(cand: object, key: string): string {
+  const val = readOwn(cand, key);
+  if (typeof val === "string") return val.trim();
+  if (typeof val === "function" && val.length === 0) {
+    try {
+      const out: unknown = val.call(cand);
+      if (typeof out === "string") return out.trim();
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+/** Scans one Angular `NgLView` for `MatTooltip.message` or `flow-menu-item` `Sf` and `CA` inputs. */
+function scanLViewTooltip(lv: NgLView, hostNode: Element): string {
+  for (const slot of lv) {
+    if (Array.isArray(slot) && slot[0] === hostNode) {
+      const nested = scanLViewTooltip(slot, hostNode);
+      if (nested) return nested;
+    }
+  }
+  for (const key of ["message", "Sf", "CA"]) {
+    for (const cand of lv) {
+      if (
+        !cand ||
+        typeof cand !== "object" ||
+        cand instanceof Node ||
+        cand instanceof Error ||
+        Array.isArray(cand) ||
+        cand instanceof Map
+      ) {
+        continue;
+      }
+      const text = readTooltipSlotValue(cand, key);
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+/** Reads tooltip text from Angular `MatTooltip` (`message`), `Sf` or `CA` inputs, or HTML attributes. */
+export function readAngularTooltip(el: Element | null | undefined): string {
+  if (!el) return "";
+  const hostItem = el.closest("flow-menu-item, .extend-clip-option") || el;
+  const seenLViews = new Set<NgLView>();
+  const innerNodes = Array.from(hostItem.querySelectorAll("*"));
+  const targets = [...innerNodes, el, hostItem];
+  for (const node of targets) {
+    let lv: NgLView | null = resolveLView(node);
+    for (let d = 0; d < 3 && Array.isArray(lv); d += 1) {
+      if (
+        d > 0 &&
+        lv[0] instanceof Node &&
+        lv[0] !== hostItem &&
+        !hostItem.contains(lv[0])
+      ) {
+        break;
+      }
+      if (!seenLViews.has(lv)) {
+        seenLViews.add(lv);
+        const found = scanLViewTooltip(lv, hostItem);
+        if (found) return found;
+      }
+      lv = Array.isArray(lv[3]) ? lv[3] : Array.isArray(lv[15]) ? lv[15] : null;
+    }
+  }
+  for (const node of [el, hostItem, ...innerNodes]) {
+    const attr = (
+      node.getAttribute("mattooltip") ||
+      node.getAttribute("title") ||
+      ""
+    ).trim();
+    if (attr) return attr;
+  }
+  return "";
+}

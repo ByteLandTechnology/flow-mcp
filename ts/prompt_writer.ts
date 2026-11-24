@@ -12,6 +12,7 @@ import type {
   ProseMirrorState,
   ProseMirrorTransaction,
   ProseMirrorView,
+  RichTextEditorInstance,
   WritePromptOptions,
   WritePromptResult,
 } from "./types";
@@ -35,6 +36,8 @@ function findPmTransaction(state: unknown): ProseMirrorTransaction | null {
   if (!state || typeof state !== "object") return null;
   const trProp = readOwn(state, "tr");
   if (isPmTransaction(trProp)) return trProp;
+  const ujProp = readOwn(state, "uj");
+  if (isPmTransaction(ujProp)) return ujProp;
   const fiProp = readOwn(state, "Fi");
   if (isPmTransaction(fiProp)) return fiProp;
   const seen = new Set<string>();
@@ -75,6 +78,35 @@ function isPmViewStruct(cand: unknown): cand is ProseMirrorView {
       (view.state as Partial<ProseMirrorState>).doc &&
       findPmTransaction(view.state),
   );
+}
+
+/** Extracts a ProseMirror `EditorView` from a rich-text editor instance or wrapper object. */
+function findPmViewInRichEditor(cand: unknown): ProseMirrorView | null {
+  if (!cand || typeof cand !== "object" || cand instanceof Node) return null;
+  if (isPmViewStruct(cand)) return cand;
+  const tbVal = readOwn(cand, "Tb");
+  if (isPmViewStruct(tbVal)) return tbVal;
+  const thVal = readOwn(cand, "th");
+  if (isPmViewStruct(thVal)) return thVal;
+
+  let fallback: ProseMirrorView | null = null;
+  for (const k of Object.keys(cand)) {
+    const slotVal = readOwn(cand, k);
+    if (isPmViewStruct(slotVal)) {
+      if (readOwn(slotVal, "dom")) return slotVal;
+      fallback ??= slotVal;
+    } else if (
+      slotVal &&
+      typeof slotVal === "object" &&
+      !(slotVal instanceof Node)
+    ) {
+      const subTb = readOwn(slotVal, "Tb");
+      if (isPmViewStruct(subTb)) return subTb;
+      const subTh = readOwn(slotVal, "th");
+      if (isPmViewStruct(subTh)) return subTh;
+    }
+  }
+  return fallback;
 }
 
 /** Writes `rawText` into a ProseMirror or plain input textbox using multi-tier dispatch. */
@@ -140,7 +172,7 @@ export async function writePromptBox(
           if (k === "constructor" || k === "dispatch" || k === "Qd") {
             continue;
           }
-          const fn = readOwn(pmView, k);
+          const fn = readOwn(cur, k);
           if (typeof fn === "function" && fn.length === 1) {
             let src = "";
             try {
@@ -158,6 +190,10 @@ export async function writePromptBox(
         cur = Object.getPrototypeOf(cur);
       }
       dispatchFns.push(...dispatchTxFns, ...updateStateFns);
+      if (typeof pmView.Td === "function") {
+        const td = pmView.Td;
+        dispatchFns.push((t) => td.call(pmView, t));
+      }
       const prevState = pmView.state;
       for (const callDispatch of dispatchFns) {
         try {
@@ -176,24 +212,34 @@ export async function writePromptBox(
   };
 
   async function capturePromptControllers(rootEl: HTMLElement): Promise<{
-    richEditor: { th?: unknown } | null;
+    richEditor: RichTextEditorInstance | null;
     pmViewFound: ProseMirrorView | null;
     promptState: PromptStateController | null;
   }> {
-    let richEditor: { th?: unknown } | null = null;
+    let richEditor: RichTextEditorInstance | null = null;
     let pmViewFound: ProseMirrorView | null = null;
     let promptState: PromptStateController | null = null;
 
     if (opts.liveUx) {
-      if (opts.liveUx.Qa && typeof opts.liveUx.Qa.Wn === "function") {
+      if (
+        opts.liveUx.Qa &&
+        (typeof opts.liveUx.Qa.Gp === "function" ||
+          typeof opts.liveUx.Qa.Wn === "function")
+      ) {
         promptState = opts.liveUx.Qa;
       }
       try {
-        const cq =
-          typeof opts.liveUx.CQ === "function" ? opts.liveUx.CQ() : null;
-        if (cq && isPmViewStruct(cq.th)) {
-          richEditor = cq;
-          pmViewFound = cq.th;
+        const getEditor =
+          typeof opts.liveUx.IU === "function"
+            ? opts.liveUx.IU
+            : typeof opts.liveUx.CQ === "function"
+              ? opts.liveUx.CQ
+              : null;
+        const re = getEditor ? getEditor.call(opts.liveUx) : null;
+        const view = findPmViewInRichEditor(re);
+        if (re && view) {
+          richEditor = re;
+          pmViewFound = view;
         }
       } catch {
         // Continue with LView discovery.
@@ -213,29 +259,26 @@ export async function writePromptBox(
           continue;
         }
         try {
-          const cqFn = readOwn(cand, "CQ");
-          if (!pmViewFound && typeof cqFn === "function") {
-            const re = cqFn.call(cand) as { th?: unknown } | null | undefined;
-            if (re && isPmViewStruct(re.th)) {
+          const editorGetter = readOwn(cand, "IU") ?? readOwn(cand, "CQ");
+          if (!pmViewFound && typeof editorGetter === "function") {
+            const re = editorGetter.call(cand) as
+              | RichTextEditorInstance
+              | null
+              | undefined;
+            const view = findPmViewInRichEditor(re);
+            if (re && view) {
               richEditor = re;
-              pmViewFound = re.th;
+              pmViewFound = view;
             }
           }
           if (!pmViewFound) {
-            const thVal = readOwn(cand, "th");
             if (isPmViewStruct(cand)) {
               pmViewFound = cand;
-            } else if (isPmViewStruct(thVal)) {
-              richEditor = cand as { th?: unknown };
-              pmViewFound = thVal;
             } else {
-              for (const k of Object.keys(cand).slice(0, 20)) {
-                const slotVal = readOwn(cand, k);
-                if (isPmViewStruct(slotVal)) {
-                  richEditor = cand as { th?: unknown };
-                  pmViewFound = slotVal;
-                  break;
-                }
+              const view = findPmViewInRichEditor(cand);
+              if (view) {
+                richEditor = cand as RichTextEditorInstance;
+                pmViewFound = view;
               }
             }
           }
@@ -245,14 +288,19 @@ export async function writePromptBox(
         try {
           if (!promptState) {
             const qaVal = readOwn(cand, "Qa") as PromptStateController | undefined;
-            const ownWn = readOwn(cand, "Wn");
-            const ownLf = readOwn(cand, "lf") as { isValid?: unknown } | undefined;
-            if (qaVal && typeof qaVal.Wn === "function") {
+            const ownApply = readOwn(cand, "Gp") ?? readOwn(cand, "Wn");
+            const ownValidator = (readOwn(cand, "Ff") ?? readOwn(cand, "lf")) as
+              | { isValid?: unknown }
+              | undefined;
+            if (
+              qaVal &&
+              (typeof qaVal.Gp === "function" || typeof qaVal.Wn === "function")
+            ) {
               promptState = qaVal;
             } else if (
-              typeof ownWn === "function" &&
-              ownLf &&
-              typeof ownLf.isValid === "function"
+              typeof ownApply === "function" &&
+              ownValidator &&
+              typeof ownValidator.isValid === "function"
             ) {
               promptState = cand as PromptStateController;
             }
@@ -378,43 +426,73 @@ export async function writePromptBox(
   const { richEditor, pmViewFound, promptState } =
     await capturePromptControllers(tb);
   runtimeState.promptState = promptState || null;
-  const isPromptPopulated = (): boolean =>
-    typeof promptState?.prompt?.Le === "function"
-      ? promptState.prompt.Le() === false
-      : false;
+  const readPromptEmpty = (): boolean | null => {
+    if (typeof promptState?.prompt?.Ke === "function") {
+      return Boolean(promptState.prompt.Ke());
+    }
+    if (typeof promptState?.prompt?.Le === "function") {
+      return Boolean(promptState.prompt.Le());
+    }
+    return null;
+  };
+  const hasValidator = (): boolean =>
+    typeof promptState?.Ff?.isValid === "function" ||
+    typeof promptState?.lf?.isValid === "function";
+  const isPromptValid = (): boolean =>
+    typeof promptState?.Ff?.isValid === "function"
+      ? promptState.Ff.isValid() === true
+      : typeof promptState?.lf?.isValid === "function"
+        ? promptState.lf.isValid() === true
+        : false;
+  const applyPromptStateText = (content: string): boolean => {
+    const applyFn =
+      typeof promptState?.Gp === "function"
+        ? promptState.Gp
+        : typeof promptState?.Wn === "function"
+          ? promptState.Wn
+          : null;
+    if (!promptState || !applyFn) return false;
+    const segments = [{ type: "text", content }];
+    applyFn.call(promptState, { Oe: segments, Te: segments });
+    return true;
+  };
+  const isPromptPopulated = (): boolean => {
+    const empty = readPromptEmpty();
+    if (empty !== null) return empty === false;
+    return hasValidator() ? isPromptValid() : false;
+  };
   const isSynced = (): boolean =>
-    opts.strictSync && typeof promptState?.prompt?.Le === "function"
+    opts.strictSync && (readPromptEmpty() !== null || hasValidator())
       ? isPromptPopulated()
       : true;
+  const activePmTarget: unknown =
+    pmViewFound || richEditor?.Tb || richEditor?.th;
 
   if (opts.strictSync) {
-    if (pmViewFound || richEditor?.th) {
-      applyToPmView(pmViewFound || richEditor?.th, text);
+    if (activePmTarget) {
+      applyToPmView(activePmTarget, text);
       await delay(120);
       if (hasWritten() && isSynced()) {
         return { ok: true, tier: "closure_pm" };
       }
     }
-  } else if (pmViewFound || richEditor?.th || promptState) {
-    applyToPmView(pmViewFound || richEditor?.th, text);
+  } else if (activePmTarget || promptState) {
+    applyToPmView(activePmTarget, text);
     await delay(100);
     if (
       promptState &&
-      typeof promptState.Wn === "function" &&
-      promptState.prompt?.Le?.() !== false
+      (typeof promptState.Gp === "function" ||
+        typeof promptState.Wn === "function") &&
+      !isPromptPopulated()
     ) {
       try {
-        promptState.Wn({ Oe: [{ type: "text", content: text }] });
+        applyPromptStateText(text);
       } catch {
         // Fall through to DOM checks.
       }
       await delay(80);
     }
-    if (
-      hasWritten() ||
-      promptState?.prompt?.Le?.() === false ||
-      promptState?.lf?.isValid?.() === true
-    ) {
+    if (hasWritten() || isPromptPopulated() || isPromptValid()) {
       return { ok: true, tier: "closure_pm" };
     }
   }
@@ -515,11 +593,12 @@ export async function writePromptBox(
   if (
     opts.strictSync &&
     promptState &&
-    typeof promptState.Wn === "function" &&
+    (typeof promptState.Gp === "function" ||
+      typeof promptState.Wn === "function") &&
     !isPromptPopulated()
   ) {
     try {
-      promptState.Wn({ Oe: [{ type: "text", content: text }] });
+      applyPromptStateText(text);
       await delay(120);
       if (isPromptPopulated()) {
         return { ok: true, tier: "prompt_state" };

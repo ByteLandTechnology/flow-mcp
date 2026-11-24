@@ -308,14 +308,39 @@ export interface FifeEnv {
   isSignedCdnHost: (parsed: URL) => boolean;
 }
 
+/** Serialized prompt text segment sent to `PromptStateController`. */
+export interface PromptTextSegment {
+  /** Segment kind, such as `"text"`. */
+  type: string;
+  /** Segment text payload. */
+  content: string;
+}
+
+/** Serialized prompt document accepted by `PromptStateController`. */
+export interface PromptDocumentPayload {
+  /** Prompt segments in earlier builds. */
+  Oe?: PromptTextSegment[];
+  /** Prompt segments in build 20261120.00. */
+  Te?: PromptTextSegment[];
+}
+
 /** Flow prompt validation and submission state controller. */
 export interface PromptStateController {
-  /** Applies serialized prompt segments. */
-  Wn?: (doc: { Oe: Array<{ type: string; content: string }> }) => void;
+  /** Applies serialized prompt segments in earlier builds. */
+  Wn?: (doc: PromptDocumentPayload) => void;
+  /** Applies serialized prompt segments in build 20261120.00. */
+  Gp?: (doc: PromptDocumentPayload) => void;
   /** Prompt text helper object. */
-  prompt?: { Le?: () => boolean };
-  /** Validator status object. */
+  prompt?: {
+    /** Returns true when the prompt is empty in earlier builds. */
+    Le?: () => boolean;
+    /** Returns true when the prompt is empty in build 20261120.00. */
+    Ke?: () => boolean;
+  };
+  /** Validator status object in earlier builds. */
   lf?: { isValid?: () => boolean; jYa?: () => string };
+  /** Validator status object in build 20261120.00. */
+  Ff?: { isValid?: () => boolean; N7a?: () => string };
   /** Mode, output count, and model config signals. */
   config?: {
     mode?: () => string;
@@ -323,42 +348,75 @@ export interface PromptStateController {
   };
 }
 
+/** Rich text editor component wrapper that holds a ProseMirror view. */
+export interface RichTextEditorInstance {
+  /** ProseMirror editor view in earlier builds. */
+  th?: unknown;
+  /** ProseMirror editor view in build 20261120.00. */
+  Tb?: unknown;
+}
+
+/** Writable signal subset that controls an open state boolean. */
+export type BooleanOverlaySignal =
+  | ((() => unknown) & { set?: (open: boolean) => void })
+  | { set?: (open: boolean) => void };
+
 /** Angular component controller for a base prompt box. */
 export interface BasePromptBoxInstance {
   /** Prompt state signal container. */
   Qa?: PromptStateController;
-  /** Returns rich editor wrapper containing ProseMirror `th`. */
-  CQ?: () => { th?: unknown } | null | undefined;
-  /** Submits or prepares prompt state. */
+  /** Returns the rich editor wrapper in earlier builds. */
+  CQ?: () => RichTextEditorInstance | null | undefined;
+  /** Returns the rich editor wrapper in build 20261120.00. */
+  IU?: () => RichTextEditorInstance | null | undefined;
+  /** Submits or prepares prompt state in earlier builds. */
   Wn?: (...args: unknown[]) => unknown;
-  /** Returns true when the prompt box can submit. */
+  /** Submits or prepares prompt state in build 20261120.00. */
+  Gp?: (...args: unknown[]) => unknown;
+  /** Returns true when the prompt box can submit in earlier builds. */
   qf?: () => boolean;
-  /** Controls settings overlay visibility. */
-  VJ?: (() => unknown) & { set?: (open: boolean) => void };
+  /** Returns true when the prompt box can submit in build 20261120.00. */
+  wf?: () => boolean;
+  /** Controls settings overlay visibility in earlier builds. */
+  VJ?: BooleanOverlaySignal;
+  /** Controls settings overlay visibility in build 20261120.00. */
+  rN?: BooleanOverlaySignal;
+  /** Returns the disabled submit reason in earlier builds. */
+  sL?: () => string;
+  /** Returns the disabled submit reason in build 20261120.00. */
+  vV?: () => string;
 }
 
 /** Host container managing manual and agent prompt boxes. */
 export interface PromptBoxHost {
-  /** Toggles between manual and agent composer modes. */
-  Tx: () => void;
-  /** Returns true while agent mode is active. */
-  Sk: () => boolean;
-  /** Returns the active manual base prompt box instance. */
+  /** Toggles between manual and agent composer modes in earlier builds. */
+  Tx?: () => void;
+  /** Toggles between manual and agent composer modes in build 20261120.00. */
+  Xu?: () => void;
+  /** Returns true while agent mode is active in earlier builds. */
+  Sk?: () => boolean;
+  /** Returns true while agent mode is active in build 20261120.00. */
+  Nl?: () => boolean;
+  /** Returns the active manual base prompt box instance in earlier builds. */
   mt?: () => BasePromptBoxInstance | null | undefined;
+  /** Returns the active manual base prompt box instance in build 20261120.00. */
+  zr?: () => BasePromptBoxInstance | null | undefined;
 }
 
 /** Angular project page component instance. */
 export interface ProjectPageInstance {
   /** Attaches a tile reference directly into composer state. */
-  Ph: (tile: FlowTile) => void;
+  Ph?: (tile: FlowTile) => void;
   /** Prompt state and attached item signal container. */
-  Qa: PromptStateController & { kc?: { all?: () => Array<Record<string, unknown>> } };
+  Qa?: PromptStateController & { kc?: { all?: () => Array<Record<string, unknown>> } };
   /** Store/mode mutation signal container. */
-  ub: { mutate: (value: unknown) => unknown };
+  ub?: { mutate: (value: unknown) => unknown };
   /** Secondary agent state signal container. */
   Ta?: { mutate?: (value: unknown) => void };
-  /** Returns the prompt box host component. */
+  /** Returns the prompt box host component in earlier builds. */
   jQ?: () => PromptBoxHost | null | undefined;
+  /** Returns the prompt box host component in build 20261120.00. */
+  NF?: () => PromptBoxHost | null | undefined;
 }
 
 /** ProseMirror editor transaction builder subset. */
@@ -382,18 +440,24 @@ export interface ProseMirrorState {
   doc: { content: { size: number } };
   /** Default transaction builder. */
   tr?: ProseMirrorTransaction;
-  /** Minified transaction builder alias. */
+  /** Minified transaction builder alias in earlier builds. */
   Fi?: ProseMirrorTransaction;
+  /** Minified transaction builder alias in build 20261120.00. */
+  uj?: ProseMirrorTransaction;
 }
 
 /** ProseMirror editor view subset. */
 export interface ProseMirrorView {
   /** Current editor state. */
   state: ProseMirrorState;
+  /** Root DOM element of the editor view. */
+  dom?: Element;
   /** Standard transaction dispatch function. */
   dispatch?: (tr: ProseMirrorTransaction) => void;
-  /** Minified transaction dispatch alias. */
+  /** Minified transaction dispatch alias in earlier builds. */
   Qd?: (tr: ProseMirrorTransaction) => void;
+  /** Minified transaction dispatch alias in build 20261120.00. */
+  Td?: (tr: ProseMirrorTransaction) => void;
 }
 
 /** Options accepted by `writePromptBox`. */
