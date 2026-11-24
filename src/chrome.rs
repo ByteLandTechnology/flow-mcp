@@ -56,11 +56,7 @@ pub(crate) struct LoginProfileProbe {
     pub(crate) rejected_url: Option<String>,
     /// Signed-in Google Flow URL observed in profile history or session files.
     pub(crate) flow_url: Option<String>,
-    /// True when core Google Sign-In cookies were written since launch, or when Chrome locks the
-    /// cookie database so that it cannot be read (Chrome on Windows).
-    ///
-    /// For a locked database, the signed-in Flow URL alone starts the promotion, and the promotion
-    /// then verifies the session over CDP.
+    /// True when core Google Sign-In cookies were written since launch.
     pub(crate) has_google_auth_cookies: bool,
 }
 
@@ -256,13 +252,11 @@ impl ManagedChrome {
 }
 
 impl LoginChrome {
-    /// Launches standard visible Chrome on a clean `<home>/chrome-profile` (`0700`) without CDP flags.
+    /// Launches standard visible Chrome on `<home>/chrome-profile` (`0700`) without CDP flags.
     pub(crate) async fn launch(start_url: &str) -> Result<Self> {
         let chrome = resolve_chrome_binary()?;
         let profile_dir = chrome_profile_dir();
         prepare_profile_dir(&profile_dir).await?;
-        let _ = tokio::fs::remove_dir_all(&profile_dir).await;
-        create_private_dir_all(&profile_dir)?;
 
         let initial_url = if start_url.trim().is_empty() {
             "about:blank"
@@ -387,6 +381,57 @@ fn probe_cookies_db(scratch_cookies: &Path, min_webkit_us: i64) -> bool {
     false
 }
 
+/// Extracts committed `UpdateTabNavigation` virtual URLs from an unencrypted Chromium `SNSS` file.
+fn extract_snss_navigation_urls(bytes: &[u8]) -> Vec<String> {
+    if bytes.len() < 8 || &bytes[..4] != b"SNSS" {
+        return Vec::new();
+    }
+    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    if version != 1 && version != 3 {
+        return Vec::new();
+    }
+    let mut urls = Vec::new();
+    let mut pos = 8usize;
+    while pos + 2 <= bytes.len() {
+        let raw_size = u16::from_le_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+        if raw_size == 0 {
+            break;
+        }
+        let (hdr_len, cmd_size) = if version >= 3 && raw_size == usize::from(u16::MAX) {
+            if pos + 6 > bytes.len() {
+                break;
+            }
+            let ext = u32::from_le_bytes([
+                bytes[pos + 2],
+                bytes[pos + 3],
+                bytes[pos + 4],
+                bytes[pos + 5],
+            ]) as usize;
+            (6usize, ext)
+        } else {
+            (2usize, raw_size)
+        };
+        if cmd_size == 0 || pos + hdr_len + cmd_size > bytes.len() {
+            break;
+        }
+        let cmd_id = bytes[pos + hdr_len];
+        let payload = &bytes[pos + hdr_len + 1..pos + hdr_len + cmd_size];
+        pos += hdr_len + cmd_size;
+        if cmd_id == 6 && payload.len() >= 16 {
+            let url_len =
+                u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]) as usize;
+            if let Some(end) = 16usize.checked_add(url_len)
+                && end <= payload.len()
+                && let Ok(url) = std::str::from_utf8(&payload[16..end])
+                && (url.starts_with("https://") || url.starts_with("http://"))
+            {
+                urls.push(url.to_string());
+            }
+        }
+    }
+    urls
+}
+
 /// Extracts standalone `https://` URL strings from raw Chrome session bytes.
 fn extract_standalone_https_urls(bytes: &[u8]) -> Vec<String> {
     let mut urls = Vec::new();
@@ -409,34 +454,57 @@ fn extract_standalone_https_urls(bytes: &[u8]) -> Vec<String> {
     urls
 }
 
-/// Scans Chrome `Sessions` files in modification order for Google Flow or rejection URLs.
-fn probe_sessions_dir(sessions_dir: &Path, probe: &mut LoginProfileProbe) {
+/// Scans Chrome `Sessions` files from newest to oldest for the latest URL and any rejection URL.
+fn probe_sessions_dir(
+    sessions_dir: &Path,
+    min_modified: SystemTime,
+    probe: &mut LoginProfileProbe,
+) {
     let Ok(entries) = std::fs::read_dir(sessions_dir) else {
         return;
     };
-    let mut files: Vec<(Option<SystemTime>, PathBuf)> = entries
+    let mut files: Vec<(Option<SystemTime>, std::ffi::OsString, PathBuf)> = entries
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
             if !path.is_file() {
                 return None;
             }
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with("Tabs_") {
+                return None;
+            }
             let modified = entry.metadata().and_then(|m| m.modified()).ok();
-            Some((modified, path))
+            if modified.is_some_and(|m| m < min_modified) {
+                return None;
+            }
+            Some((modified, name, path))
         })
         .collect();
-    files.sort_by_key(|(modified, _)| *modified);
-    for (_, path) in files {
+    files.sort_by(|a, b| b.cmp(a));
+    let mut checked_latest = false;
+    for (_, _, path) in files {
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
-        for url in extract_standalone_https_urls(&bytes) {
+        let snss_urls = extract_snss_navigation_urls(&bytes);
+        let urls = if snss_urls.is_empty() {
+            extract_standalone_https_urls(&bytes)
+        } else {
+            snss_urls
+        };
+        for url in urls.into_iter().rev() {
+            if !checked_latest {
+                checked_latest = true;
+                probe.flow_url = is_signed_in_flow_url(&url).then(|| url.clone());
+            }
             if probe.rejected_url.is_none()
                 && url.contains("accounts.google.com/v3/signin/rejected")
             {
                 probe.rejected_url = Some(url);
-            } else if probe.flow_url.is_none() && is_signed_in_flow_url(&url) {
-                probe.flow_url = Some(url);
+            }
+            if checked_latest && probe.rejected_url.is_some() {
+                return;
             }
         }
     }
@@ -448,6 +516,9 @@ pub(crate) async fn inspect_login_profile(
     started_at: SystemTime,
 ) -> LoginProfileProbe {
     const WEBKIT_EPOCH_OFFSET_SECS: i64 = 11_644_473_600;
+    let min_modified = started_at
+        .checked_sub(Duration::from_millis(500))
+        .unwrap_or(UNIX_EPOCH);
     let unix_secs = started_at
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -457,7 +528,11 @@ pub(crate) async fn inspect_login_profile(
     let dir = profile_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut probe = LoginProfileProbe::default();
-        probe_sessions_dir(&dir.join("Default").join("Sessions"), &mut probe);
+        probe_sessions_dir(
+            &dir.join("Default").join("Sessions"),
+            min_modified,
+            &mut probe,
+        );
 
         let Ok(scratch) = tempfile::tempdir() else {
             return probe;
@@ -474,20 +549,14 @@ pub(crate) async fn inspect_login_profile(
             dir.join("Default").join("Cookies"),
             dir.join("Default").join("Network").join("Cookies"),
         ];
-        let mut cookies_locked = false;
         for (idx, src) in cookie_candidates.iter().enumerate() {
             let base = format!("Cookies_{idx}");
-            match copy_sqlite_files_to_scratch(src, scratch.path(), &base) {
-                Some(scratch_cookies) if probe_cookies_db(&scratch_cookies, min_webkit_us) => {
-                    probe.has_google_auth_cookies = true;
-                    break;
-                }
-                None if src.is_file() => cookies_locked = true,
-                _ => {}
+            if let Some(scratch_cookies) = copy_sqlite_files_to_scratch(src, scratch.path(), &base)
+                && probe_cookies_db(&scratch_cookies, min_webkit_us)
+            {
+                probe.has_google_auth_cookies = true;
+                break;
             }
-        }
-        if cookies_locked {
-            probe.has_google_auth_cookies = true;
         }
 
         probe

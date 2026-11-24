@@ -16,6 +16,8 @@ export interface WizGlobalData {
   cfb2h?: string;
   /** Encoded FIFE host configuration string. */
   TSDtV?: string;
+  /** True when the server bootstraps an authenticated Google session. */
+  awbSEf?: boolean;
 }
 
 /** Angular Router subset used for in-app navigation. */

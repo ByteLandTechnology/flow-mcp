@@ -122,11 +122,15 @@ pub(crate) async fn wait_flow_mutation_rpc(
     }
 }
 
-/// Extracts the `/project/<id>` segment from a Flow project URL.
+/// Extracts the `/project/<id>` segment from a Flow project URL or route path.
 pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
-    if let Some(pos) = url.find("/project/") {
-        let rest = &url[pos + "/project/".len()..];
-        let seg = rest.split(['/', '?', '#']).next().unwrap_or("").trim();
+    if url.contains("://") && !is_signed_in_flow_url(url) {
+        return None;
+    }
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    if let Some(pos) = path.find("/project/") {
+        let rest = &path[pos + "/project/".len()..];
+        let seg = rest.split('/').next().unwrap_or("").trim();
         if !seg.is_empty() {
             return Some(seg.to_string());
         }
@@ -316,7 +320,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     let mut assets_count = None;
     let mut collections_count = None;
 
-    if in_project {
+    if signed_in && in_project {
         let mut snap = engine
             .call_flow_js("readStoreSnapshot", json!([]))
             .await
@@ -348,7 +352,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
     }
 
-    let frontend = if let Some(project_id) = &project_id {
+    let frontend = if signed_in && let Some(project_id) = &project_id {
         prepare_project_store_status(engine, project_id).await;
         engine.call_flow_js("probeStore", json!([])).await.ok()
     } else {
