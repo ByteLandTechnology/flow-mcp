@@ -21,6 +21,15 @@ import type {
   NativeSettings,
 } from "./agent_settings_protocol";
 
+/** Maximum wait for cold cache queries (`CREDITS` and `PROJECT_DETAILS`). */
+export const COLD_QUERY_TIMEOUT_MS = 5_000;
+
+/** Initial grace window while Angular effects register a cold query in `queryCache`. */
+const COLD_QUERY_GRACE_MS = 250;
+
+/** Poll step while waiting for an active query cache entry to settle. */
+const COLD_QUERY_POLL_MS = 50;
+
 /** Angular injector of the live Agent page. */
 export interface AgentInjector {
   /** Finds a service in the page's injection context. */
@@ -37,16 +46,30 @@ interface SettingsContext {
   isCurrent: () => boolean;
 }
 
-/** Native query with a fresh project settings result. */
+/** State of a cached query entry in the native query client. */
+interface QueryState {
+  /** Settlement state (`pending`, `success`, or `error`). */
+  status?: string;
+  /** Network activity state (`fetching`, `paused`, or `idle`). */
+  fetchStatus?: string;
+}
+
+/** Native query entry in the shared query cache. */
 interface SettingsQuery {
-  /** Key of the project metadata query. */
+  /** Key of the cached query. */
   queryKey: unknown[];
+  /** Current query state. */
+  state?: QueryState;
+  /** In-flight fetch promise when a request is active. */
+  promise?: Promise<unknown>;
+  /** Returns true when at least one observer enables this query. */
+  isActive?: () => boolean;
   /** Fetches current project metadata from Flow. */
   fetch(options?: unknown, control?: { cancelRefetch: boolean }): Promise<object>;
 }
 
-/** Native cache shared by the metadata and model queries. */
-interface QueryClient {
+/** Native cache shared by the metadata, credits, and project detail queries. */
+export interface QueryClient {
   /** Returns the cached result for a full key. */
   ha?: (key: unknown[]) => unknown;
   /** Query registry. */
@@ -115,21 +138,111 @@ function isCatalogue(value: unknown): value is ModelCatalogue {
     Boolean(readOwn(value, "Wx"));
 }
 
+/** Resolves the shared native `QueryClient` from the active page injector or component. */
+export function resolveQueryClient(
+  injector: AgentInjector,
+  page?: Record<string, unknown>,
+): QueryClient | undefined {
+  const support = agentSettingsCompatibility();
+  if (support.ok) {
+    const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+    const token = readOwn(namespace, support.format.exports.projectService);
+    if (typeof token === "function") {
+      const project = service(injector, token);
+      const client = readOwn(project, support.format.queryClient) as QueryClient | undefined;
+      if (typeof client?.queryCache?.find === "function") return client;
+    }
+  }
+  for (const value of Object.values(page ?? {})) {
+    if (!value || typeof value !== "object") continue;
+    const direct = value as QueryClient;
+    if (typeof direct.queryCache?.find === "function") return direct;
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      const candidate = nested as QueryClient | undefined;
+      if (typeof candidate?.queryCache?.find === "function") return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** Input options for waiting on an active native cache query. */
+interface QueryWaitOptions {
+  /** Shared query client on the project page. */
+  client: QueryClient | undefined;
+  /** Exact query key to inspect in `queryCache`. */
+  queryKey: unknown[];
+  /** Returns true when the caller's signal value has settled. */
+  ready: () => boolean;
+  /** Returns true while the bound project page remains active. */
+  canContinue: () => boolean;
+  /** Optional signal predicate indicating that the service is still loading. */
+  extraPending?: () => boolean;
+  /** Optional caller deadline signal. */
+  signal?: AbortSignal;
+}
+
+/** Waits for an active query key to settle or for `ready` to turn true within a bounded timeout. */
+export async function waitForQuerySettlement(options: QueryWaitOptions): Promise<void> {
+  const { client, queryKey, ready, canContinue, extraPending, signal } = options;
+  if (ready() || !canContinue() || signal?.aborted) return;
+  const start = Date.now();
+  const deadline = start + COLD_QUERY_TIMEOUT_MS;
+  const graceDeadline = start + COLD_QUERY_GRACE_MS;
+  while (Date.now() < deadline && canContinue() && !signal?.aborted) {
+    if (ready()) return;
+    const query = client?.queryCache?.find?.({ queryKey, exact: true });
+    const status = query?.state?.status;
+    const fetchStatus = query?.state?.fetchStatus;
+    const activeObserver = typeof query?.isActive === "function"
+      ? query.isActive()
+      : Date.now() < graceDeadline;
+    const queryPending = Boolean(
+      query
+        ? fetchStatus === "fetching" || (status === "pending" && activeObserver)
+        : client?.queryCache?.find && Date.now() < graceDeadline,
+    );
+    if (!queryPending && !extraPending?.()) break;
+    const remaining = Math.max(1, Math.min(COLD_QUERY_POLL_MS, deadline - Date.now()));
+    if (query?.promise) {
+      await Promise.race([
+        query.promise.then(() => undefined, () => undefined),
+        delay(remaining),
+      ]);
+    } else {
+      await delay(remaining);
+    }
+  }
+}
+
 /** Reads the model catalogue and the same tier that the settings panel uses. */
 async function modelContext(
   flow: AgentSettingsExports,
   client: QueryClient,
   injector: AgentInjector,
+  isCurrent: () => boolean,
   adaptCatalogue?: (value: unknown) => ModelCatalogue | undefined,
 ): Promise<ModelContext> {
-  const tierService = service(injector, flow.serviceTier) as { serviceTier?: () => number } | undefined;
+  const tierService = service(injector, flow.serviceTier) as
+    | { serviceTier?: () => number | undefined; isPending?: () => boolean }
+    | undefined;
   const locale = service(injector, flow.locale);
   const models = service(injector, flow.modelService);
   const cached = client.ha?.(flow.modelKey);
   let catalogue = adaptCatalogue ? adaptCatalogue(cached) : cached;
-  if (!isCatalogue(catalogue) && models && typeof models === "object") {
-    catalogue = await flow.fetchModels(models).catch(() => undefined);
-  }
+  const loadCatalogue = !isCatalogue(catalogue) && models && typeof models === "object"
+    ? flow.fetchModels(models).catch(() => undefined)
+    : Promise.resolve(catalogue);
+  const waitTier = tierService
+    ? waitForQuerySettlement({
+        client,
+        queryKey: ["CREDITS"],
+        ready: () => tierService.serviceTier?.() !== undefined,
+        canContinue: isCurrent,
+        extraPending: () => tierService.isPending?.() === true,
+      })
+    : Promise.resolve();
+  const [resolvedCatalogue] = await Promise.all([loadCatalogue, waitTier]);
+  catalogue = resolvedCatalogue;
   return {
     flow,
     catalogue: isCatalogue(catalogue) ? catalogue : undefined,
@@ -412,7 +525,7 @@ export async function agentSettingsOp(context: SettingsContext, patch?: AgentSet
       await metadataQuery.fetch(undefined, { cancelRefetch: true }), format.wire,
     ));
     const state = await read();
-    const models = await modelContext(flow, client ?? {}, injector, catalogue);
+    const models = await modelContext(flow, client ?? {}, injector, isCurrent, catalogue);
     if (!isCurrent()) return { ok: false, error: "agent_project_changed" };
     if (!patch) return { ok: true, settings: settingsView(state, models) };
     if (!request?.mutate) return { ok: false, error: "agent_settings_not_ready" };

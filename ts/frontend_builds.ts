@@ -123,6 +123,12 @@ export interface AgentChatFormat {
 
 /** Native services and request fields for local media uploads. */
 export interface MediaUploadFormat {
+  /** Project store on the page component. */
+  store: string;
+  /** Signal with all project tiles. */
+  tiles: string;
+  /** Query that loads the tiles for the active project. */
+  tileQuery: string;
   /** Project mutation dispatcher. */
   dispatcher: string;
   /** Angular injector on the project page. */
@@ -164,12 +170,6 @@ export interface MediaUploadFields {
 
 /** Project page fields and exports for Agent attachments. */
 export interface AgentAttachmentFormat extends MediaUploadFormat {
-  /** Project store on the page component. */
-  store: string;
-  /** Signal with all project tiles. */
-  tiles: string;
-  /** Query that loads the tiles for the active project. */
-  tileQuery: string;
   /** Functions for uploads and Agent message attachments. */
   exports: Readonly<Record<AgentAttachmentExport, string>>;
   /** Fields for uploads and Agent message attachments. */
@@ -476,7 +476,7 @@ const NOVEMBER_20_AGENT: AgentChatFormat = {
     permissionSummary: { qsa: "nua", joa: "Wpa", loa: "Ypa" },
     questionCard: { Qm: "nn", Qj: "Nj", Ls: "Wr" },
     question: { fk: "Lk", dt: "lq", cj: "Yi" },
-    option: { zq: "gq", rma: "eaa" },
+    option: { zq: "gq", recommended: "eaa" },
     planBlock: "cA",
     plan: { XDa: "lGa", FOa: "mRa" },
     errors: { IC: "mD" },

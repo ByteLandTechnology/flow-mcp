@@ -9,17 +9,25 @@ import type {
   AgentDecision,
   AgentRequest,
   FlowAgentExports,
-  FlowAnswer,
-  LiveTurn,
-  PendingAction,
   QuestionResponder,
-  ReplyBlock,
   Session,
   StoredTurn,
   Transport,
 } from "./agent_protocol";
-import { agentSettingsOp, settingsWritePending } from "./agent_settings";
+import {
+  agentSettingsOp,
+  resolveQueryClient,
+  settingsWritePending,
+  waitForQuerySettlement,
+} from "./agent_settings";
 import type { AgentInjector } from "./agent_settings";
+import {
+  LEGACY_PERMISSION_ID,
+  STORED_TURN_IN_PROGRESS,
+  conversation,
+  loadStoredTurns,
+  questionAnswers,
+} from "./agent_turns";
 import { adaptAgentWire } from "./agent_wire";
 import { agentChatCompatibility } from "./frontend_compatibility";
 import { readBuildLabel } from "./frontend_builds";
@@ -49,12 +57,6 @@ interface Binding {
   drafts: Set<string>;
 }
 
-/** Phase of a stored turn that has yet to finish. */
-const STORED_TURN_IN_PROGRESS = 1;
-
-/** Action ID for a permission request that starts a new turn. */
-const LEGACY_PERMISSION_ID = "legacy-permission";
-
 /** Flow surface used by the Agent service on the project page. */
 const AGENT_SURFACE = "SIDE_PANEL";
 
@@ -74,26 +76,6 @@ const PLAN_DECISIONS: Partial<
   run_full_plan: { aja: 1, label: "Run full plan" },
   previz: { aja: 2, label: "Previz" },
 };
-
-/** Phase of a turn before the tool checks for pending actions. */
-type TurnStatus =
-  | "in_progress"
-  | "completed"
-  | "failed"
-  | "stopped"
-  | "unknown";
-
-/** Position and phase of a turn in the conversation. */
-interface TurnPosition {
-  /** Turn number, which starts at one. */
-  number: number;
-  /** Current phase of the turn. */
-  status: TurnStatus;
-  /** True when the page has an open response for the turn. */
-  active: boolean;
-  /** True when the turn is the last turn in the conversation. */
-  latest: boolean;
-}
 
 /** Current browser binding. */
 let binding: Binding | undefined;
@@ -304,234 +286,29 @@ async function savedTurns(
   );
 }
 
-/** Gets the caller actions that are still open in this reply. */
-function pendingActions(
-  blocks: ReplyBlock[],
-  active: boolean,
-  latest: boolean,
-): PendingAction[] {
-  const actions: PendingAction[] = [];
-  for (const block of blocks) {
-    if (
-      active &&
-      block.type === "permission" &&
-      block.card.source === "elicitation" &&
-      block.card.Vz === undefined &&
-      !block.card.Ls &&
-      !block.card.isDisabled
-    ) {
-      const { id, summary } = block.card;
-      actions.push({
-        type: "permission",
-        action_id: id,
-        image_count: summary.joa,
-        video_count: summary.loa,
-        credits: summary.qsa,
-      });
-    }
-    if (
-      active &&
-      block.type === "question" &&
-      block.card.Qj === undefined &&
-      !block.card.Ls
-    ) {
-      actions.push({
-        type: "question",
-        action_id: block.card.id,
-        questions: block.card.Qm.map((q) => ({
-          question_id: q.fk,
-          text: q.dt,
-          multiple: q.cj,
-          options: q.options.map((o) => ({
-            option_id: o.zq,
-            label: o.label,
-            allows_text: o.rma,
-          })),
-        })),
-      });
-    }
-    if (!active && latest && block.type === "plan") {
-      actions.push({
-        type: "plan",
-        action_id: block.Gz.XDa || "plan",
-        title: block.Gz.title,
-        description: block.Gz.FOa,
-        decisions: ["run_full_plan", "previz"],
-      });
-    }
-  }
-  return actions;
-}
-
-/** Returns the stable tool status associated with a stored turn. */
-function storedStatus(state: number): TurnStatus {
-  switch (state) {
-    case STORED_TURN_IN_PROGRESS:
-      return "in_progress";
-    case 2:
-    case 4:
-      return "completed";
-    case 3:
-      return "failed";
-    case 5:
-      return "stopped";
-    default:
-      return "unknown";
-  }
-}
-
-/** Reads actual media IDs from the original Agent tool results. */
-function legacyMedia(flow: FlowAgentExports, turn: LiveTurn): string[] {
-  const ids = new Set<string>();
-  for (const message of turn.Yu) {
-    for (const event of flow.turns(message, flow.toolEventType, 2)) {
-      const result = flow.oneOf(
-        event,
-        flow.toolResultType,
-        5,
-        flow.toolEventGroup,
-      );
-      if (!result) continue;
-      for (const row of flow.resultItems(result)) {
-        const media = flow.structFields(row).get("media_id");
-        if (media) ids.add(flow.valueString(media));
-      }
-    }
-  }
-  return [...ids].filter(Boolean);
-}
-
-/** Formats one Agent turn using the same message model that the chat page uses. */
-function formatTurn(
-  bound: Binding,
-  id: string,
-  turn: LiveTurn,
-  position: TurnPosition,
-) {
-  const { number, status, active, latest } = position;
-  const [user, reply] = bound.flow.reply({ turn, XJ: number - 1, yc: active });
-  const blocks = reply.Oh ?? turn.Tf?.Oh ?? [];
-  const pending = pendingActions(
-    blocks,
-    active,
-    latest && status === "completed",
-  );
-  const legacyRequest = reply.jna ?? bound.transport.ka.Ma().get(id);
-  if (!active && latest && status === "completed" && legacyRequest) {
-    pending.push({
-      type: "permission",
-      action_id: LEGACY_PERMISSION_ID,
-      image_count: legacyRequest.joa,
-      video_count: legacyRequest.loa,
-      credits: legacyRequest.qsa,
-    });
-  }
-  const media = [...(turn.Tf?.Bx ?? [])].map(([mediaId, media]) => ({
-    media_id: mediaId,
-    status: media.status,
-    error: media.errorCode,
-  }));
-  if (!turn.Tf) {
-    for (const mediaId of legacyMedia(bound.flow, turn))
-      media.push({ media_id: mediaId, status: "success", error: undefined });
-  }
-  return {
-    turn: number,
-    status: pending.length > 0 ? "action_required" : status,
-    response_id: reply.ci,
-    connected: status === "in_progress" ? active : undefined,
-    user: {
-      text: user.text,
-      attachment_media_ids: user.Gh?.length
-        ? user.Gh.map(({ mediaId }) => mediaId)
-        : undefined,
-      attachment_character_ids: user.Uy?.length
-        ? user.Uy.map(({ Nc }) => Nc)
-        : undefined,
-    },
-    assistant: {
-      text: reply.text,
-      media,
-      rich_content: blocks.flatMap((b) => (b.type === "a2ui" ? [b.round] : [])),
-    },
-    pending_actions: pending,
-    error: reply.errorMessage ?? turn.errorMessage,
-  };
-}
-
-/** Formats the current and persisted turns without treating a local partial reply as final. */
-function conversation(bound: Binding, id: string, stored: StoredTurn[]) {
-  const local = bound.transport.ka.ha().get(id);
-  const inProgress = local?.xe;
-  const count = Math.max(
-    stored.length,
-    (local?.Vh.length ?? 0) + (inProgress ? 1 : 0),
-  );
-  const liveNumber = inProgress && local ? local.Vh.length + 1 : undefined;
-  return Array.from({ length: count }, (_, i) => {
-    const saved = stored[i];
-    const prior = local?.Vh[i];
-    const number = i + 1;
-    const latest = number === count;
-    if (inProgress && number === liveNumber) {
-      return formatTurn(bound, id, inProgress, {
-        number,
-        status: "in_progress",
-        active: true,
-        latest,
-      });
-    }
-    const state = saved?.getState();
-    if (
-      saved &&
-      (!prior || (state !== undefined && state !== STORED_TURN_IN_PROGRESS))
-    ) {
-      return formatTurn(bound, id, bound.flow.decode(saved), {
-        number,
-        status: storedStatus(state ?? 0),
-        active: false,
-        latest,
-      });
-    }
-    if (!prior) throw new Error("Flow did not return a complete turn list");
-    const status =
-      prior.errorMessage === undefined
-        ? "completed"
-        : prior.errorMessage === bound.flow.errors.IC
-          ? "stopped"
-          : "failed";
-    return formatTurn(bound, id, prior, {
-      number,
-      status,
-      active: false,
-      latest,
-    });
+/** Waits for active `PROJECT_DETAILS` queries before reading `canSend`. */
+async function canSendReady(bound: Binding, signal?: AbortSignal): Promise<boolean> {
+  if (bound.canSend()) return true;
+  const client = resolveQueryClient(bound.injector, bound.page);
+  await waitForQuerySettlement({
+    client,
+    queryKey: ["PROJECT_DETAILS", bound.projectId],
+    ready: () => bound.canSend(),
+    canContinue: () => liveBinding(bound.projectId) === bound,
+    signal,
   });
+  return bound.canSend();
 }
 
-/** Returns true if the project accepts a new Agent turn. */
-function readyToSend(bound: Binding): boolean {
+/** Returns true if the project accepts a new Agent turn after `PROJECT_DETAILS` settles. */
+async function readyToSend(bound: Binding, signal?: AbortSignal): Promise<boolean> {
+  const allowed = await canSendReady(bound, signal);
   return (
-    bound.canSend() && bound.transport.ha.size === 0 && !bound.transport.la()
+    liveBinding(bound.projectId) === bound &&
+    allowed &&
+    bound.transport.ha.size === 0 &&
+    !bound.transport.la()
   );
-}
-
-/** Loads saved turns into the browser before a follow-up message. */
-function loadStoredTurns(
-  bound: Binding,
-  sessionId: string,
-  turns: StoredTurn[],
-): void {
-  const { flow, transport } = bound;
-  const local = transport.ka.ha().get(sessionId);
-  if (turns.length > (local?.Vh.length ?? 0)) {
-    flow.hydrate(transport.ka, {
-      sessionId,
-      BF: turns.map(flow.decode),
-      hka: false,
-      xe: null,
-    });
-  }
 }
 
 /** Attachment data for a user message. */
@@ -564,9 +341,11 @@ async function send(
   const { flow, transport, projectId } = bound;
   const id = session.session_id;
   const { text, attachments, permission } = input;
+  const canSend = await readyToSend(bound, attachments?.signal);
+  if (liveBinding(projectId) !== bound) return failure("agent_project_changed");
   const local = transport.ka.ha().get(id);
   if (
-    !readyToSend(bound) ||
+    !canSend ||
     local?.xe ||
     saved.at(-1)?.getState() === STORED_TURN_IN_PROGRESS
   )
@@ -633,39 +412,6 @@ async function send(
       });
 }
 
-/** Accepts only valid answers to the exact questions in the active request. */
-function questionAnswers(
-  action: Extract<PendingAction, { type: "question" }>,
-  answers: NonNullable<AgentRequest["answers"]>,
-): FlowAnswer[] | null {
-  const seen = new Set<string>();
-  const results: FlowAnswer[] = [];
-  for (const answer of answers) {
-    const question = action.questions.find(
-      (q) => q.question_id === answer.question_id,
-    );
-    const text = answer.text?.trim();
-    const options = new Set(answer.option_ids);
-    if (
-      !question ||
-      seen.has(answer.question_id) ||
-      options.size !== answer.option_ids.length ||
-      (!question.multiple && options.size > 1) ||
-      (!text && options.size === 0) ||
-      [...options].some(
-        (id) => !question.options.some((o) => o.option_id === id),
-      ) ||
-      (text &&
-        (!question.options.some((o) => o.allows_text) ||
-          (!question.multiple && options.size > 0)))
-    )
-      return null;
-    seen.add(answer.question_id);
-    results.push({ fk: answer.question_id, VN: [...options], HY: text });
-  }
-  return results.length > 0 ? results : null;
-}
-
 /** Applies a decision to one action from the requested turn. */
 async function respond(
   bound: Binding,
@@ -683,7 +429,10 @@ async function respond(
     const decision = req.decision && PERMISSION_DECISIONS[req.decision];
     if (!decision) return failure("invalid_agent_permission_decision");
     if (action.action_id === LEGACY_PERMISSION_ID) {
-      if (!readyToSend(bound))
+      const canSend = await readyToSend(bound);
+      if (liveBinding(bound.projectId) !== bound)
+        return failure("agent_project_changed");
+      if (!canSend)
         return failure("agent_turn_active_or_unavailable");
       bound.flow.legacyDecision(bound.permissions, decision.code);
       return send(bound, session, stored, {
@@ -706,8 +455,11 @@ async function respond(
       hi: AGENT_SURFACE,
     });
   } else {
+    const canSend = await readyToSend(bound);
+    if (liveBinding(bound.projectId) !== bound)
+      return failure("agent_project_changed");
     if (
-      !readyToSend(bound) ||
+      !canSend ||
       stored.at(-1)?.getState() === STORED_TURN_IN_PROGRESS
     )
       return failure("agent_turn_active_or_unavailable");
@@ -793,11 +545,16 @@ export async function agentOp(request: AgentRequest) {
   }
   const id = request.session_id;
   if (request.action === "list_sessions") {
-    const saved = await savedSessions(bound);
+    const [saved, canSend] = await Promise.all([
+      savedSessions(bound),
+      canSendReady(bound),
+    ]);
+    if (liveBinding(projectId) !== bound)
+      return failure("agent_project_changed");
     return {
       ok: true as const,
       project_id: projectId,
-      can_send: bound.canSend(),
+      can_send: canSend,
       sessions: [...Array.from(bound.drafts, draftSession), ...saved],
     };
   }
@@ -835,11 +592,14 @@ export async function agentOp(request: AgentRequest) {
     return respond(bound, request, session, stored);
   if (request.action === "resume") {
     const last = stored.at(-1);
+    const canSend = await readyToSend(bound);
+    if (liveBinding(projectId) !== bound)
+      return failure("agent_project_changed");
     if (
       !last ||
       stored.length !== request.turn ||
       last.getState() !== STORED_TURN_IN_PROGRESS ||
-      !readyToSend(bound)
+      !canSend
     )
       return failure("agent_turn_cannot_resume");
     if (

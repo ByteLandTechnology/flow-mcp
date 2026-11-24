@@ -4,11 +4,11 @@
 // Prepare Agent message references and upload local media through Flow.
 
 import { readOwn } from "./angular";
-import { isTrashedTile } from "./dom";
+import { isTrashedTile, legacyMedia } from "./dom";
 import { agentAttachmentCompatibility } from "./frontend_compatibility";
 import { bindMediaUpload, uploadMediaFiles, waitForMedia } from "./project_upload";
 import type { MediaUploadExport, UploadProgress } from "./project_upload";
-import type { FlowTile } from "./types";
+import type { FlowMediaPayload, FlowTile } from "./types";
 
 /** Tile that can supply a reference in the active Flow project. */
 interface AttachmentTile extends FlowTile {
@@ -16,6 +16,10 @@ interface AttachmentTile extends FlowTile {
   id: string;
   /** ID of the primary image or video. */
   primaryMediaId?: string;
+  /** Edit and generation media variants stored on the tile. */
+  history?: FlowMediaPayload[];
+  /** Upsampled video media variants stored on the tile. */
+  yn?: FlowMediaPayload[];
   /** Type of asset. */
   type: string;
 }
@@ -83,21 +87,146 @@ function isMediaTile(tile: AttachmentTile): boolean {
   return tile.type === "IMAGE" || tile.type === "VIDEO";
 }
 
-/** Gets a native reference and checks that it matches the selected asset. */
+/** Strips an optional `media/` prefix from a media identifier. */
+function cleanMediaId(value: unknown): string {
+  return typeof value === "string" ? value.replace(/^media\//, "") : "";
+}
+
+/** Finds the own property key on `tile` that holds its media container object. */
+function mediaContainerKey(tile: AttachmentTile): string | undefined {
+  for (const [key, value] of Object.entries(tile as object)) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Map || value instanceof Date) {
+      continue;
+    }
+    if (typeof readOwn(value, "id") === "string" && typeof readOwn(value, "workflowId") === "string") {
+      return key;
+    }
+  }
+  return undefined;
+}
+
+/** Returns true when a media variant payload has finished generating or uploading. */
+function isReadyVariant(variant: FlowMediaPayload | undefined): boolean {
+  if (!variant || typeof variant !== "object") return true;
+  const source = readOwn(variant, "source");
+  const uploaded = readOwn(variant, "vp");
+  if (uploaded === false) return false;
+  const status = legacyMedia(variant).Zc?.toLowerCase();
+  if (source === "GENERATED") return status === "success";
+  if (source === "UPLOADED" && typeof uploaded === "boolean" && !uploaded) return false;
+  return status === undefined || status === "success";
+}
+
+/** Finds the media variant matching `mediaId` in `history`, `yn`, or the primary container. */
+function findVariantByMediaId(
+  tile: AttachmentTile,
+  mediaId: string,
+  containerKey: string | undefined,
+): FlowMediaPayload | undefined {
+  const wanted = cleanMediaId(mediaId);
+  if (!wanted) return undefined;
+  const inHistory = Array.isArray(tile.history)
+    ? tile.history.find((item) => cleanMediaId(readOwn(item, "id")) === wanted)
+    : undefined;
+  if (inHistory) return inHistory;
+  const inUpsampled = Array.isArray(tile.yn)
+    ? tile.yn.find((item) => cleanMediaId(readOwn(item, "id")) === wanted)
+    : undefined;
+  if (inUpsampled) return inUpsampled;
+  const primary = containerKey ? (readOwn(tile, containerKey) as FlowMediaPayload | undefined) : undefined;
+  return primary && cleanMediaId(readOwn(primary, "id")) === wanted ? primary : undefined;
+}
+
+/** Resolves a tile and optional media variant matching a requested project asset or media ID. */
+function resolveRequestedAsset(
+  tiles: AttachmentTile[],
+  requestedId: string,
+): { tile: AttachmentTile; variant?: FlowMediaPayload; variantId?: string } | undefined {
+  const wanted = cleanMediaId(requestedId);
+  for (const tile of tiles) {
+    if (!tile || isTrashedTile(tile)) continue;
+    if (tile.id === requestedId) {
+      if (!isMediaTile(tile)) return { tile };
+      const containerKey = mediaContainerKey(tile);
+      const primary = tile.primaryMediaId
+        ? findVariantByMediaId(tile, tile.primaryMediaId, containerKey)
+        : undefined;
+      const fallback = containerKey ? (readOwn(tile, containerKey) as FlowMediaPayload | undefined) : undefined;
+      const variant = primary ?? fallback;
+      const rawVariantId = readOwn(variant, "id");
+      return {
+        tile,
+        variant,
+        variantId: typeof rawVariantId === "string" ? rawVariantId : tile.primaryMediaId,
+      };
+    }
+  }
+  if (!wanted) return undefined;
+  for (const tile of tiles) {
+    if (!tile || isTrashedTile(tile) || !isMediaTile(tile)) continue;
+    const containerKey = mediaContainerKey(tile);
+    if (tile.primaryMediaId && cleanMediaId(tile.primaryMediaId) === wanted) {
+      const variant = findVariantByMediaId(tile, tile.primaryMediaId, containerKey) ??
+        (containerKey ? (readOwn(tile, containerKey) as FlowMediaPayload | undefined) : undefined);
+      const rawVariantId = readOwn(variant, "id");
+      return {
+        tile,
+        variant,
+        variantId: typeof rawVariantId === "string" ? rawVariantId : tile.primaryMediaId,
+      };
+    }
+    const variant = findVariantByMediaId(tile, wanted, containerKey);
+    if (variant) {
+      const rawVariantId = readOwn(variant, "id");
+      return {
+        tile,
+        variant,
+        variantId: typeof rawVariantId === "string" ? rawVariantId : wanted,
+      };
+    }
+  }
+  return undefined;
+}
+
+/** Gets a native reference and checks that it matches the selected asset or variant. */
 function projectReference(
   flow: AttachmentExports,
   tile: AttachmentTile | undefined,
   characterField: string,
+  variant?: FlowMediaPayload,
+  variantId?: string,
 ) {
   if (!tile || isTrashedTile(tile)) return undefined;
   const character = tile.type === "CHARACTER";
   if (character ? tile.isPending : !isMediaTile(tile)) return undefined;
-  const reference = flow.reference(tile, "REFERENCE");
+  if (!character) {
+    if (variant ? !isReadyVariant(variant) : tile.isPending) return undefined;
+  }
+  const containerKey = !character ? mediaContainerKey(tile) : undefined;
+  const history = !character && variant && variantId
+    ? (Array.isArray(tile.history)
+        ? (tile.history.some((item) => cleanMediaId(readOwn(item, "id")) === cleanMediaId(variantId))
+            ? tile.history
+            : [...tile.history, variant])
+        : [variant])
+    : undefined;
+  const adapted = !character && variant && variantId
+    ? {
+        ...tile,
+        primaryMediaId: variantId,
+        ...(containerKey ? { [containerKey]: variant } : {}),
+        ...(history ? { history } : {}),
+      }
+    : tile;
+  const reference = flow.reference(adapted, "REFERENCE");
   if (character) {
     return reference?.mediaType === "CHARACTER" && reference[characterField] === tile.id
       ? reference : undefined;
   }
-  return reference && reference.mediaType !== "CHARACTER" && reference.mediaId
+  return reference &&
+    reference.mediaType !== "CHARACTER" &&
+    reference.mediaId &&
+    (!variantId || cleanMediaId(reference.mediaId) === cleanMediaId(variantId))
     ? reference : undefined;
 }
 
@@ -166,14 +295,10 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
     const projectTiles = (tiles as () => AttachmentTile[])();
     const references = new Map<string, AttachmentReference>();
     for (const id of input.assetIds) {
-      const tile =
-        projectTiles.find((asset) => asset.id === id) ??
-        projectTiles.find(
-          (asset) =>
-            isMediaTile(asset) && asset.primaryMediaId?.replace(/^media\//, "") ===
-            id.replace(/^media\//, ""),
-        );
-      const reference = projectReference(flow, tile, fields.character);
+      const matched = resolveRequestedAsset(projectTiles, id);
+      const reference = matched
+        ? projectReference(flow, matched.tile, fields.character, matched.variant, matched.variantId)
+        : undefined;
       if (!reference)
         return {
           ok: false as const,
@@ -215,7 +340,7 @@ export async function buildAttachmentMessage(input: AttachmentInput) {
         : "agent_attachment_failed",
       detail: error instanceof Error ? error.message : String(error),
       uploaded_asset_ids: uploadedAssetIds,
-      file_in_progress: progress.inFlight ? progress.file : undefined,
+      file_in_progress: (progress.inFlight || signal.aborted) ? progress.file : undefined,
     };
   }
 }

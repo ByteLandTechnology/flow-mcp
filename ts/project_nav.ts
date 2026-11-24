@@ -90,7 +90,7 @@ export async function projectNav(action: string): Promise<unknown> {
 
   if (action === "exit_subroute") {
     const isSubRoute = (): boolean =>
-      /\/project\/[^/]+\/(?:character|scene|edit|chat|tools?)(?:\/|$)/.test(
+      /\/project\/[^/]+\/(?:character|scene|edit|chat|tools?|create-tool)(?:\/|$)/.test(
         location.pathname || "",
       );
     if (!isSubRoute()) {

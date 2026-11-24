@@ -158,7 +158,7 @@ pub(crate) fn project_workspace_url(reference_url: &str, project_id: &str) -> St
     project_subroute_url(reference_url, project_id, "")
 }
 
-/// Navigates back to `/project/<id>` when Chrome is currently on a character, scene, edit, chat, or tools sub-route.
+/// Navigates back to `/project/<id>` when Chrome is on a character, scene, edit, chat, or tool sub-route.
 pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
     let is_subroute = |url: &str| {
         let path = url.split(['?', '#']).next().unwrap_or_default();
@@ -167,7 +167,7 @@ pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Resu
             .and_then(|(_, project)| project.split('/').nth(1));
         matches!(
             section,
-            Some("character" | "scene" | "edit" | "chat" | "tool" | "tools")
+            Some("character" | "scene" | "edit" | "chat" | "tool" | "tools" | "create-tool")
         )
     };
     let cur = engine.current_url().await.unwrap_or_default();

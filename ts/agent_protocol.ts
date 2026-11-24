@@ -90,7 +90,13 @@ export type PendingAction =
         question_id: string;
         text: string;
         multiple: boolean;
-        options: { option_id: string; label: string; allows_text: boolean }[];
+        allows_text: boolean;
+        options: {
+          option_id: string;
+          label: string;
+          allows_text: boolean;
+          recommended?: boolean;
+        }[];
       }[];
     }
   | {
@@ -151,8 +157,10 @@ interface QuestionOption {
   zq: string;
   /** Option label. */
   label: string;
-  /** True when the option accepts free text. */
-  rma: boolean;
+  /** True when the option accepts free text in older builds. */
+  rma?: boolean;
+  /** True when Flow marks the option as recommended. */
+  recommended?: boolean;
 }
 
 /** Request for permission to generate media. */
