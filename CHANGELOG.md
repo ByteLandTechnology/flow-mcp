@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.2.0...v2.2.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* improve Flow front end compatibility ([6301f6d](https://github.com/ByteLandTechnology/flow-mcp/commit/6301f6dedca874c7d64b95657e4114881992c2f0))
+
 ## [2.2.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.1.0...v2.2.0) (2026-11-23)
 
 
