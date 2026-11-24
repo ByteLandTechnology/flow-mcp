@@ -6,7 +6,6 @@
 import { buildProjectUrl, createScene, findRouter, navigateSpa, readAngularTooltip, withLViewMapCapture } from "./angular";
 import { findComposerWarning } from "./composer";
 import { delay, elText, hoverProbe, isDisabledProp, isVisibleEnabled, legacyTile, videoTrimBounds } from "./dom";
-import { activeProjectStoreFormat } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, VideoOpRequest } from "./types";
@@ -50,10 +49,6 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
   const action = String(req?.action || "").toLowerCase();
 
   if (action === "trim") {
-    if (!activeProjectStoreFormat()) {
-      clearStore();
-      return { ok: false, error: "unsupported_front_end" };
-    }
     if (!helper || !helper.isCurrent()) {
       if (helper) clearStore();
       return { ok: false, error: "store_not_bound" };
@@ -141,10 +136,6 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     const id = String(req?.asset_id || "").trim();
     const activeScene = /\/scene\/([^/?#]+)/.exec(location.pathname)?.[1];
     if (!activeScene || (req.scene_id && activeScene !== req.scene_id)) {
-      if (!activeProjectStoreFormat()) {
-        clearStore();
-        return { ok: false, error: "unsupported_front_end" };
-      }
       if (!helper || !helper.isCurrent()) {
         if (helper) clearStore();
         return { ok: false, error: "store_not_bound" };

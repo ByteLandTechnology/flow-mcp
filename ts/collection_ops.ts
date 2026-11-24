@@ -21,7 +21,7 @@ import type { FlowTile, SnapshotCollectionItem } from "./types";
 
 /** Operation and arguments from the collection tool. */
 export type CollectionRequest =
-  | { action: "list" | "assets" }
+  | { action: "list" | "assets" | "check" }
   | { action: "inspect"; id: string }
   | { action: "check_assets"; ids: string[] }
   | { action: "create"; id: string; name: string }
@@ -246,6 +246,10 @@ export async function collectionOps(
       return request.ids.some((id) => movable(tiles.get(id)))
         ? { ok: true }
         : { ok: false, error: "no_matching_assets", missing: request.ids };
+    case "check": {
+      const checkSupport = collectionWriteCompatibility();
+      return checkSupport.ok ? { ok: true } : checkSupport;
+    }
   }
   const support = collectionWriteCompatibility();
   if (!support.ok) return support;

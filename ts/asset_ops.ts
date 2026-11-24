@@ -3,7 +3,6 @@
 
 // Rename assets through the bound store.
 
-import { activeProjectStoreFormat } from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
 import type { AssetRenameExtra } from "./types";
 
@@ -14,10 +13,6 @@ export async function assetOps(
   extra: AssetRenameExtra | null,
 ): Promise<unknown> {
   if (action !== "rename") return { ok: false, err: "unknown_asset_action" };
-  if (!activeProjectStoreFormat()) {
-    clearStore();
-    return { ok: false, err: "unsupported_front_end" };
-  }
   const helper = runtimeState.store;
   if (!helper || !helper.isCurrent()) {
     if (helper) clearStore();

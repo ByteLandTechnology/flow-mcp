@@ -5,7 +5,7 @@
 
 import { isNgLViewMap, readOwn } from "./angular";
 import { delay } from "./dom";
-import { activeProjectStoreFormat, readBuildLabel, withMutationAliases } from "./frontend_builds";
+import { projectStoreFormats, withMutationAliases } from "./frontend_builds";
 import type { ProjectStoreFormat } from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
 import type { FlowStoreHandle, FlowTile, NgLView, StoreProbeCheck } from "./types";
@@ -74,15 +74,20 @@ export function clearProjectStore(): void {
   clearStore();
 }
 
+/** Clears the direct store binding while preserving unrelated live fallback handles. */
+function clearBoundProjectStore(): void {
+  const owned = Boolean(boundHandle && runtimeState.store === boundHandle);
+  boundStore = null;
+  boundHandle = null;
+  if (owned || (runtimeState.store && !runtimeState.store.isCurrent())) {
+    clearStore();
+  }
+}
+
 /** Returns `boundStore` only while it stays paired with `runtimeState.store` and remains live. */
 function activeBoundStore(): ProjectStore | null {
   if (!boundStore || runtimeState.store !== boundHandle || !isCurrent(boundStore)) {
-    if (boundHandle && runtimeState.store === boundHandle) {
-      clearProjectStore();
-    } else {
-      boundStore = null;
-      boundHandle = null;
-    }
+    clearBoundProjectStore();
     return null;
   }
   return boundStore;
@@ -108,7 +113,7 @@ function projectQuery({ projectId, service, format }: ProjectStore): ProjectTile
 }
 
 /** Checks the project tile query key for an exact match. */
-function isProjectKey(key: unknown, projectId: string): boolean {
+export function isProjectKey(key: unknown, projectId: string): boolean {
   return Array.isArray(key) && key.length === 2 && key[0] === "PROJECT_TILES" && key[1] === projectId;
 }
 
@@ -126,7 +131,7 @@ export function isProjectStorePending(store: ProjectStore): boolean {
 }
 
 /** Indexes a validated tile row array by tile ID. */
-function indexTileRows(rows: unknown): Map<string, FlowTile> | null {
+export function indexTileRows(rows: unknown): Map<string, FlowTile> | null {
   if (!Array.isArray(rows)) return null;
   const tiles = new Map<string, FlowTile>();
   for (const tile of rows) {
@@ -166,12 +171,12 @@ export function projectStore(projectId: string, expectedSession: string): Projec
 }
 
 /** Returns true when `fn` carries an Angular signal symbol. */
-function isAngularSignal(fn: Function): boolean {
+export function isAngularSignal(fn: Function): boolean {
   return Object.getOwnPropertySymbols(fn).length > 0;
 }
 
 /** Resolves an async promise runner from the verified `mutator` field on the store. */
-function resolveAsyncMutator(
+export function resolveAsyncMutator(
   owner: object,
   mutator: unknown,
 ): ((payload: Record<string, unknown>) => Promise<unknown>) | null {
@@ -254,10 +259,6 @@ async function dispatchStoreMutation(
   store: ProjectStore,
   rawPayload: Record<string, unknown>,
 ): Promise<unknown> {
-  if (!activeProjectStoreFormat()) {
-    clearProjectStore();
-    throw new Error("unsupported_front_end");
-  }
   if (activeBoundStore() !== store || !isCurrent(store)) {
     clearProjectStore();
     throw new Error("project_store_changed");
@@ -312,13 +313,15 @@ export function installProjectStore(store: ProjectStore, views?: Map<number, NgL
   runtimeState.store = handle;
 }
 
-/** Resolves the store class constructor for the active verified build. */
-function verifiedStoreLayout(): { format: ProjectStoreFormat; storeClass: Function } | null {
-  const format = activeProjectStoreFormat();
-  if (!format) return null;
+/** Resolves candidate store class constructors in priority order for the active page. */
+function candidateStoreLayouts(): Array<{ format: ProjectStoreFormat; storeClass: Function }> {
   const frontEnd = readOwn(window, "default_AiSandboxAngularFrontend");
-  const storeClass = readOwn(frontEnd, format.storeClass);
-  return typeof storeClass === "function" ? { format, storeClass } : null;
+  const layouts: Array<{ format: ProjectStoreFormat; storeClass: Function }> = [];
+  for (const format of projectStoreFormats()) {
+    const storeClass = readOwn(frontEnd, format.storeClass);
+    if (typeof storeClass === "function") layouts.push({ format, storeClass });
+  }
+  return layouts;
 }
 
 /** Collects live `ProjectStore` candidates from one Angular `LView` array. */
@@ -328,22 +331,27 @@ export function findProjectStoreInView(
   seen = new Set<object>(),
 ): ProjectStore[] {
   if (!Array.isArray(view)) return [];
-  const layout = verifiedStoreLayout();
-  if (!layout) return [];
-  const { format, storeClass } = layout;
+  const layouts = candidateStoreLayouts();
+  if (layouts.length === 0) return [];
+  const slotKeys = new Set(layouts.flatMap(({ format }) => format.componentSlots));
   const matches: ProjectStore[] = [];
   const consider = (value: unknown): void => {
     if (!value || typeof value !== "object" || seen.has(value)) return;
     seen.add(value);
-    if (!(value instanceof storeClass)) return;
-    const candidate: ProjectStore = { projectId, service: value, format };
-    if (isCurrent(candidate)) matches.push(candidate);
+    for (const { format, storeClass } of layouts) {
+      if (!(value instanceof storeClass)) continue;
+      const candidate: ProjectStore = { projectId, service: value, format };
+      if (isCurrent(candidate)) {
+        matches.push(candidate);
+        break;
+      }
+    }
   };
 
   for (const slot of view) {
     consider(slot);
     if (!slot || typeof slot !== "object" || slot instanceof Node) continue;
-    for (const key of format.componentSlots) {
+    for (const key of slotKeys) {
       consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
     }
   }
@@ -352,11 +360,6 @@ export function findProjectStoreInView(
 
 /** Reports whether the current runtime has a bound and ready store for `projectId`. */
 export function projectStoreStatus(projectId: string): ProjectStoreStatus {
-  const build = readBuildLabel();
-  if (!activeProjectStoreFormat()) {
-    clearProjectStore();
-    return { ok: false, error: "unsupported_front_end", build };
-  }
   if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
   const store = currentProjectStore(projectId);
   if (!store) return { ok: false, error: "collection_store_not_bound" };
@@ -370,23 +373,27 @@ export function projectStoreStatus(projectId: string): ProjectStoreStatus {
   return { ok: true, bound: true, session };
 }
 
-/** Selects a single verified store. If several stores match, selects the only ready store. */
+/** Selects a single candidate store from the highest-priority matching format. */
 export function selectProjectStoreCandidate(candidates: ProjectStore[]): ProjectStore | undefined {
-  if (candidates.length === 1) return candidates[0];
-  const ready = candidates.filter((store) => Boolean(readProjectStore(store)));
-  return ready.length === 1 ? ready[0] : undefined;
+  for (const format of projectStoreFormats()) {
+    const group = candidates.filter((store) => store.format === format);
+    if (group.length === 0) continue;
+    if (group.length === 1) return group[0];
+    const ready = group.filter((store) => Boolean(readProjectStore(store)));
+    return ready.length === 1 ? ready[0] : undefined;
+  }
+  return undefined;
 }
 
-/** Binds one live verified store found in the Angular view registry. */
+/** Binds one live candidate store found in the Angular view registry. */
 export function bindProjectStore(maps: unknown[], projectId: string): ProjectStoreStatus {
-  const build = readBuildLabel();
-  if (!activeProjectStoreFormat()) {
-    clearProjectStore();
-    return { ok: false, error: "unsupported_front_end", build };
-  }
   if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
-  if (!verifiedStoreLayout()) {
-    clearProjectStore();
+  if (!(runtimeState.ngLViewMap instanceof Map)) {
+    const viewMap = maps.find((map): map is Map<number, NgLView> => isNgLViewMap(map));
+    if (viewMap) runtimeState.ngLViewMap = viewMap;
+  }
+  if (candidateStoreLayouts().length === 0) {
+    clearBoundProjectStore();
     return { ok: false, error: "collection_store_not_bound" };
   }
 
@@ -404,7 +411,7 @@ export function bindProjectStore(maps: unknown[], projectId: string): ProjectSto
   const selectedStore = selectProjectStoreCandidate(candidates.map(({ store }) => store));
   const selected = candidates.find(({ store }) => store === selectedStore);
   if (!selected) {
-    clearProjectStore();
+    clearBoundProjectStore();
     return candidates.length > 1
       ? { ok: false, error: "ambiguous_collection_store" }
       : { ok: false, error: "collection_store_not_bound" };

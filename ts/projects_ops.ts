@@ -11,7 +11,7 @@ import {
   type NgContextCarrier,
 } from "./angular";
 import { delay, elText, setNativeValue } from "./dom";
-import { projectTitleFormat } from "./frontend_builds";
+import { projectTitleFormats } from "./frontend_builds";
 import type { ProjectsOpRequest } from "./types";
 
 /** Internal card descriptor captured on the Flow projects grid. */
@@ -349,22 +349,26 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
           try {
             const lv = resolveLView(host);
             if (Array.isArray(lv)) {
-              const titleFormat = projectTitleFormat();
-              for (const slot of lv) {
-                const emitter = readOwn(slot, titleFormat.saveEmitter) as
-                  | { emit?: (v: string) => void }
-                  | undefined;
-                const state = readOwn(slot, titleFormat.stateSignal) as
-                  | { set?: (v: unknown) => void }
-                  | undefined;
-                if (
-                  typeof emitter?.emit === "function" &&
-                  typeof state?.set === "function"
-                ) {
-                  emitter.emit(desired);
-                  state.set({ state: "viewing" });
-                  break;
+              let committed = false;
+              for (const titleFormat of projectTitleFormats()) {
+                for (const slot of lv) {
+                  const emitter = readOwn(slot, titleFormat.saveEmitter) as
+                    | { emit?: (v: string) => void }
+                    | undefined;
+                  const state = readOwn(slot, titleFormat.stateSignal) as
+                    | { set?: (v: unknown) => void }
+                    | undefined;
+                  if (
+                    typeof emitter?.emit === "function" &&
+                    typeof state?.set === "function"
+                  ) {
+                    emitter.emit(desired);
+                    state.set({ state: "viewing" });
+                    committed = true;
+                    break;
+                  }
                 }
+                if (committed) break;
               }
             }
           } catch {

@@ -11,7 +11,7 @@ import {
   normalizeFlowMediaUrl,
   readMediaUrl,
 } from "./dom";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { projectStoreFormats, sceneCreatedFields } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
@@ -86,9 +86,11 @@ export function resolveLView(elOrCtx: unknown): NgLView | null {
   if (raw && typeof raw === "object") {
     const lView = readOwn(raw, "lView");
     if (Array.isArray(lView)) return lView;
-    const contextField = frontendBuild(readBuildLabel())?.projectStore.lContextView;
-    const verifiedView = contextField ? readOwn(raw, contextField) : undefined;
-    return Array.isArray(verifiedView) ? verifiedView : null;
+    for (const { lContextView } of projectStoreFormats()) {
+      const candidate = readOwn(raw, lContextView);
+      if (Array.isArray(candidate)) return candidate;
+    }
+    return null;
   }
   return null;
 }
@@ -437,8 +439,10 @@ export async function createScene(
   getMap: () => Map<string, FlowTile> | null | undefined,
   workflowIds: string[],
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const mutate = helper.mutate;
+  if (!mutate) return { ok: false, error: "store_mutator_unavailable" };
   const before = new Set(sceneIds(getMap()));
-  const resultField = frontendBuild(readBuildLabel())?.projectStore.mutations?.sceneCreated ?? "VWa";
+  const resultFields = sceneCreatedFields();
   let confirmedId: string | undefined;
   let failure: string | undefined;
   const completion = {
@@ -448,7 +452,7 @@ export async function createScene(
     },
   };
   const deadline = performance.now() + SCENE_CREATE_TIMEOUT_MS;
-  void Promise.resolve().then(() => helper.mutate({
+  void Promise.resolve().then(() => mutate.call(helper, {
     type: "create_scene",
     rg: workflowIds,
     Fc: undefined,
@@ -457,7 +461,13 @@ export async function createScene(
     De: completion,
     ve: completion,
   })).then((response) => {
-    completion.resolve(readOwn(response, resultField));
+    for (const field of resultFields) {
+      const candidate = readOwn(response, field);
+      if (candidate !== undefined) {
+        completion.resolve(candidate);
+        break;
+      }
+    }
   }, completion.reject);
 
   while (performance.now() < deadline) {

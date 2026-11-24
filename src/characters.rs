@@ -422,7 +422,7 @@ pub(crate) async fn create_or_update_character_job(
     let project_id = snap.project_id.clone();
     let project_title = snap.project_title.clone();
     let mut bio_store = if effective_bio.is_some() {
-        let store = ProjectStoreSession::open(engine).await?;
+        let store = ProjectStoreSession::open_for(engine, "character_bio").await?;
         anyhow::ensure!(
             project_id.as_deref() == Some(store.project_id()),
             "The active project changed before the character update"

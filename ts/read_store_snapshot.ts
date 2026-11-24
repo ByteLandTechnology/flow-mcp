@@ -5,7 +5,7 @@
 
 import { readOwn } from "./angular";
 import { characterPersonalityNotes, characterVoice } from "./character_bio";
-import { activeProjectStoreFormat, snapshotFormat } from "./frontend_builds";
+import { snapshotFormat } from "./frontend_builds";
 import { currentProjectStore, projectInRoute } from "./project_store";
 import { sceneContents } from "./scene_tiles";
 import {
@@ -182,10 +182,6 @@ function normalizeVoiceVal(v: unknown): string | null {
 
 /** Reads project tiles, scenes, characters, and collections from bound runtime state. */
 export function readStoreSnapshot(): StoreSnapshotResult {
-  if (!activeProjectStoreFormat()) {
-    clearStore();
-    return { ok: false, error: "unsupported_front_end" };
-  }
   const match = /\/project\/([^/?#]+)/.exec(location.pathname || "");
   const projectId = match ? match[1] : null;
   const helper = runtimeState.store;

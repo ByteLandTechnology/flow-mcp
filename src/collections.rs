@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::engine::ChromeEngine;
-use crate::project_store::ProjectStoreSession;
+use crate::project_store::{ProjectStoreSession, open_project_id};
 
 /// Collection summary in the active Flow project.
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,14 +55,6 @@ impl ProjectStoreSession<'_> {
     async fn list(&self) -> Result<Vec<FlowCollection>> {
         let mut value = self.run_collections(json!({ "action": "list" })).await?;
         Ok(serde_json::from_value(value["collections"].take())?)
-    }
-
-    /// Returns true when the tile ID belongs to a collection.
-    pub(crate) async fn is_collection(&self, id: &str) -> Result<bool> {
-        let res = self
-            .run_collections(json!({ "action": "inspect", "id": id }))
-            .await?;
-        Ok(res.get("collection").and_then(Value::as_bool) == Some(true))
     }
 
     /// Requests a verified rename for a collection ID.
@@ -189,9 +181,23 @@ pub(crate) async fn handle_collections(
     engine: &ChromeEngine,
     req: CollectionsParams,
 ) -> Result<Value> {
-    let session = ProjectStoreSession::open(engine).await?;
+    if req.action == "list" {
+        let _ = open_project_id(engine).await?;
+        let mut snap = crate::project::read_snapshot(engine).await?;
+        let collections: Vec<FlowCollection> = serde_json::from_value(snap["collections"].take())?;
+        return Ok(json!({ "collections": collections }));
+    }
+    if !matches!(
+        req.action.as_str(),
+        "create" | "rename" | "add" | "remove" | "delete"
+    ) {
+        anyhow::bail!("Unknown collections action: {}", req.action);
+    }
+    let session = ProjectStoreSession::open_for(engine, "collection_write").await?;
+    session
+        .run_collections(json!({ "action": "check" }))
+        .await?;
     match req.action.as_str() {
-        "list" => Ok(json!({ "collections": session.list().await? })),
         "create" => {
             let name = req
                 .name

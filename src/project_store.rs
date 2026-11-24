@@ -26,14 +26,9 @@ pub(crate) struct ProjectStoreSession<'a> {
 }
 
 impl<'a> ProjectStoreSession<'a> {
-    /// Binds the store in the open Flow project without changing the page.
-    pub(crate) async fn open(engine: &'a ChromeEngine) -> Result<Self> {
-        let url = engine.current_url().await?;
-        let project_id = url::Url::parse(&url)
-            .ok()
-            .filter(|_| is_signed_in_flow_url(&url))
-            .and_then(|url| project_id_from_url(url.path()))
-            .context("Open a Google Flow project before you use this tool")?;
+    /// Binds the store for `operation`, reporting build incompatibility when unverified.
+    pub(crate) async fn open_for(engine: &'a ChromeEngine, operation: &str) -> Result<Self> {
+        let project_id = open_project_id(engine).await?;
         let guard = engine.lock_project_store().await;
         let mut dom_probed = false;
         let mut status = bind_current_store(engine, &project_id).await?;
@@ -53,6 +48,24 @@ impl<'a> ProjectStoreSession<'a> {
                 continue;
             }
             break;
+        }
+        if status.get("ok").and_then(Value::as_bool) != Some(true)
+            && let Ok(probe) = engine.call_flow_js("probeBuild", json!([])).await
+            && probe
+                .pointer(&format!("/operations/{operation}/ok"))
+                .and_then(Value::as_bool)
+                == Some(false)
+        {
+            checked_runtime_result(json!({
+                "ok": false,
+                "error": "unsupported_front_end",
+                "build": probe.get("build").cloned().unwrap_or(Value::Null),
+                "operation": operation,
+                "failed_checks": probe
+                    .pointer(&format!("/operations/{operation}/failed_checks"))
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+            }))?;
         }
         let session = checked_runtime_result(status)?
             .get("session")
@@ -94,6 +107,16 @@ impl<'a> ProjectStoreSession<'a> {
             (Err(error), None) => Err(error),
         }
     }
+}
+
+/// Returns the project ID from the active signed-in Google Flow project URL.
+pub(crate) async fn open_project_id(engine: &ChromeEngine) -> Result<String> {
+    let url = engine.current_url().await?;
+    url::Url::parse(&url)
+        .ok()
+        .filter(|_| is_signed_in_flow_url(&url))
+        .and_then(|url| project_id_from_url(url.path()))
+        .context("Open a Google Flow project before you use this tool")
 }
 
 /// Prepares the direct store for a status check without changing the page.

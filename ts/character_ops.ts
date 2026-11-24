@@ -5,7 +5,7 @@
 
 import { buildProjectUrl, findRouter, navigateSpa, readOwn } from "./angular";
 import { clickButtonByRegex, delay, isVisibleEnabled, setNativeValue } from "./dom";
-import { activeProjectStoreFormat, characterCreateFormat } from "./frontend_builds";
+import { characterCreateFormat } from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
 import type { CharacterOpRequest } from "./types";
 
@@ -88,10 +88,6 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     return { ok: true, closed, in_workspace: inWorkspace };
   }
 
-  if (!activeProjectStoreFormat()) {
-    clearStore();
-    return { ok: false, error: "unsupported_front_end" };
-  }
   if (helper && !helper.isCurrent()) clearStore();
   const activeHelper = runtimeState.store;
   const projectMatch = /\/project\/([^/?#]+)/.exec(location.pathname || "");

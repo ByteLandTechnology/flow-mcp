@@ -5,16 +5,15 @@
 
 import { createScene } from "./angular";
 import { delay } from "./dom";
-import { activeProjectStoreFormat } from "./frontend_builds";
+import { sceneContents } from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, SceneOpRequest } from "./types";
 
+/** Maximum wait in milliseconds for confirmation of clip additions to a scene. */
+const SCENE_ADD_CLIPS_TIMEOUT_MS = 10_000;
+
 /** Creates a scene or adds workflow clips to an existing scene. */
 export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
-  if (!activeProjectStoreFormat()) {
-    clearStore();
-    return { ok: false, error: "unsupported_front_end" };
-  }
   const helper = runtimeState.store;
   if (!helper || !helper.isCurrent()) {
     if (helper) clearStore();
@@ -67,41 +66,80 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     if (!sceneId || !assetIds.length) {
       return { ok: false, error: "scene_id_and_asset_ids_required" };
     }
-    let callbackErr: unknown = null;
-    const completion = {
-      resolve: () => {},
-      reject: (err: unknown) => {
-        callbackErr ??= err;
-      },
-    };
+    const mutate = helper.mutate;
     const workflowIds = resolveWfIds(assetIds);
-    try {
-      await helper.mutate({
-        type: "add_workflows_to_scene",
-        Lc: sceneId,
-        Ic: sceneId,
-        rg: workflowIds,
-        YWa: workflowIds,
-        position: typeof req.position === "number" ? req.position : undefined,
-        Mh: undefined,
-        Eh: undefined,
-        De: completion,
-        ve: completion,
+    const initialScene = tileMap.get(sceneId);
+    const beforeClips = initialScene ? sceneContents(initialScene).clips.length : null;
+    let mutateSettled = false;
+    let callbackSettled = false;
+    let failure: string | undefined;
+    let notifyWake: (() => void) | undefined;
+    const wake = (): void => {
+      const fn = notifyWake;
+      notifyWake = undefined;
+      fn?.();
+    };
+    const recordFailure = (err: unknown, fallback: string): void => {
+      failure ??= err instanceof Error ? err.message : String(err ?? fallback);
+      wake();
+    };
+    const completion = {
+      resolve: () => {
+        callbackSettled = true;
+        wake();
+      },
+      reject: (err: unknown) => recordFailure(err, "add_workflows_failed"),
+    };
+    void Promise.resolve()
+      .then(() =>
+        mutate.call(helper, {
+          type: "add_workflows_to_scene",
+          Lc: sceneId,
+          Ic: sceneId,
+          rg: workflowIds,
+          YWa: workflowIds,
+          position: typeof req.position === "number" ? req.position : undefined,
+          Mh: undefined,
+          Eh: undefined,
+          De: completion,
+          ve: completion,
+        }),
+      )
+      .then(
+        () => {
+          mutateSettled = true;
+          wake();
+        },
+        (err) => recordFailure(err, "add_workflows_failed"),
+      );
+
+    const deadline = performance.now() + SCENE_ADD_CLIPS_TIMEOUT_MS;
+    while (performance.now() < deadline) {
+      if (failure) return { ok: false, error: failure };
+      const latestScene = getMap()?.get(sceneId);
+      const clipsConfirmed =
+        beforeClips !== null &&
+        latestScene !== undefined &&
+        sceneContents(latestScene).clips.length >= beforeClips + workflowIds.length;
+      if (mutateSettled && (callbackSettled || clipsConfirmed)) {
+        await delay(400);
+        return { ok: true, scene_id: sceneId, added: assetIds.length };
+      }
+      const remaining = Math.max(1, Math.min(200, deadline - performance.now()));
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          if (notifyWake === onSignal) notifyWake = undefined;
+          resolve();
+        }, remaining);
+        const onSignal = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        notifyWake = onSignal;
       });
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : String(err ?? "add_workflows_failed"),
-      };
     }
-    if (callbackErr) {
-      return {
-        ok: false,
-        error: callbackErr instanceof Error ? callbackErr.message : String(callbackErr),
-      };
-    }
-    await delay(400);
-    return { ok: true, scene_id: sceneId, added: assetIds.length };
+    if (failure) return { ok: false, error: failure };
+    return { ok: false, error: "scene_add_clips_timeout" };
   }
 
   return { ok: false, error: `unknown_scene_action:${action}` };

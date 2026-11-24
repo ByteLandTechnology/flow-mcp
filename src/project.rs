@@ -312,6 +312,10 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             if status["ok"].as_bool() == Some(true) {
                 return Ok(());
             }
+            let snap = engine.call_flow_js("readStoreSnapshot", json!([])).await?;
+            if snap["ok"].as_bool() == Some(true) {
+                return Ok(());
+            }
         }
         anyhow::bail!("The Flow project store is busy");
     };
@@ -390,6 +394,13 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             tokio::time::sleep(Duration::from_millis(250)).await;
             continue;
         }
+        if status_err == Some("collection_store_not_bound")
+            && store_loading_result(engine.call_flow_js("readStoreSnapshot", json!([])).await)?["ok"]
+                .as_bool()
+                == Some(true)
+        {
+            return Ok(());
+        }
         input_pending = status_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
 
         let discovery =
@@ -403,6 +414,15 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         }
         input_pending |= discovery_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
         if discovery["bound"].as_bool() == Some(true) {
+            let post = store_loading_result(bind_current_store(engine, &project_id).await)?;
+            if post["ok"].as_bool() == Some(true) {
+                return Ok(());
+            }
+            let snap =
+                store_loading_result(engine.call_flow_js("readStoreSnapshot", json!([])).await)?;
+            if snap["ok"].as_bool() == Some(true) {
+                return Ok(());
+            }
             tokio::time::sleep(Duration::from_millis(250)).await;
             continue;
         }

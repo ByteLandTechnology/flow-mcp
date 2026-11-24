@@ -34,7 +34,7 @@ pub(crate) async fn edit_character_bio(
     selector: &str,
     bio: &str,
 ) -> Result<String> {
-    let store = ProjectStoreSession::open(engine).await?;
+    let store = ProjectStoreSession::open_for(engine, "character_bio").await?;
     let mut result = store
         .call("characterBioOp", json!({ "action": "list" }), None)
         .await?;

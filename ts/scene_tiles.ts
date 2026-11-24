@@ -4,17 +4,41 @@
 // Read clips and workflow history from the native scene tile.
 
 import { readOwn } from "./angular";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { sceneTileFormats } from "./frontend_builds";
 import type { FlowMediaPayload, FlowTile, SceneClipItem } from "./types";
+
+/** Returns true when `value` holds a workflow history map or plain object. */
+function isSceneHistory(
+  value: unknown,
+): value is Map<unknown, FlowMediaPayload[]> | Record<string, FlowMediaPayload[]> {
+  if (value instanceof Map) return true;
+  return Boolean(
+    value && typeof value === "object" && !Array.isArray(value) && !(value instanceof Date),
+  );
+}
 
 /** Returns the clip list and history of a scene in the active build. */
 export function sceneContents(tile: FlowTile) {
-  const format = frontendBuild(readBuildLabel())?.projectStore.scene;
-  const clips = (format && readOwn(tile, format.clips)) ?? tile.Oc;
-  const history = (format && readOwn(tile, format.history)) ?? tile.Yf;
-  const entries: Iterable<[string, FlowMediaPayload[]]> = history instanceof Map
+  const formats = sceneTileFormats();
+  let clips: unknown;
+  for (const format of formats) {
+    const candidate = readOwn(tile, format.clips);
+    if (Array.isArray(candidate)) {
+      clips = candidate;
+      break;
+    }
+  }
+  let history: unknown;
+  for (const format of formats) {
+    const candidate = readOwn(tile, format.history);
+    if (isSceneHistory(candidate)) {
+      history = candidate;
+      break;
+    }
+  }
+  const entries: Iterable<[unknown, FlowMediaPayload[]]> = history instanceof Map
     ? history.entries()
-    : history && typeof history === "object" ? Object.entries(history) : [];
+    : isSceneHistory(history) ? Object.entries(history) : [];
   return {
     clips: Array.isArray(clips) ? clips as SceneClipItem[] : [],
     history: new Map(Array.from(entries, ([id, media]) => [String(id), media])),

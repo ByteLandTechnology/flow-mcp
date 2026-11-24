@@ -816,6 +816,12 @@ const LEGACY_CHARACTER_PREVIEW: CharacterPreviewFormat = {
   source: "psa", busy: "zy", footerBusy: "Th", pickerAssets: "Hi", pickerSelect: "Sla",
 };
 
+/** Character preview format of build 20261120.00. */
+const NOVEMBER_20_CHARACTER_PREVIEW: CharacterPreviewFormat = {
+  lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma",
+  source: "Gza", busy: "mB", footerBusy: "Zh", pickerAssets: "xZ", pickerSelect: "Qda",
+};
+
 /** Character voice form format of earlier builds. */
 const LEGACY_CHARACTER_VOICE: CharacterVoiceFormat = {
   lifecycle: "Ca", destroyed: "Va", voiceMap: "bW", selectedVoice: "zZ",
@@ -828,8 +834,26 @@ const LEGACY_CHARACTER_CREATE: CharacterCreateFormat = {
   collections: ["tb", "ub"], completions: ["De", "ve"], created: ["MF", "II"],
 };
 
+/** Character creation format of build 20261120.00. */
+const NOVEMBER_20_CHARACTER_CREATE: CharacterCreateFormat = {
+  lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM"],
+  collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
+};
+
+/** Candidate character creation format used when a build label is unrecognized. */
+const FALLBACK_CHARACTER_CREATE: CharacterCreateFormat = {
+  lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM", "A3", "AW"],
+  collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH", "MF", "II"],
+};
+
 /** Editable project title format of earlier builds. */
 const LEGACY_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "tJa", stateSignal: "state" };
+
+/** Editable project title format of build 20261120.00. */
+const NOVEMBER_20_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "HSa", stateSignal: "state" };
+
+/** Legacy scene tile field names before build 20261117.10. */
+const LEGACY_SCENE_TILE: SceneTileFormat = { clips: "Oc", history: "Yf" };
 
 /** Request formats by exact build label. Include only verified operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
@@ -874,19 +898,13 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
       previewSaved: "MK", pickerSelection: "Qn",
     },
-    characterPreview: {
-      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma",
-      source: "Gza", busy: "mB", footerBusy: "Zh", pickerAssets: "xZ", pickerSelect: "Qda",
-    },
+    characterPreview: NOVEMBER_20_CHARACTER_PREVIEW,
     characterVoice: {
       lifecycle: "Ba", destroyed: "Va", voiceMap: "o_", selectedVoice: "A3",
       selectedRecord: "Pua", changeEmitter: "Pea", busy: "yb", emptyMap: true,
     },
-    characterCreate: {
-      lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM"],
-      collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
-    },
-    projectTitle: { saveEmitter: "HSa", stateSignal: "state" },
+    characterCreate: NOVEMBER_20_CHARACTER_CREATE,
+    projectTitle: NOVEMBER_20_PROJECT_TITLE,
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
@@ -920,17 +938,50 @@ export function activeProjectStoreFormat(): ProjectStoreFormat | undefined {
   return frontendBuild(readBuildLabel())?.projectStore;
 }
 
-/** Adds the native fields used by the verified project store mutator. */
+/** Returns candidate project store layouts with the newest verified layout first on unknown builds. */
+export function projectStoreFormats(): readonly ProjectStoreFormat[] {
+  const verified = activeProjectStoreFormat();
+  return verified ? [verified] : [NOVEMBER_20_STORE, NOVEMBER_18_STORE, NOVEMBER_17_STORE];
+}
+
+/** Returns candidate scene tile field maps with the newest verified layout first on unknown builds. */
+export function sceneTileFormats(): readonly SceneTileFormat[] {
+  const build = frontendBuild(readBuildLabel());
+  if (build) {
+    return build.projectStore.scene
+      ? [build.projectStore.scene, LEGACY_SCENE_TILE]
+      : [{ clips: "Tc", history: "tg" }, LEGACY_SCENE_TILE];
+  }
+  return [
+    { clips: "Uc", history: "Cg" },
+    { clips: "Tc", history: "tg" },
+    LEGACY_SCENE_TILE,
+  ];
+}
+
+/** Returns candidate response keys for scene creation with the newest verified field first. */
+export function sceneCreatedFields(): readonly string[] {
+  const build = frontendBuild(readBuildLabel());
+  const format = build ? build.projectStore.mutations : NOVEMBER_20_STORE.mutations;
+  return format ? [format.sceneCreated, "VWa"] : ["VWa"];
+}
+
+/** Adds the native fields used by the project store mutator, defaulting to the newest verified names. */
 export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
   const build = frontendBuild(readBuildLabel());
-  const format = build?.projectStore.mutations;
+  const format = build ? build.projectStore.mutations : NOVEMBER_20_STORE.mutations;
   if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
     const change = payload.Ve as Record<string, unknown>;
     if (format) {
       const native = change.type === "set_video_trim_seconds" ? {
         ...change, [format.trimStart]: change.Cg, [format.trimEnd]: change.Rf,
       } : change;
-      return { ...payload, [format.tileId]: payload.Xc ?? payload.Uc, [format.tileChange]: native };
+      return {
+        ...payload,
+        Ve: native,
+        [format.tileId]: payload.Xc ?? payload.Uc,
+        [format.tileChange]: native,
+      };
     }
     const collectionWrite = build?.operations.collection_write;
     if (collectionWrite) {
@@ -954,9 +1005,18 @@ export function withMutationAliases(payload: Record<string, unknown>): Record<st
   return payload;
 }
 
-/** Returns the character preview field mapping for the active build. */
+/** Returns candidate character preview layouts with the newest verified layout first on unknown builds. */
+export function characterPreviewFormats(): readonly CharacterPreviewFormat[] {
+  const build = frontendBuild(readBuildLabel());
+  if (build) {
+    return [build.characterPreview ?? LEGACY_CHARACTER_PREVIEW];
+  }
+  return [NOVEMBER_20_CHARACTER_PREVIEW, LEGACY_CHARACTER_PREVIEW];
+}
+
+/** Returns the primary character preview field mapping for the active build. */
 export function characterPreviewFormat(): CharacterPreviewFormat {
-  return frontendBuild(readBuildLabel())?.characterPreview ?? LEGACY_CHARACTER_PREVIEW;
+  return characterPreviewFormats()[0];
 }
 
 /** Returns the character voice form mapping for the active build. */
@@ -966,15 +1026,26 @@ export function characterVoiceFormat(): CharacterVoiceFormat {
 
 /** Returns the character creation and store lifecycle mapping for the active build. */
 export function characterCreateFormat(): CharacterCreateFormat {
-  return frontendBuild(readBuildLabel())?.characterCreate ?? LEGACY_CHARACTER_CREATE;
+  const build = frontendBuild(readBuildLabel());
+  return build ? (build.characterCreate ?? LEGACY_CHARACTER_CREATE) : FALLBACK_CHARACTER_CREATE;
+}
+
+/** Returns candidate editable project title mappings with the newest verified layout first. */
+export function projectTitleFormats(): readonly ProjectTitleFormat[] {
+  const build = frontendBuild(readBuildLabel());
+  if (build) {
+    return [build.projectTitle ?? LEGACY_PROJECT_TITLE];
+  }
+  return [NOVEMBER_20_PROJECT_TITLE, LEGACY_PROJECT_TITLE];
 }
 
 /** Returns the editable project title mapping for the active build. */
 export function projectTitleFormat(): ProjectTitleFormat {
-  return frontendBuild(readBuildLabel())?.projectTitle ?? LEGACY_PROJECT_TITLE;
+  return projectTitleFormats()[0];
 }
 
-/** Returns the verified snapshot field descriptors for the active build. */
+/** Returns snapshot field descriptors, defaulting to the newest verified layout on unknown builds. */
 export function snapshotFormat(): SnapshotFormat | undefined {
-  return frontendBuild(readBuildLabel())?.snapshot;
+  const build = frontendBuild(readBuildLabel());
+  return build ? build.snapshot : NOVEMBER_20_SNAPSHOT;
 }

@@ -275,9 +275,9 @@ export interface FlowStoreHandle {
   /** Returns true when pending store fetches have settled. */
   isReady: () => boolean;
   /** Dispatches a store mutation payload and waits for completion. */
-  mutate: (payload: Record<string, unknown>) => Promise<unknown>;
+  mutate?: (payload: Record<string, unknown>) => Promise<unknown>;
   /** Renames one tile or collection by identifier. */
-  rename: (id: string, displayName: string) => Promise<unknown>;
+  rename?: (id: string, displayName: string) => Promise<unknown>;
 }
 
 /** Parsed FIFE CDN rewrite configuration derived from the active page. */

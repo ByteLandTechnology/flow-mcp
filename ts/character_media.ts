@@ -25,7 +25,7 @@ import {
   setNativeValue,
 } from "./dom";
 import {
-  characterPreviewFormat,
+  characterPreviewFormats,
   frontendBuild,
   readBuildLabel,
 } from "./frontend_builds";
@@ -91,45 +91,45 @@ function callPanel(panel: object, name: string): unknown {
 
 /** Finds the preview panel in a live Angular view and binds its methods. */
 function getCharacterPreviewInstance(): CharacterPreview | null {
-  const format = characterPreviewFormat();
   const roots = document.querySelectorAll(
     "flow-character-preview-panel, flow-character-image-preview",
   );
-  const seen = new Set<unknown>();
-  for (const root of roots) {
-    const startLv = resolveLView(root);
-    if (!Array.isArray(startLv)) continue;
-    const queue: Array<[NgLView, number]> = [[startLv, 0]];
-    while (queue.length > 0) {
-      const next = queue.shift();
-      if (!next) break;
-      const [lv, depth] = next;
-      if (!Array.isArray(lv) || seen.has(lv)) continue;
-      seen.add(lv);
-      for (const slot of lv) {
-        const lc = readOwn(slot, format.lifecycle);
-        if (
-          slot &&
-          typeof slot === "object" &&
-          !(slot instanceof Node) &&
-          !Array.isArray(slot) &&
-          !(slot instanceof Map) &&
-          !(lc && typeof lc === "object" && readOwn(lc, "Va")) &&
-          typeof readOwn(slot, format.upload) === "function" &&
-          typeof readOwn(slot, format.marker) === "function"
-        ) {
-          return {
-            upload: () => callPanel(slot, format.upload),
-            media: (which) =>
-              legacyMedia(callPanel(slot, format[which]) as FlowMediaPayload | null | undefined),
-            source: () => callPanel(slot, format.source),
-            busy: () => callPanel(slot, format.busy),
-          };
+  for (const format of characterPreviewFormats()) {
+    const seen = new Set<unknown>();
+    for (const root of roots) {
+      const startLv = resolveLView(root);
+      if (!Array.isArray(startLv)) continue;
+      const queue: Array<[NgLView, number]> = [[startLv, 0]];
+      while (queue.length > 0) {
+        const next = queue.shift();
+        if (!next) break;
+        const [lv, depth] = next;
+        if (!Array.isArray(lv) || seen.has(lv)) continue;
+        seen.add(lv);
+        for (const slot of lv) {
+          const lc = readOwn(slot, format.lifecycle);
+          const destroyed = Boolean(
+            lc && typeof lc === "object" && (readOwn(lc, "Va") || readOwn(lc, "Wa")),
+          );
+          if (
+            slot && typeof slot === "object" && !(slot instanceof Node) &&
+            !Array.isArray(slot) && !(slot instanceof Map) && !destroyed &&
+            typeof readOwn(slot, format.upload) === "function" &&
+            typeof readOwn(slot, format.marker) === "function"
+          ) {
+            return {
+              upload: () => callPanel(slot, format.upload),
+              media: (which) =>
+                legacyMedia(callPanel(slot, format[which]) as FlowMediaPayload | null | undefined),
+              source: () => callPanel(slot, format.source),
+              busy: () => callPanel(slot, format.busy),
+            };
+          }
         }
-      }
-      if (depth < 4) {
-        if (Array.isArray(lv[3])) queue.push([lv[3], depth + 1]);
-        if (Array.isArray(lv[15])) queue.push([lv[15], depth + 1]);
+        if (depth < 4) {
+          if (Array.isArray(lv[3])) queue.push([lv[3], depth + 1]);
+          if (Array.isArray(lv[15])) queue.push([lv[15], depth + 1]);
+        }
       }
     }
   }
@@ -420,17 +420,16 @@ export async function characterMediaOp(
     const footerEl = document.querySelector("flow-edit-character-footer");
     const footerLv = footerEl ? resolveLView(footerEl) : null;
     if (Array.isArray(footerLv)) {
-      const { footerBusy: footerBusyKey } = characterPreviewFormat();
-      for (const cand of footerLv) {
-        try {
-          const busyFn = readOwn(cand, footerBusyKey);
-          if (typeof busyFn === "function" && Boolean(busyFn.call(cand))) {
-            footerBusy = true;
-            break;
+      for (const { footerBusy: footerBusyKey } of characterPreviewFormats()) {
+        for (const cand of footerLv) {
+          try {
+            const busyFn = readOwn(cand, footerBusyKey);
+            if (typeof busyFn === "function" && Boolean(busyFn.call(cand))) { footerBusy = true; break; }
+          } catch {
+            // Ignore disposed footer getters.
           }
-        } catch {
-          // Ignore disposed footer getters.
         }
+        if (footerBusy) break;
       }
     }
 
@@ -665,31 +664,29 @@ export async function characterMediaOp(
           document.querySelector("flow-add-menu-popover-content");
         const popLv = popEl ? resolveLView(popEl) : null;
         if (Array.isArray(popLv)) {
-          const { pickerAssets, pickerSelect } = characterPreviewFormat();
-          for (const cand of popLv) {
-            const listFn = readOwn(cand, pickerAssets);
-            const pickFn = readOwn(cand, pickerSelect);
-            if (typeof listFn !== "function" || typeof pickFn !== "function") {
-              continue;
-            }
-            const list = listFn.call(cand) as unknown[];
-            const m = Array.isArray(list)
-              ? list.find((a) => pickerAssetMatches(a, matchTarget)) ||
-                (lowName
-                  ? list.find((a) =>
-                      String(
-                        readOwn(a, "title") || readOwn(a, "displayName") || "",
+          for (const { pickerAssets, pickerSelect } of characterPreviewFormats()) {
+            for (const cand of popLv) {
+              const listFn = readOwn(cand, pickerAssets);
+              const pickFn = readOwn(cand, pickerSelect);
+              if (typeof listFn !== "function" || typeof pickFn !== "function") continue;
+              const list = listFn.call(cand) as unknown[];
+              const m = Array.isArray(list)
+                ? list.find((a) => pickerAssetMatches(a, matchTarget)) ||
+                  (lowName
+                    ? list.find((a) =>
+                        String(readOwn(a, "title") || readOwn(a, "displayName") || "")
+                          .toLowerCase()
+                          .includes(lowName),
                       )
-                        .toLowerCase()
-                        .includes(lowName),
-                    )
-                  : null)
-              : null;
-            if (m) {
-              pickFn.call(cand, m, new MouseEvent("click"));
-              picked = true;
-              break;
+                    : null)
+                : null;
+              if (m) {
+                pickFn.call(cand, m, new MouseEvent("click"));
+                picked = true;
+                break;
+              }
             }
+            if (picked) break;
           }
         }
       }
