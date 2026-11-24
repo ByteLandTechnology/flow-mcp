@@ -529,6 +529,32 @@ const NOVEMBER_20_ATTACHMENTS: AgentAttachmentFormat = {
   },
 };
 
+/** Native fields used to attach composer ingredients and frames. */
+export interface ComposerAttachmentFormat {
+  /** Exported project page component class. */
+  page: string;
+  /** Project page method that attaches a store tile to the prompt state. */
+  attachTile: string;
+  /** Prompt state method that inserts an ingredient or keyframe descriptor. */
+  attachIngredient: string;
+  /** Prompt state property that exposes attached ingredient signals. */
+  references: string;
+  /** Validation error property on an attached ingredient item. */
+  validationError: string;
+  /** Add-menu popover method that selects and emits an asset item. */
+  popoverSelect: string;
+}
+
+/** Composer attachment format of build 20261120.00. */
+const NOVEMBER_20_COMPOSER: ComposerAttachmentFormat = {
+  page: "uu",
+  attachTile: "Mi",
+  attachIngredient: "Vf",
+  references: "oc",
+  validationError: "Rp",
+  popoverSelect: "Qda",
+};
+
 /** Verified operations and store format of one build. */
 interface FrontendBuild {
   /** Layout for the project store. */
@@ -539,6 +565,8 @@ interface FrontendBuild {
   voiceConfirmation?: VoiceConfirmationFormat;
   /** Native fields of the character preview panel. */
   characterPreview?: CharacterPreviewFormat;
+  /** Native fields used to attach composer ingredients and frames. */
+  composerAttachment?: ComposerAttachmentFormat;
 }
 
 /** Native methods of the character preview panel. */
@@ -612,6 +640,7 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
     characterPreview: {
       lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma", source: "Gza", busy: "mB",
     },
+    composerAttachment: NOVEMBER_20_COMPOSER,
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",

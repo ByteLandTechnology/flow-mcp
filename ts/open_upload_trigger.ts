@@ -24,22 +24,29 @@ export function uploadUiAction(action: string): boolean {
     return false;
   }
 
-  const els = Array.from(document.querySelectorAll('button, [role="button"]'));
-  const trigger = els.find((el): el is HTMLElement => {
-    if (!isVisibleEnabled(el)) return false;
-    const label = (
-      el.getAttribute("aria-label") ||
-      elText(el) ||
-      el.getAttribute("title") ||
-      ""
-    ).trim();
-    return /add ingredients to the prompt box|add frame|first frame|upload|attach|reference|add_photo_alternate|add_a_photo/i.test(
-      label,
-    );
-  });
-  if (trigger) {
-    trigger.click();
-    return true;
+  const promptBox = document.querySelector(
+    "flow-prompt-box, flow-edit-video-prompt-box",
+  );
+  const roots: ParentNode[] = promptBox ? [promptBox, document] : [document];
+  const slotPattern = /^(?:start|end)$/i.test(action)
+    ? new RegExp(`^${action}$`, "i")
+    : /add ingredients to the prompt box|add frame|first frame|last frame|^(?:start|end)$|upload|attach|reference|add_photo_alternate|add_a_photo/i;
+  for (const root of roots) {
+    const els = Array.from(root.querySelectorAll('button, [role="button"]'));
+    const trigger = els.find((el): el is HTMLElement => {
+      if (!isVisibleEnabled(el)) return false;
+      const label = (
+        el.getAttribute("aria-label") ||
+        elText(el) ||
+        el.getAttribute("title") ||
+        ""
+      ).trim();
+      return slotPattern.test(label);
+    });
+    if (trigger) {
+      trigger.click();
+      return true;
+    }
   }
   return false;
 }

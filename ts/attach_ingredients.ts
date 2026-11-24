@@ -28,12 +28,24 @@ import {
   fifeBase,
   hoverProbe,
   isVisibleEnabled,
+  legacyTile,
   pickTileUrl,
   setNativeValue,
 } from "./dom";
+import {
+  frontendBuild,
+  readBuildLabel,
+  type ComposerAttachmentFormat,
+} from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
 import { runtimeState } from "./state";
-import type { FlowTile, GenerationConfig, NgLView } from "./types";
+import type {
+  FlowTile,
+  GenerationConfig,
+  NgLView,
+  ProjectPageInstance,
+  PromptStateController,
+} from "./types";
 
 /** Normalized target ingredient asset or character descriptor. */
 interface IngredientTarget {
@@ -49,6 +61,127 @@ interface IngredientTarget {
   url: string | null;
   /** Resolved project tile reference when present. */
   tile: FlowTile | null;
+  /** True when the target represents a character reference. */
+  isCharacter: boolean;
+}
+
+/** Resolves the active `PromptStateController` from the project page or base prompt box. */
+function readPromptState(
+  projPage: ProjectPageInstance | null,
+): PromptStateController | null {
+  return (
+    projPage?.Qa ??
+    findLiveBasePromptBox(false, findPromptBoxHost(projPage))?.Qa ??
+    null
+  );
+}
+
+/** Reads the attached ingredient items from a verified `PromptStateController`. */
+function readAttachedItems(
+  qa: PromptStateController | null,
+  format: ComposerAttachmentFormat,
+): Array<Record<string, unknown>> {
+  const refs = readOwn(qa, format.references);
+  const allFn = readOwn(refs, "all");
+  if (typeof allFn !== "function") return [];
+  const items: unknown = allFn.call(refs);
+  return Array.isArray(items) ? (items as Array<Record<string, unknown>>) : [];
+}
+
+/** Checks whether an attached prompt item matches `target` and optional `frameSlot`. */
+function itemMatchesTarget(
+  item: unknown,
+  target: IngredientTarget,
+  frameSlot?: string,
+): boolean {
+  if (!item || typeof item !== "object") return false;
+  if (frameSlot && readOwn(item, "Ud") !== frameSlot) return false;
+  const vals = [
+    readOwn(item, "id"),
+    readOwn(item, "workflowId"),
+    readOwn(item, "entityId"),
+    readOwn(item, "mediaId"),
+    readOwn(item, "primaryMediaId"),
+    readOwn(item, "Oc"),
+  ]
+    .filter(Boolean)
+    .map(String);
+  if (vals.includes(target.id)) return true;
+  if (target.primaryMediaId && vals.includes(String(target.primaryMediaId))) {
+    return true;
+  }
+  if (target.isCharacter && target.hasDisplayName) {
+    const itemName = String(readOwn(item, "displayName") || "").toLowerCase();
+    if (itemName && itemName === target.name.toLowerCase()) return true;
+  }
+  return false;
+}
+
+/** Computes a positive numeric aspect ratio for a keyframe or reference tile. */
+function resolveTileAspectRatio(
+  tile: FlowTile,
+  cfg: GenerationConfig,
+): number {
+  const norm = legacyTile(tile);
+  const kbAspect = readOwn(readOwn(tile, "Kb"), "aspectRatio");
+  for (const cand of [norm?.Fb?.aspectRatio, kbAspect, tile.aspectRatio]) {
+    if (typeof cand === "number" && Number.isFinite(cand) && cand > 0) {
+      return cand;
+    }
+  }
+  if (cfg.aspect === "9:16") return 9 / 16;
+  if (cfg.aspect === "1:1") return 1;
+  return 16 / 9;
+}
+
+/** Returns true when the composer is operating in `VIDEO_FRAMES` keyframe mode. */
+function isVideoFramesMode(
+  qa: PromptStateController | null,
+  cfg: GenerationConfig,
+  scope: ParentNode,
+): boolean {
+  const qaMode = String(qa?.config?.mode?.() || "");
+  if (qaMode) return qaMode === "VIDEO_FRAMES";
+  if (
+    String(cfg.mode || "video").toLowerCase() === "video" &&
+    cfg.video_type
+  ) {
+    return !/ingredient/i.test(String(cfg.video_type).trim());
+  }
+  const roots: ParentNode[] =
+    scope && scope !== document ? [scope, document] : [document];
+  const hasAddBtn = roots.some((root) =>
+    Array.from(root.querySelectorAll('button, [role="button"]')).some(
+      (el) =>
+        isVisibleEnabled(el) &&
+        /add ingredients to the prompt box|\bingredients\b/i.test(
+          (el.getAttribute("aria-label") || elText(el)).trim(),
+        ),
+    ),
+  );
+  if (hasAddBtn) return false;
+  return roots.some((root) =>
+    Array.from(root.querySelectorAll('button, [role="button"]')).some(
+      (el) =>
+        isVisibleEnabled(el) &&
+        /^(?:start|end)$/i.test(
+          (el.getAttribute("aria-label") || elText(el)).trim(),
+        ),
+    ),
+  );
+}
+
+/** Ensures `runtimeState.ngLViewMap` is captured before scanning Angular views. */
+async function ensureComposerLViews(): Promise<void> {
+  if (runtimeState.ngLViewMap instanceof Map) return;
+  const tipEls = Array.from(
+    document.querySelectorAll(
+      "[mattooltip], [cdkoverlayorigin], button[aria-label], flow-prompt-box, flow-project-page",
+    ),
+  ).slice(0, 8);
+  await withLViewMapCapture(async () => {
+    await hoverProbe(tipEls, 50);
+  });
 }
 
 /** Attaches reference ingredients or characters and writes the generation prompt text. */
@@ -61,14 +194,17 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   if (Array.isArray(cfg.asset_ids)) {
     for (const id of cfg.asset_ids) {
       const t = tileMap?.get(String(id));
+      const lt = legacyTile(t);
       const hasDisplayName = Boolean(t?.displayName && String(t.displayName).trim());
       ingredientTargets.push({
         id: String(id),
-        primaryMediaId: t?.primaryMediaId || t?.Fb?.id || t?.Fb?.mediaId || null,
+        primaryMediaId:
+          t?.primaryMediaId || lt?.Fb?.id || lt?.Fb?.mediaId || null,
         hasDisplayName,
         name: hasDisplayName && t?.displayName ? String(t.displayName).trim() : String(id),
         url: pickTileUrl(t),
         tile: t || null,
+        isCharacter: String(t?.type || "").toUpperCase() === "CHARACTER",
       });
     }
   }
@@ -142,9 +278,14 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         name: matched?.displayName ? String(matched.displayName).trim() : key,
         url: charUrl,
         tile: matched || null,
+        isCharacter: true,
       });
     }
   }
+
+  const composerFormat = !onEditPage
+    ? frontendBuild(readBuildLabel())?.composerAttachment
+    : undefined;
 
   if (ingredientTargets.length > 0 && !onEditPage) {
     const staleRemoveBtns = Array.from(
@@ -162,6 +303,17 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
       btn.click();
     }
     if (staleRemoveBtns.length > 0) await delay(100);
+    if (composerFormat) {
+      await ensureComposerLViews();
+      const qa = readPromptState(findProjectPageInstance());
+      if (typeof qa?.clear === "function") {
+        try {
+          qa.clear();
+        } catch {
+          // Ignore disposed signal resets and continue.
+        }
+      }
+    }
   }
 
   const initialTb = onEditPage ? findTextbox(true) : await ensureManualComposer();
@@ -180,72 +332,201 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     return document;
   })();
 
-  for (const target of ingredientTargets) {
-    if (!onEditPage && target.tile) {
-      if (!(runtimeState.ngLViewMap instanceof Map)) {
-        const tipEls = Array.from(
-          document.querySelectorAll("[mattooltip], button[aria-label]"),
-        ).slice(0, 8);
-        await withLViewMapCapture(async () => {
-          await hoverProbe(tipEls, 50);
-        });
+  let videoFrames = false;
+  if (ingredientTargets.length > 0 && !onEditPage) {
+    if (composerFormat) await ensureComposerLViews();
+    const initialQa = composerFormat
+      ? readPromptState(findProjectPageInstance())
+      : null;
+    videoFrames = isVideoFramesMode(initialQa, cfg, scope);
+    if (videoFrames) {
+      const invalidKeyframe =
+        ingredientTargets.length > 2 ||
+        ingredientTargets.some(
+          (t) =>
+            t.isCharacter ||
+            Boolean(t.tile?.type && String(t.tile.type).toUpperCase() !== "IMAGE"),
+        );
+      if (invalidKeyframe) {
+        return { ok: false, error: "ingredient_attach_failed" };
       }
+    }
+  }
+
+  for (let idx = 0; idx < ingredientTargets.length; idx += 1) {
+    const target = ingredientTargets[idx];
+    if (!onEditPage && target.tile && composerFormat) {
+      await ensureComposerLViews();
       const projPage = findProjectPageInstance();
-      if (projPage && typeof projPage.Ph === "function") {
-        const beforeItems = projPage.Qa?.kc?.all?.() || [];
-        const prevCount = Array.isArray(beforeItems) ? beforeItems.length : 0;
-        try {
-          projPage.Ph(target.tile);
-          await delay(180);
-        } catch {
-          // Fall back to DOM picker below.
+      const qa = readPromptState(projPage);
+      const modeBefore = String(qa?.config?.mode?.() || "");
+      const inFrames = modeBefore ? modeBefore === "VIDEO_FRAMES" : videoFrames;
+      if (inFrames) {
+        videoFrames = true;
+        const tileKind = String(target.tile.type || "").toUpperCase();
+        if (idx >= 2 || target.isCharacter || (tileKind && tileKind !== "IMAGE")) {
+          return { ok: false, error: "ingredient_attach_failed" };
         }
-        const afterItems = projPage.Qa?.kc?.all?.() || [];
-        const added =
-          Array.isArray(afterItems) &&
-          (afterItems.length > prevCount ||
-            afterItems.some((item) => {
-              const vals = [
-                item?.id,
-                item?.workflowId,
-                item?.entityId,
-                item?.mediaId,
-                item?.primaryMediaId,
-              ]
-                .filter(Boolean)
-                .map(String);
-              return (
-                vals.includes(target.id) ||
-                (target.primaryMediaId &&
-                  vals.includes(String(target.primaryMediaId)))
-              );
-            }));
+        const frameSlot = idx === 0 ? "FIRST_FRAME" : "LAST_FRAME";
+        const attachIng = readOwn(qa, composerFormat.attachIngredient);
+        const attachTile = readOwn(projPage, composerFormat.attachTile);
+        const mediaId = String(
+          target.primaryMediaId || target.tile.primaryMediaId || target.id,
+        );
+        let directOk = false;
+        if (qa && typeof attachIng === "function" && mediaId) {
+          try {
+            const kb = readOwn(target.tile, "Kb");
+            const kc = readOwn(kb, "kc") ?? target.tile.kc;
+            const lc = readOwn(target.tile, "lc");
+            const uc: Record<string, unknown> = {
+              id: mediaId,
+              mediaId,
+              mediaType: "IMAGE",
+              aspectRatio: resolveTileAspectRatio(target.tile, cfg),
+              Ud: frameSlot,
+              Xb: lc instanceof Date ? lc : new Date(),
+              ...(kc !== undefined ? { kc } : {}),
+            };
+            attachIng.call(qa, { uc, source: "PLUS_BUTTON" });
+            directOk = readAttachedItems(qa, composerFormat).some((item) =>
+              itemMatchesTarget(item, target, frameSlot),
+            );
+          } catch {
+            // Fall through to attachTile or DOM picker.
+          }
+        }
+        if (!directOk && projPage && typeof attachTile === "function") {
+          try {
+            attachTile.call(projPage, target.tile);
+            await delay(60);
+            const modeAfter = String(qa?.config?.mode?.() || "");
+            if (modeAfter && modeAfter !== "VIDEO_FRAMES") {
+              return { ok: false, error: "ingredient_attach_failed" };
+            }
+            directOk = readAttachedItems(qa, composerFormat).some((item) =>
+              itemMatchesTarget(item, target, frameSlot),
+            );
+          } catch {
+            // Fall back to DOM picker below.
+          }
+        }
+        if (directOk) continue;
+      } else if (qa) {
+        const beforeItems = readAttachedItems(qa, composerFormat);
+        const prevCount = beforeItems.length;
+        const attachTile = readOwn(projPage, composerFormat.attachTile);
+        const attachIng = readOwn(qa, composerFormat.attachIngredient);
+        if (projPage && typeof attachTile === "function") {
+          try {
+            attachTile.call(projPage, target.tile);
+            await delay(120);
+          } catch {
+            // Fall back to attachIngredient or DOM picker below.
+          }
+        }
+        let afterItems = readAttachedItems(qa, composerFormat);
+        let added =
+          afterItems.length > prevCount ||
+          afterItems.some((item) => itemMatchesTarget(item, target));
+        if (
+          !added &&
+          typeof attachIng === "function" &&
+          !target.isCharacter &&
+          String(target.tile.type || "").toUpperCase() === "IMAGE"
+        ) {
+          const mediaId = String(
+            target.primaryMediaId || target.tile.primaryMediaId || target.id,
+          );
+          try {
+            attachIng.call(qa, {
+              uc: {
+                id: mediaId,
+                mediaId,
+                mediaType: "IMAGE",
+                aspectRatio: resolveTileAspectRatio(target.tile, cfg),
+                Ud: "REFERENCE",
+                Xb: new Date(),
+              },
+              source: "VIDEO_TILE_REFERENCE",
+            });
+            afterItems = readAttachedItems(qa, composerFormat);
+            added =
+              afterItems.length > prevCount ||
+              afterItems.some((item) => itemMatchesTarget(item, target));
+          } catch {
+            // Fall back to DOM picker below.
+          }
+        }
         if (added) continue;
       }
     }
 
-    const ingSearchRoots: ParentNode[] =
-      scope && scope !== document ? [scope, document] : [document];
+    const barEl = document.querySelector("flow-ingredient-bar");
+    const ingSearchRoots: ParentNode[] = [
+      ...(barEl ? [barEl] : []),
+      ...(scope && scope !== document ? [scope] : []),
+      document,
+    ];
+    const findTriggerByRegex = (re: RegExp): HTMLElement | null => {
+      for (const root of ingSearchRoots) {
+        const hit = Array.from(
+          root.querySelectorAll('button, [role="button"]'),
+        ).find((el): el is HTMLElement => {
+          if (!isVisibleEnabled(el)) return false;
+          const label = (
+            el.getAttribute("aria-label") ||
+            elText(el) ||
+            el.getAttribute("title") ||
+            ""
+          ).trim();
+          return re.test(label);
+        });
+        if (hit) return hit;
+      }
+      return null;
+    };
+
+    const frameSlotRe =
+      idx === 0
+        ? /^(?:start|first frame|add frame)$/i
+        : /^(?:end|last frame|add frame)$/i;
+    const generalIngRe =
+      /add ingredients to the prompt box|\bingredients\b|\badd frame\b/i;
+
     let ingBtn: HTMLElement | null = null;
-    for (const root of ingSearchRoots) {
-      ingBtn =
-        Array.from(root.querySelectorAll('button, [role="button"]')).find(
-          (el): el is HTMLElement => {
-            if (!isVisibleEnabled(el)) return false;
-            const label = (
-              el.getAttribute("aria-label") ||
-              elText(el) ||
-              el.getAttribute("title") ||
-              ""
-            ).trim();
-            return /add ingredients to the prompt box|\bingredients\b|\badd frame\b/i.test(
-              label,
-            );
-          },
-        ) || null;
-      if (ingBtn) break;
+    if (!onEditPage && videoFrames) {
+      if (
+        idx >= 2 ||
+        target.isCharacter ||
+        Boolean(target.tile?.type && String(target.tile.type).toUpperCase() !== "IMAGE")
+      ) {
+        return { ok: false, error: "ingredient_attach_failed" };
+      }
+      ingBtn = findTriggerByRegex(frameSlotRe);
+    } else {
+      ingBtn = findTriggerByRegex(generalIngRe);
+      if (!ingBtn && !onEditPage) {
+        const slotBtn = findTriggerByRegex(frameSlotRe);
+        if (slotBtn) {
+          videoFrames = true;
+          if (
+            ingredientTargets.length > 2 ||
+            idx >= 2 ||
+            target.isCharacter ||
+            Boolean(
+              target.tile?.type && String(target.tile.type).toUpperCase() !== "IMAGE",
+            )
+          ) {
+            return { ok: false, error: "ingredient_attach_failed" };
+          }
+          ingBtn = slotBtn;
+        }
+      }
     }
-    if (!ingBtn) break;
+    if (!ingBtn) {
+      return { ok: false, error: "ingredient_attach_failed" };
+    }
     const activeIngBtn = ingBtn;
     if (!(runtimeState.ngLViewMap instanceof Map)) {
       await withLViewMapCapture(async () => {
@@ -292,43 +573,61 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     const popEl =
       overlay.querySelector("flow-add-menu-popover-content") ||
       document.querySelector("flow-add-menu-popover-content");
+    const selectKeys = composerFormat
+      ? [composerFormat.popoverSelect, "r9", "Hi"]
+      : ["Qda", "r9", "Hi"];
     interface PopoverComponent {
       isPending?: () => boolean;
       ka?: () => unknown[];
+      xZ?: () => unknown[];
       Hi?: ((item?: unknown) => unknown) | undefined;
-      r9?: (item: unknown) => void;
     }
     if (popEl) {
-      const findPopInst = (lv: NgLView | null): PopoverComponent | null => {
-        if (!Array.isArray(lv)) return null;
-        for (const cand of lv) {
-          if (
-            cand &&
-            typeof cand === "object" &&
-            !(cand instanceof Node) &&
-            (typeof (cand as PopoverComponent).r9 === "function" ||
-              typeof (cand as PopoverComponent).Hi === "function")
-          ) {
-            return cand as PopoverComponent;
+      const findPopSelect = (
+        cand: unknown,
+      ): ((item: unknown) => unknown) | null => {
+        if (!cand || typeof cand !== "object" || cand instanceof Node) {
+          return null;
+        }
+        for (const key of selectKeys) {
+          const fn = readOwn(cand, key);
+          if (typeof fn === "function") {
+            return fn.bind(cand) as (item: unknown) => unknown;
           }
         }
         return null;
       };
-      let popInst: PopoverComponent | null = null;
+      const findPopInst = (
+        lv: NgLView | null,
+      ): { inst: PopoverComponent; select: (item: unknown) => unknown } | null => {
+        if (!Array.isArray(lv)) return null;
+        for (const cand of lv) {
+          const select = findPopSelect(cand);
+          if (select) {
+            return { inst: cand as PopoverComponent, select };
+          }
+        }
+        return null;
+      };
+      let popHit: {
+        inst: PopoverComponent;
+        select: (item: unknown) => unknown;
+      } | null = null;
       let p: NgLView | null = resolveLView(popEl);
       for (let d = 0; d < 4 && Array.isArray(p); d++) {
-        popInst = findPopInst(p);
-        if (popInst) break;
+        popHit = findPopInst(p);
+        if (popHit) break;
         p = Array.isArray(p[3]) ? p[3] : Array.isArray(p[15]) ? p[15] : null;
       }
-      if (!popInst && runtimeState.ngLViewMap instanceof Map) {
+      if (!popHit && runtimeState.ngLViewMap instanceof Map) {
         for (const lv of runtimeState.ngLViewMap.values()) {
           if (!isLiveLView(lv)) continue;
-          popInst = findPopInst(lv);
-          if (popInst) break;
+          popHit = findPopInst(lv);
+          if (popHit) break;
         }
       }
-      if (popInst) {
+      if (popHit) {
+        const { inst: popInst, select } = popHit;
         for (let w = 0; w < 15; w += 1) {
           if (typeof popInst.isPending === "function" && popInst.isPending()) {
             await delay(100);
@@ -338,6 +637,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         }
         const pool =
           (typeof popInst.ka === "function" ? popInst.ka() : null) ||
+          (typeof popInst.xZ === "function" ? popInst.xZ() : null) ||
           (typeof popInst.Hi === "function" ? popInst.Hi() : null) ||
           [];
         const m = Array.isArray(pool)
@@ -353,14 +653,9 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
               : null)
           : null;
         if (m) {
-          if (typeof popInst.r9 === "function") {
-            popInst.r9(m);
-            attached = true;
-          } else if (typeof popInst.Hi === "function") {
-            popInst.Hi(m);
-            attached = true;
-          }
-          if (attached) await delay(180);
+          select(m);
+          attached = true;
+          await delay(180);
         }
       }
     }
@@ -439,22 +734,53 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         }
       }
     }
+    if (!attached) {
+      return { ok: false, error: "ingredient_attach_failed" };
+    }
   }
 
-  if (ingredientTargets.length > 0 && !onEditPage) {
+  if (ingredientTargets.length > 0 && !onEditPage && composerFormat) {
     const projPage = findProjectPageInstance();
-    if (projPage?.Qa?.kc?.all) {
+    const qa = readPromptState(projPage);
+    const refs = readOwn(qa, composerFormat.references);
+    if (qa && typeof readOwn(refs, "all") === "function") {
       for (let w = 0; w < 25; w += 1) {
-        const items = projPage.Qa.kc.all();
-        const stillLoading =
-          Array.isArray(items) &&
-          items.some(
-            (x) =>
-              x &&
-              (x.tl === "INVALID_CHARACTER_NO_IMAGES" || x.isLoading === true),
-          );
+        const items = readAttachedItems(qa, composerFormat);
+        const stillLoading = items.some(
+          (x) =>
+            Boolean(x) &&
+            (Boolean(readOwn(x, composerFormat.validationError)) ||
+              readOwn(x, "isLoading") === true),
+        );
         if (!stillLoading) break;
         await delay(100);
+      }
+      const finalMode = String(qa.config?.mode?.() || "");
+      if (videoFrames && finalMode && finalMode !== "VIDEO_FRAMES") {
+        return { ok: false, error: "ingredient_attach_failed" };
+      }
+      const settledItems = readAttachedItems(qa, composerFormat).filter(
+        (x) =>
+          Boolean(x) &&
+          !readOwn(x, composerFormat.validationError) &&
+          readOwn(x, "isLoading") !== true,
+      );
+      if (settledItems.length < ingredientTargets.length) {
+        return { ok: false, error: "ingredient_attach_failed" };
+      }
+      const inFrames = finalMode ? finalMode === "VIDEO_FRAMES" : videoFrames;
+      for (let idx = 0; idx < ingredientTargets.length; idx += 1) {
+        const expectedSlot = inFrames
+          ? idx === 0
+            ? "FIRST_FRAME"
+            : "LAST_FRAME"
+          : undefined;
+        const matched = settledItems.some((item) =>
+          itemMatchesTarget(item, ingredientTargets[idx], expectedSlot),
+        );
+        if (!matched) {
+          return { ok: false, error: "ingredient_attach_failed" };
+        }
       }
     }
   }
@@ -514,9 +840,11 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
       typeof finalHost?.Sk === "function" ? Boolean(finalHost.Sk()) : null,
     qa_mode: finalUx?.Qa?.config?.mode?.() || null,
     prompt_empty:
-      typeof finalUx?.Qa?.prompt?.Le === "function"
-        ? Boolean(finalUx.Qa.prompt.Le())
-        : null,
+      typeof finalUx?.Qa?.prompt?.Ke === "function"
+        ? Boolean(finalUx.Qa.prompt.Ke())
+        : typeof finalUx?.Qa?.prompt?.Le === "function"
+          ? Boolean(finalUx.Qa.prompt.Le())
+          : null,
     qf: typeof finalUx?.qf === "function" ? Boolean(finalUx.qf()) : null,
   };
 }

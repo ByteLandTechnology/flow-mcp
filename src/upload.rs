@@ -21,6 +21,15 @@ pub(crate) const PROMPT_INGREDIENTS_MENU: &str = "Add ingredients to the prompt 
 /// Menu item text (without the icon name) that uploads media into the prompt box.
 pub(crate) const PROMPT_UPLOAD_ITEM: &str = "Upload media";
 
+/// Menu item text (without the icon name) when document uploads are enabled in the prompt box.
+const PROMPT_UPLOAD_FILES_ITEM: &str = "Upload files";
+
+/// Button text that opens the start keyframe picker in video frames mode.
+const PROMPT_START_FRAME_BUTTON: &str = "Start";
+
+/// Button text that opens the end keyframe picker in video frames mode.
+const PROMPT_END_FRAME_BUTTON: &str = "End";
+
 /// Verifies local paths and returns the absolute paths that Chrome uses.
 pub(crate) async fn local_upload_paths(files: &[String], label: &str) -> Result<Vec<String>> {
     validate_local_files(Some(files), label).await?;
@@ -90,30 +99,49 @@ async fn eval_value(engine: &ChromeEngine, expr: &str) -> Result<Value> {
     Ok(res.pointer("/result/value").cloned().unwrap_or(Value::Null))
 }
 
-/// Polls until the control that `by` and `name` select is visible, then sends a trusted click to it.
-async fn click_when_visible(engine: &ChromeEngine, by: &str, name: &str) -> Result<()> {
+/// Polls until one of the `(by, name)` candidates is visible, clicks it, and returns its index.
+async fn click_first_visible(engine: &ChromeEngine, candidates: &[(&str, &str)]) -> Result<usize> {
     for _ in 0..20 {
-        let point = engine
-            .call_flow_js("locatePoint", json!([{ "by": by, "name": name }]))
-            .await?;
-        if engine.click_point(&point).await? {
-            return Ok(());
+        for (idx, (by, name)) in candidates.iter().enumerate() {
+            let point = engine
+                .call_flow_js("locatePoint", json!([{ "by": by, "name": name }]))
+                .await?;
+            if engine.click_point(&point).await? {
+                return Ok(idx);
+            }
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    anyhow::bail!("{} is not visible", name)
+    let names = candidates
+        .iter()
+        .map(|(_, name)| *name)
+        .collect::<Vec<_>>()
+        .join(" or ");
+    anyhow::bail!("{names} is not visible")
 }
 
-/// Clicks `menu` and its `upload <item>` entry, and assigns `files` to the file input that the page opens.
-async fn upload_steps(
+/// Polls until the control that `by` and `name` select is visible, then sends a trusted click to it.
+async fn click_when_visible(engine: &ChromeEngine, by: &str, name: &str) -> Result<()> {
+    click_first_visible(engine, &[(by, name)]).await.map(|_| ())
+}
+
+/// Clicks the upload entry in an open menu and assigns `files` to the file input that Flow opens.
+async fn choose_menu_upload_files(
     engine: &ChromeEngine,
-    menu: &str,
     item: &str,
     files: &[String],
 ) -> Result<()> {
-    click_when_visible(engine, "aria-label", menu).await?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    click_when_visible(engine, "text", &format!("upload {item}")).await?;
+    let primary = format!("upload {item}");
+    let alt = format!("upload {PROMPT_UPLOAD_FILES_ITEM}");
+    if item == PROMPT_UPLOAD_ITEM {
+        click_first_visible(
+            engine,
+            &[("text", alt.as_str()), ("text", primary.as_str())],
+        )
+        .await?;
+    } else {
+        click_when_visible(engine, "text", primary.as_str()).await?;
+    }
     let mut opened = false;
     for _ in 0..30 {
         let v = eval_value(engine, "!!window.__fmUploadInput").await?;
@@ -128,6 +156,51 @@ async fn upload_steps(
         .upload_files_to("window.__fmUploadInput", files)
         .await
         .context("Failed to assign files to the Flow upload input")
+}
+
+/// Clicks `menu` and its `upload <item>` entry, and assigns `files` to the file input that the page opens.
+async fn upload_steps(
+    engine: &ChromeEngine,
+    menu: &str,
+    item: &str,
+    files: &[String],
+) -> Result<()> {
+    if menu != PROMPT_INGREDIENTS_MENU {
+        click_when_visible(engine, "aria-label", menu).await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        return choose_menu_upload_files(engine, item, files).await;
+    }
+
+    let trigger_idx = click_first_visible(
+        engine,
+        &[
+            ("aria-label", PROMPT_INGREDIENTS_MENU),
+            ("text", PROMPT_START_FRAME_BUTTON),
+            ("text", PROMPT_END_FRAME_BUTTON),
+        ],
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    if trigger_idx == 0 {
+        return choose_menu_upload_files(engine, item, files).await;
+    }
+
+    let first_batch = if files.len() > 1 { &files[..1] } else { files };
+    choose_menu_upload_files(engine, item, first_batch).await?;
+
+    if trigger_idx == 1 && files.len() > 1 {
+        let _ = eval_value(engine, "window.__fmUploadInput = null").await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = engine
+            .call_flow_js("uploadUiAction", json!(["accept_consent"]))
+            .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        click_when_visible(engine, "text", PROMPT_END_FRAME_BUTTON).await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        choose_menu_upload_files(engine, item, &files[1..2]).await?;
+    }
+    Ok(())
 }
 
 /// Uploads `files` through the `menu` button and its `upload <item>` entry.

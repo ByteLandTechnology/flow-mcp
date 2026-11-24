@@ -308,12 +308,22 @@ export interface FifeEnv {
   isSignedCdnHost: (parsed: URL) => boolean;
 }
 
+/** Attached ingredient collection exposed on `PromptStateController`. */
+export interface PromptReferenceList {
+  /** Returns all attached ingredient and frame items. */
+  all?: () => Array<Record<string, unknown>>;
+}
+
 /** Flow prompt validation and submission state controller. */
 export interface PromptStateController {
   /** Applies serialized prompt segments. */
   Wn?: (doc: { Oe: Array<{ type: string; content: string }> }) => void;
+  /** Inserts an ingredient or keyframe descriptor in build 20261120.00. */
+  Vf?: (entry: { uc: Record<string, unknown>; source: string }) => void;
+  /** Resets the prompt content and attached items. */
+  clear?: () => void;
   /** Prompt text helper object. */
-  prompt?: { Le?: () => boolean };
+  prompt?: { Le?: () => boolean; Ke?: () => boolean };
   /** Validator status object. */
   lf?: { isValid?: () => boolean; jYa?: () => string };
   /** Mode, output count, and model config signals. */
@@ -321,6 +331,10 @@ export interface PromptStateController {
     mode?: () => string;
     outputCount?: () => number;
   };
+  /** Legacy attached ingredient signal bundle. */
+  kc?: PromptReferenceList;
+  /** Attached ingredient signal bundle in build 20261120.00. */
+  oc?: PromptReferenceList;
 }
 
 /** Angular component controller for a base prompt box. */
@@ -349,12 +363,16 @@ export interface PromptBoxHost {
 
 /** Angular project page component instance. */
 export interface ProjectPageInstance {
-  /** Attaches a tile reference directly into composer state. */
-  Ph: (tile: FlowTile) => void;
+  /** Attaches a tile reference directly into legacy composer state. */
+  Ph?: (tile: FlowTile) => void;
+  /** Attaches a tile reference directly into build 20261120.00 composer state. */
+  Mi?: (tile: FlowTile) => void;
   /** Prompt state and attached item signal container. */
-  Qa: PromptStateController & { kc?: { all?: () => Array<Record<string, unknown>> } };
+  Qa: PromptStateController;
   /** Store/mode mutation signal container. */
-  ub: { mutate: (value: unknown) => unknown };
+  ub?: { mutate?: (value: unknown) => unknown };
+  /** Project mutation dispatcher signal container in build 20261120.00. */
+  he?: { mutate?: (value: unknown) => unknown };
   /** Secondary agent state signal container. */
   Ta?: { mutate?: (value: unknown) => void };
   /** Returns the prompt box host component. */

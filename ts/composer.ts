@@ -3,8 +3,9 @@
 
 // Composer host, prompt textbox, and settings overlay helpers.
 
-import { isLiveLView, resolveLView, withLViewMapCapture } from "./angular";
+import { isLiveLView, readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type {
   BasePromptBoxInstance,
@@ -86,13 +87,20 @@ export async function ensureManualComposer(): Promise<HTMLElement | null> {
 
 /** Finds the live `flow-project-page` Angular component instance. */
 export function findProjectPageInstance(): ProjectPageInstance | null {
+  const build = frontendBuild(readBuildLabel());
+  const pageKey = build?.composerAttachment?.page ?? build?.operations.agent_chat?.page;
+  const frontEnd = readOwn(window, "default_AiSandboxAngularFrontend");
+  const pageType = pageKey ? readOwn(frontEnd, pageKey) : undefined;
   const isProjPage = (cand: unknown): cand is ProjectPageInstance => {
     if (!cand || typeof cand !== "object" || cand instanceof Node) return false;
+    if (readOwn(readOwn(cand, "Ba"), "Va") === true || readOwn(readOwn(cand, "Ca"), "Va") === true) {
+      return false;
+    }
+    if (typeof pageType === "function" && cand instanceof pageType) return true;
     const obj = cand as Partial<ProjectPageInstance>;
     return (
-      typeof obj.Ph === "function" &&
       Boolean(obj.Qa) &&
-      typeof obj.ub?.mutate === "function"
+      (typeof obj.he?.mutate === "function" || typeof obj.ub?.mutate === "function")
     );
   };
   const scanLv = (lv: unknown): ProjectPageInstance | null =>
