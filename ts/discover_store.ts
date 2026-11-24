@@ -3,15 +3,17 @@
 
 // Discover the Angular Ivy project store service and bind handles in module state.
 
-import {
-  isNgLViewMap,
-  readOwn,
-  resolveLView,
-  withLViewMapCapture,
-} from "./angular";
+import { isNgLViewMap, readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, hoverProbe } from "./dom";
 import { withMutationAliases } from "./frontend_compatibility";
 import { clearStore, runtimeState } from "./state";
+import {
+  discoverProjectStoreCandidates,
+  discoverQueryTileServiceInLView,
+  isComponentDestroyed,
+  readRowsFromQueryTileService,
+  safeFnSource,
+} from "./store_shapes";
 import type {
   DiscoverStoreResult,
   FlowStoreService,
@@ -31,14 +33,8 @@ function findMethodByMarker(
     for (const k of Object.getOwnPropertyNames(cur)) {
       if (k === "constructor") continue;
       const fn = readOwn(obj, k);
-      if (typeof fn === "function") {
-        try {
-          if (fn.toString().includes(marker)) {
-            return fn.bind(obj) as (...args: unknown[]) => unknown;
-          }
-        } catch {
-          // Ignore non-inspectable functions.
-        }
+      if (typeof fn === "function" && safeFnSource(fn).includes(marker)) {
+        return fn.bind(obj) as (...args: unknown[]) => unknown;
       }
     }
     cur = Object.getPrototypeOf(cur);
@@ -56,10 +52,7 @@ function isTileMap(m: unknown): m is Map<string, FlowTile> {
   if (!(m instanceof Map)) return false;
   if (m.size === 0) return true;
   for (const v of m.values()) {
-    if (v && typeof v === "object" && ("id" in v || "type" in v)) {
-      return true;
-    }
-    return false;
+    return Boolean(v && typeof v === "object" && ("id" in v || "type" in v));
   }
   return false;
 }
@@ -68,29 +61,19 @@ function isTileMap(m: unknown): m is Map<string, FlowTile> {
 function resolveTileMapFrom(svc: FlowStoreService | null): Map<string, FlowTile> | null {
   if (!svc || typeof svc !== "object") return null;
   const apKa = svc._ap?.ka;
-  if (typeof apKa === "function") {
-    try {
-      const m = apKa.call(svc._ap);
-      if (m instanceof Map) return m;
-    } catch {
-      // Try next getter.
-    }
-  }
-  if (typeof svc.ka === "function") {
-    try {
-      const m = svc.ka();
-      if (m instanceof Map) return m;
-    } catch {
-      // Try next getter.
-    }
-  }
+  const svcKa = svc.ka;
   const haKa = svc.ha?.ka;
-  if (typeof haKa === "function") {
+  for (const getter of [
+    typeof apKa === "function" ? () => apKa.call(svc._ap) : null,
+    typeof svcKa === "function" ? () => svcKa.call(svc) : null,
+    typeof haKa === "function" ? () => haKa.call(svc.ha) : null,
+  ]) {
+    if (!getter) continue;
     try {
-      const m = haKa.call(svc.ha);
+      const m = getter();
       if (m instanceof Map) return m;
     } catch {
-      // Fall back to BFS scan.
+      // Try next getter.
     }
   }
   const queue: object[] = [svc];
@@ -132,7 +115,7 @@ function resolveTileMapFrom(svc: FlowStoreService | null): Map<string, FlowTile>
   return emptyMapFallback;
 }
 
-/** Returns the async mutate function of a TanStack mutation result (`oe`, `re` or `mutateAsync` by Flow build), or null. */
+/** Returns the async mutate function of a TanStack mutation result, or null. */
 function mutateAsyncOf(
   obj: unknown,
 ): ((payload: Record<string, unknown>) => Promise<unknown>) | null {
@@ -165,34 +148,25 @@ async function invokeMutation(
   payload = withMutationAliases(payload);
   const mq = queueObj as MutationQueueObj | null | undefined;
   const qKa = typeof mq?.ka === "function" ? mq.ka.bind(mq) : null;
-  const hasPendingQueueItems = (): boolean => {
-    if (!qKa) return false;
+  for (let i = 0; i < 200; i++) {
+    if (!qKa) break;
     try {
       const q = qKa();
-      return Array.isArray(q?.items) && q.items.length > 0;
+      if (!Array.isArray(q?.items) || q.items.length === 0) break;
     } catch {
-      return false;
+      break;
     }
-  };
-  for (let i = 0; i < 200; i++) {
-    if (!hasPendingQueueItems()) break;
     await delay(50);
   }
-  const lcAsync = mutateAsyncOf(lcObj);
-  if (lcAsync) {
-    const res = await lcAsync(payload);
-    await delay(0);
-    return res;
+  for (const candidate of [mutateAsyncOf(lcObj), mutateAsyncOf(mq)]) {
+    if (candidate) {
+      const res = await candidate(payload);
+      await delay(0);
+      return res;
+    }
   }
-  const qAsync = mutateAsyncOf(mq);
-  if (qAsync) {
-    const res = await qAsync(payload);
-    await delay(0);
-    return res;
-  }
-  const qMutateAsync = mq?.mutateAsync;
-  if (typeof qMutateAsync === "function") {
-    const res = await qMutateAsync.call(mq, payload);
+  if (typeof mq?.mutateAsync === "function") {
+    const res = await mq.mutateAsync.call(mq, payload);
     await delay(0);
     return res;
   }
@@ -212,11 +186,8 @@ async function invokeMutation(
       for (let i = 0; i < 1200; i++) {
         await delay(25);
         if (capturedError) break;
-        const snapshot = qKa();
-        const items = snapshot?.items;
-        const stillQueued =
-          Array.isArray(items) &&
-          items.some((it) => it && it.mutation === payload);
+        const items = qKa()?.items;
+        const stillQueued = Array.isArray(items) && items.some((it) => it && it.mutation === payload);
         if (!stillQueued) {
           let errState: unknown = null;
           if (typeof mq?.error === "function") {
@@ -234,9 +205,7 @@ async function invokeMutation(
         }
       }
       if (capturedError) {
-        throw capturedError instanceof Error
-          ? capturedError
-          : new Error(String(capturedError));
+        throw capturedError instanceof Error ? capturedError : new Error(String(capturedError));
       }
       throw new Error("mutation_timeout");
     } finally {
@@ -263,9 +232,7 @@ function resolveMutatorFrom(
   if (!svc || typeof svc !== "object") return null;
   const lcFallback = (obj: FlowStoreService): MutationQueueObj | null => {
     if (mutateAsyncOf(obj.lc)) return obj.lc ?? null;
-    if (typeof obj.ka === "object" && obj.ka && mutateAsyncOf(obj.ka)) {
-      return obj.ka;
-    }
+    if (typeof obj.ka === "object" && obj.ka && mutateAsyncOf(obj.ka)) return obj.ka;
     return null;
   };
   const haInner = svc.ha?.ha as MutationQueueObj | null | undefined;
@@ -282,33 +249,38 @@ function resolveMutatorFrom(
     return (payload) => invokeMutation(svc.ha, payload, lcFallback(svc));
   }
   const directLc = lcFallback(svc);
-  if (directLc && mutateAsyncOf(directLc)) {
-    return (payload) => invokeMutation(svc, payload, directLc);
-  }
-  if (typeof svc.mutate === "function") {
-    return (payload) => invokeMutation(svc, payload, directLc);
-  }
+  if (directLc && mutateAsyncOf(directLc)) return (payload) => invokeMutation(svc, payload, directLc);
+  if (typeof svc.mutate === "function") return (payload) => invokeMutation(svc, payload, directLc);
   for (const k of Object.keys(svc)) {
     const child = readOwn(svc, k);
-    if (child && typeof child === "object") {
-      const childObj = child as FlowStoreService;
-      const childLc = childObj.lc || directLc || null;
-      if (typeof childObj.mutate === "function") {
-        return (payload) => invokeMutation(childObj, payload, childLc);
-      }
-      for (const ck of Object.keys(childObj)) {
-        const sub = readOwn(childObj, ck) as MutationQueueObj | undefined;
-        if (sub && typeof sub.mutate === "function") {
-          return (payload) => invokeMutation(sub, payload, childLc);
-        }
-      }
+    if (!child || typeof child !== "object") continue;
+    const childObj = child as FlowStoreService;
+    const childLc = childObj.lc || directLc || null;
+    if (typeof childObj.mutate === "function") return (payload) => invokeMutation(childObj, payload, childLc);
+    for (const ck of Object.keys(childObj)) {
+      const sub = readOwn(childObj, ck) as MutationQueueObj | undefined;
+      if (sub && typeof sub.mutate === "function") return (payload) => invokeMutation(sub, payload, childLc);
     }
   }
-  const dispatcher =
-    findMethodByMarker(svc, "batch_move_to_collection") ||
-    findMethodByMarker(svc, "set_display_name");
-  if (dispatcher) {
-    return (payload) => Promise.resolve(dispatcher(projectId, payload));
+  const dispatchers: Array<(...args: unknown[]) => unknown> = [];
+  let cur: object | null = svc;
+  for (let depth = 0; cur && cur !== Object.prototype && depth < 3; depth++) {
+    for (const k of Object.getOwnPropertyNames(cur)) {
+      if (k === "constructor") continue;
+      const fn = readOwn(svc, k);
+      const src = safeFnSource(fn);
+      if (
+        typeof fn === "function" &&
+        src.includes("PROJECT_TILES") &&
+        (src.includes("batch_move_to_collection") || src.includes("set_display_name"))
+      ) {
+        dispatchers.push(fn.bind(svc) as (...args: unknown[]) => unknown);
+      }
+    }
+    cur = Object.getPrototypeOf(cur);
+  }
+  if (dispatchers.length === 1) {
+    return (payload) => Promise.resolve(dispatchers[0](projectId, withMutationAliases(payload)));
   }
   return null;
 }
@@ -316,7 +288,10 @@ function resolveMutatorFrom(
 /** Returns true when `svc` or its nested wrapper has been destroyed by Angular. */
 function isDestroyed(svc: FlowStoreService | null | undefined): boolean {
   if (!svc || typeof svc !== "object") return true;
-  return Boolean(svc.Ca?.Va || svc._ap?.Ca?.Va || svc.ha?.Ca?.Va);
+  if (svc._qt) return isComponentDestroyed(svc._qt.owner);
+  if (svc._ap) return isComponentDestroyed(svc._ap);
+  if (svc._uo) return isComponentDestroyed(svc._uo);
+  return isComponentDestroyed(svc);
 }
 
 /** Returns true while bound store queries are ready and not pending initial load. */
@@ -324,13 +299,10 @@ function isStoreDataReady(svc: FlowStoreService | null): boolean {
   if (!svc || isDestroyed(svc)) return false;
   const ap = svc._ap || svc.ha || svc;
   const rc = readOwn(ap, "RC") as { isPending?: () => boolean } | undefined;
-  if (typeof rc?.isPending === "function" && rc.isPending()) {
-    return false;
-  }
-  if (svc._uo) {
+  if (typeof rc?.isPending === "function" && rc.isPending()) return false;
+  if (svc._uo || svc._qt) {
     const haKa = svc.ha?.ka;
-    const m = typeof haKa === "function" ? haKa.call(svc.ha) : null;
-    if (!(m instanceof Map)) return false;
+    if (!(typeof haKa === "function" && haKa.call(svc.ha) instanceof Map)) return false;
   }
   return true;
 }
@@ -339,23 +311,16 @@ function isStoreDataReady(svc: FlowStoreService | null): boolean {
 function isLService(v: unknown): boolean {
   if (!v || typeof v !== "object" || isDestroyed(v as FlowStoreService)) return false;
   const svc = v as FlowStoreService;
-  if (
-    typeof svc.RK === "function" &&
-    typeof svc.ZA === "function" &&
-    typeof svc.ha?.ka === "function"
-  ) {
+  if (typeof svc.RK === "function" && typeof svc.ZA === "function" && typeof svc.ha?.ka === "function") {
     return true;
   }
-  if (
+  return (
     (hasMethodString(svc, "create_collection") ||
       hasMethodString(svc, "PROJECT_TILES") ||
       hasMethodString(svc.na, "PROJECT_TILES")) &&
     hasMethodString(svc, "set_display_name") &&
     resolveTileMapFrom(svc) instanceof Map
-  ) {
-    return true;
-  }
-  return false;
+  );
 }
 
 /** Checks whether `v` is the `_ap` signal-store variant. */
@@ -364,9 +329,7 @@ function isAPService(v: unknown): v is FlowStoreService {
     return false;
   }
   const svc = v as FlowStoreService;
-  if (typeof svc.ka !== "function" || typeof svc.ha?.mutate !== "function") {
-    return false;
-  }
+  if (typeof svc.ka !== "function" || typeof svc.ha?.mutate !== "function") return false;
   try {
     return svc.ka() instanceof Map;
   } catch {
@@ -378,32 +341,20 @@ function isAPService(v: unknown): v is FlowStoreService {
 function isUOService(v: unknown): v is FlowStoreService {
   if (!v || typeof v !== "object" || v instanceof Node) return false;
   const svc = v as FlowStoreService;
-  if (
-    typeof svc.PG !== "function" ||
-    typeof svc.queryKey !== "function" ||
-    typeof svc.ob?.ha !== "function"
-  ) {
-    return false;
-  }
   return (
+    typeof svc.PG === "function" &&
+    typeof svc.queryKey === "function" &&
+    typeof svc.ob?.ha === "function" &&
     hasMethodString(svc, "create_collection") &&
     hasMethodString(svc, "PROJECT_TILES")
   );
 }
 
 /** Resolves cached tile rows from a `_uo` store service. */
-function resolveTileArrayFromUO(
-  uo: FlowStoreService,
-  projectId: string | null,
-): FlowTile[] | null {
-  if (!uo || typeof uo !== "object" || typeof uo.ob?.ha !== "function") {
-    return null;
-  }
+function resolveTileArrayFromUO(uo: FlowStoreService, projectId: string | null): FlowTile[] | null {
+  if (!uo || typeof uo !== "object" || typeof uo.ob?.ha !== "function") return null;
   try {
-    const qk =
-      typeof uo.queryKey === "function"
-        ? uo.queryKey(projectId)
-        : ["PROJECT_TILES", projectId];
+    const qk = typeof uo.queryKey === "function" ? uo.queryKey(projectId) : ["PROJECT_TILES", projectId];
     const data = uo.ob.ha(qk);
     if (data && Array.isArray(data.Cb)) return data.Cb;
   } catch {
@@ -411,6 +362,18 @@ function resolveTileArrayFromUO(
   }
   return null;
 }
+
+/** Builds the rename payload passed through `withMutationAliases`. */
+function renamePayload(id: string, displayName: string): Record<string, unknown> {
+  return { type: "single_tile", tileId: id, change: { type: "set_display_name", displayName } };
+}
+
+/** Route path of the most recent failed invasive DOM store probe. */
+let lastInvasiveMissPath = "";
+/** Timestamp (`performance.now()`) of the most recent failed invasive DOM store probe. */
+let lastInvasiveMissAt = -Infinity;
+/** Cooldown between invasive hover/scroll/focus store probes on the same route. */
+const INVASIVE_PROBE_COOLDOWN_MS = 5_000;
 
 /** Scans the DOM, Ivy contexts, and transient Map activity to bind the project store. */
 export async function discoverStore(): Promise<DiscoverStoreResult> {
@@ -421,10 +384,7 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     if (isAPService(found) && !isLService(found)) {
       const ap = found;
       const apKa = ap.ka as () => Map<string, FlowTile> | null | undefined;
-      runtimeState.lService = {
-        _ap: ap,
-        ha: { ka: () => apKa.call(ap), ha: ap.ha },
-      };
+      runtimeState.lService = { _ap: ap, ha: { ka: () => apKa.call(ap), ha: ap.ha } };
       runtimeState.projectId = projectId;
       runtimeState.routePath = location.pathname;
       runtimeState.store = {
@@ -432,27 +392,36 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
         getTileMap: () => apKa.call(ap),
         isReady: () => isStoreDataReady(runtimeState.lService),
         mutate: (payload) => invokeMutation(ap.ha, payload, ap.lc),
-        rename: async (id, displayName) =>
-          await invokeMutation(
-            ap.ha,
-            {
-              type: "single_tile",
-              Xc: id,
-              Uc: id,
-              Ve: { type: "set_display_name", displayName },
-            },
-            ap.lc,
-          ),
+        rename: async (id, displayName) => await invokeMutation(ap.ha, renamePayload(id, displayName), ap.lc),
+      };
+      return;
+    }
+
+    if (found._qt) {
+      const qt = found._qt;
+      const getQtMap = (): Map<string, FlowTile> | null =>
+        readRowsFromQueryTileService(qt.tilesService, qt.queryClient, qt.rows, projectId);
+      const dispatch = (payload: Record<string, unknown>): Promise<unknown> => {
+        const fn = qt.dispatcher ? readOwn(qt.tilesService, qt.dispatcher) : undefined;
+        if (typeof fn !== "function") throw new Error("store_mutate_missing");
+        return Promise.resolve(fn.call(qt.tilesService, projectId, withMutationAliases(payload)));
+      };
+      runtimeState.lService = { _qt: qt, ha: { ka: getQtMap } };
+      runtimeState.projectId = projectId;
+      runtimeState.routePath = location.pathname;
+      runtimeState.store = {
+        projectId,
+        getTileMap: getQtMap,
+        isReady: () => isStoreDataReady(runtimeState.lService),
+        mutate: dispatch,
+        rename: async (id, displayName) => await dispatch(renamePayload(id, displayName)),
       };
       return;
     }
 
     if (isUOService(found) && !isLService(found)) {
       const uo = found;
-      const uoPg = uo.PG as (
-        pid: string | null,
-        payload: Record<string, unknown>,
-      ) => Promise<unknown>;
+      const uoPg = uo.PG as (pid: string | null, payload: Record<string, unknown>) => Promise<unknown>;
       const getUoMap = (): Map<string, FlowTile> | null => {
         const arr = resolveTileArrayFromUO(uo, projectId);
         if (!arr) return null;
@@ -462,29 +431,16 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
         }
         return m;
       };
-      runtimeState.lService = {
-        _uo: uo,
-        ha: { ka: getUoMap },
-      };
+      runtimeState.lService = { _uo: uo, ha: { ka: getUoMap } };
       runtimeState.projectId = projectId;
       runtimeState.routePath = location.pathname;
       runtimeState.store = {
         projectId,
         getTileMap: getUoMap,
         isReady: () => isStoreDataReady(runtimeState.lService),
-        mutate: (payload) =>
-          uoPg.call(uo, projectId, withMutationAliases(payload)),
+        mutate: (payload) => uoPg.call(uo, projectId, withMutationAliases(payload)),
         rename: async (id, displayName) =>
-          await uoPg.call(
-            uo,
-            projectId,
-            withMutationAliases({
-              type: "single_tile",
-              Xc: id,
-              Uc: id,
-              Ve: { type: "set_display_name", displayName },
-            }),
-          ),
+          await uoPg.call(uo, projectId, withMutationAliases(renamePayload(id, displayName))),
       };
       return;
     }
@@ -504,19 +460,8 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
       rename: async (id, displayName) => {
         const svc = runtimeState.lService;
         const fn = resolveMutatorFrom(svc, projectId);
-        if (fn) {
-          return await fn(
-            withMutationAliases({
-              type: "single_tile",
-              Xc: id,
-              Uc: id,
-              Ve: { type: "set_display_name", displayName },
-            }),
-          );
-        }
-        if (svc && typeof svc.RK === "function") {
-          return await svc.RK(id, displayName);
-        }
+        if (fn) return await fn(withMutationAliases(renamePayload(id, displayName)));
+        if (svc && typeof svc.RK === "function") return await svc.RK(id, displayName);
         throw new Error("store_rename_missing");
       },
     };
@@ -528,6 +473,7 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     runtimeState.lService &&
     !isDestroyed(runtimeState.lService) &&
     !runtimeState.lService._uo &&
+    !runtimeState.lService._qt &&
     resolveTileMapFrom(runtimeState.lService) instanceof Map
   ) {
     installHandle(runtimeState.lService._ap || runtimeState.lService);
@@ -538,16 +484,14 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
 
   const findInLView = (lv: unknown): FlowStoreService | null => {
     if (!Array.isArray(lv)) return null;
-    for (let i = 0; i < lv.length; i++) {
-      if (isLService(lv[i])) return lv[i] as FlowStoreService;
+    for (const cand of lv) {
+      if (isLService(cand)) return cand as FlowStoreService;
     }
     return null;
   };
-
   const findAPInLView = (lv: unknown): FlowStoreService | null => {
     if (!Array.isArray(lv)) return null;
-    for (let i = 0; i < lv.length; i++) {
-      const cand = lv[i];
+    for (const cand of lv) {
       if (isAPService(cand)) return cand;
       if (cand && typeof cand === "object" && !(cand instanceof Node)) {
         for (const prop of ["Eu", "oa", "ka"]) {
@@ -558,11 +502,9 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     }
     return null;
   };
-
   const findUOInLView = (lv: unknown): FlowStoreService | null => {
     if (!Array.isArray(lv)) return null;
-    for (let i = 0; i < lv.length; i++) {
-      const cand = lv[i];
+    for (const cand of lv) {
       if (isUOService(cand)) return cand;
       if (cand && typeof cand === "object" && !(cand instanceof Node)) {
         for (const prop of ["ma", "ya", "Hoa", "oa"]) {
@@ -573,13 +515,32 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     }
     return null;
   };
+  const findQTInLView = (lv: unknown): FlowStoreService | null => {
+    const hit = discoverQueryTileServiceInLView(lv, projectId);
+    if (!hit) return null;
+    return {
+      _qt: hit,
+      ha: { ka: () => readRowsFromQueryTileService(hit.tilesService, hit.queryClient, hit.rows, projectId) },
+    };
+  };
 
-  const findAnyInLView = (lv: unknown): FlowStoreService | null =>
-    findInLView(lv) || findAPInLView(lv) || findUOInLView(lv);
+  const matchers = [findInLView, findAPInLView, findUOInLView, findQTInLView];
+  const findAnyInLView = (lv: unknown): FlowStoreService | null => {
+    for (const m of matchers) {
+      const hit = m(lv);
+      if (hit) return hit;
+    }
+    return null;
+  };
 
-  const scanDomNgContexts = (
-    matcher: (lv: unknown) => FlowStoreService | null = findInLView,
-  ): FlowStoreService | null => {
+  /** Verifies that structural store discovery is unambiguous across known Angular view maps. */
+  const isAmbiguousAcrossMaps = (maps: Iterable<unknown>): boolean => {
+    if (!projectId) return false;
+    const outcome = discoverProjectStoreCandidates([...maps], projectId);
+    return outcome.ambiguousInner || outcome.candidates.length > 1;
+  };
+
+  const scanDomNgContexts = (matcher: (lv: unknown) => FlowStoreService | null): FlowStoreService | null => {
     const matchWithParents = (el: Element): FlowStoreService | null => {
       let p: NgLView | null = resolveLView(el);
       for (let d = 0; d < 6 && Array.isArray(p); d++) {
@@ -594,22 +555,18 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     );
     for (const el of roots) {
       let cur: Element | null = el;
-      let steps = 0;
-      while (cur && steps < 12) {
+      for (let steps = 0; cur && steps < 12; steps++) {
         const hit = matchWithParents(cur);
         if (hit) return hit;
         cur = cur.parentElement;
-        steps++;
       }
     }
     const allEls = document.querySelectorAll("*");
     const limit = Math.min(allEls.length, 600);
     for (let i = 0; i < limit; i++) {
       const lv = resolveLView(allEls[i]);
-      if (lv) {
-        const hit = matcher(lv);
-        if (hit) return hit;
-      }
+      const hit = lv ? matcher(lv) : null;
+      if (hit) return hit;
     }
     return null;
   };
@@ -623,30 +580,32 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
         ),
       );
       const visible = all.filter((el) => el.getClientRects().length > 0);
-      const targets = (visible.length > 0 ? visible : all).slice(0, 12);
-      await hoverProbe(targets, 30);
+      await hoverProbe((visible.length > 0 ? visible : all).slice(0, 12), 30);
     });
   };
 
-  let found: FlowStoreService | null =
-    scanDomNgContexts(findInLView) ||
-    scanDomNgContexts(findAPInLView) ||
-    scanDomNgContexts(findUOInLView);
+  let found: FlowStoreService | null = null;
+  for (const matcher of matchers) {
+    found = scanDomNgContexts(matcher);
+    if (found) break;
+  }
   if (found) {
     await probeLViewMapHover();
+    if (runtimeState.ngLViewMap && isAmbiguousAcrossMaps([runtimeState.ngLViewMap])) {
+      clearStore();
+      return { bound: false, newlyDiscovered: false };
+    }
     installHandle(found);
     return { bound: true, newlyDiscovered: true };
   }
 
   const allSeenMaps = new Set<Map<unknown, unknown>>();
-
   const scanMaps = (maps: Set<Map<unknown, unknown>>): FlowStoreService | null => {
     for (const m of maps) {
-      if (!(runtimeState.ngLViewMap instanceof Map) && isNgLViewMap(m)) {
-        runtimeState.ngLViewMap = m;
-      }
+      if (!(runtimeState.ngLViewMap instanceof Map) && isNgLViewMap(m)) runtimeState.ngLViewMap = m;
     }
-    for (const matcher of [findInLView, findAPInLView, findUOInLView]) {
+    if (isAmbiguousAcrossMaps(maps)) return null;
+    for (const matcher of matchers) {
       for (const m of maps) {
         try {
           for (const v of m.values()) {
@@ -661,20 +620,14 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     return null;
   };
 
-  const captureWithMapHook = async (
-    runAsync: () => Promise<void>,
-  ): Promise<FlowStoreService | null> => {
+  const captureWithMapHook = async (runAsync: () => Promise<void>): Promise<FlowStoreService | null> => {
     const origSet = Map.prototype.set;
     const origGet = Map.prototype.get;
     const seenMaps = new Set<Map<unknown, unknown>>();
     const seenLViews: NgLView[] = [];
     let directFound: FlowStoreService | null = null;
     try {
-      Map.prototype.set = function (
-        this: Map<unknown, unknown>,
-        k: unknown,
-        v: unknown,
-      ): Map<unknown, unknown> {
+      Map.prototype.set = function (this: Map<unknown, unknown>, k: unknown, v: unknown): Map<unknown, unknown> {
         seenMaps.add(this);
         allSeenMaps.add(this);
         if (typeof k === "number" && Array.isArray(v) && v[19] === k) {
@@ -686,19 +639,11 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
         }
         return origSet.call(this, k, v);
       };
-      Map.prototype.get = function (
-        this: Map<unknown, unknown>,
-        k: unknown,
-      ): unknown {
+      Map.prototype.get = function (this: Map<unknown, unknown>, k: unknown): unknown {
         seenMaps.add(this);
         allSeenMaps.add(this);
         const v: unknown = origGet.call(this, k);
-        if (
-          !(runtimeState.ngLViewMap instanceof Map) &&
-          typeof k === "number" &&
-          Array.isArray(v) &&
-          v[19] === k
-        ) {
+        if (!(runtimeState.ngLViewMap instanceof Map) && typeof k === "number" && Array.isArray(v) && v[19] === k) {
           runtimeState.ngLViewMap = this as unknown as Map<number, NgLView>;
         }
         return v;
@@ -708,8 +653,9 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
       Map.prototype.set = origSet;
       Map.prototype.get = origGet;
     }
+    if (isAmbiguousAcrossMaps(allSeenMaps)) return null;
     if (directFound) return directFound;
-    for (const matcher of [findInLView, findAPInLView, findUOInLView]) {
+    for (const matcher of matchers) {
       for (const lv of seenLViews) {
         const hit = matcher(lv);
         if (hit) return hit;
@@ -717,6 +663,19 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     }
     return scanMaps(seenMaps);
   };
+
+  if (!found && runtimeState.ngLViewMap instanceof Map) {
+    found = scanMaps(new Set([runtimeState.ngLViewMap]));
+  }
+  const routeKey = `${location.pathname}?${location.search}`;
+  if (
+    !found &&
+    document.readyState === "complete" &&
+    lastInvasiveMissPath === routeKey &&
+    performance.now() - lastInvasiveMissAt < INVASIVE_PROBE_COOLDOWN_MS
+  ) {
+    return { bound: false, newlyDiscovered: false, cooldownSkipped: true };
+  }
 
   const probeSelectors = [
     "flow-project-page", "flow-project-shell", "flow-character-edit-page",
@@ -736,9 +695,7 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
   }
 
   if (!found) {
-    const scroller = document.querySelector(
-      ".page-container, cdk-virtual-scroll-viewport",
-    );
+    const scroller = document.querySelector(".page-container, cdk-virtual-scroll-viewport");
     if (scroller) {
       const prev = scroller.scrollTop;
       found = await captureWithMapHook(async () => {
@@ -757,7 +714,6 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
       }
     }
   }
-
   if (!found) found = scanMaps(allSeenMaps);
 
   if (!found) {
@@ -780,9 +736,7 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     );
     if (charInputs.length > 0) {
       found = await captureWithMapHook(async () => {
-        for (const inp of charInputs) {
-          inp.dispatchEvent(new FocusEvent("blur", { bubbles: false }));
-        }
+        for (const inp of charInputs) inp.dispatchEvent(new FocusEvent("blur", { bubbles: false }));
         await delay(60);
       });
       if (!found) found = scanMaps(allSeenMaps);
@@ -791,15 +745,11 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
 
   if (!found) {
     const findPanelToggle = (): HTMLElement | null => {
-      const btn = Array.from(
-        document.querySelectorAll('button, [role="button"]'),
-      ).find(
+      const btn = Array.from(document.querySelectorAll('button, [role="button"]')).find(
         (b) =>
           b instanceof HTMLElement &&
           b.getClientRects().length > 0 &&
-          /\b(?:collapse|expand)\b/i.test(
-            (b.innerText || b.getAttribute("aria-label") || "").trim(),
-          ),
+          /\b(?:collapse|expand)\b/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()),
       );
       return btn instanceof HTMLElement ? btn : null;
     };
@@ -821,10 +771,17 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     }
   }
 
-  if (found) {
+  if (found && !isAmbiguousAcrossMaps(allSeenMaps)) {
+    lastInvasiveMissPath = "";
     await probeLViewMapHover();
+    if (runtimeState.ngLViewMap && isAmbiguousAcrossMaps([runtimeState.ngLViewMap])) {
+      clearStore();
+      return { bound: false, newlyDiscovered: false };
+    }
     installHandle(found);
     return { bound: true, newlyDiscovered: true };
   }
+  lastInvasiveMissPath = routeKey;
+  lastInvasiveMissAt = performance.now();
   return { bound: false, newlyDiscovered: false };
 }

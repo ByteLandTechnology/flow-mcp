@@ -13,6 +13,7 @@ mod characters;
 mod chrome;
 mod cli;
 mod collections;
+mod collections_ui;
 mod config;
 mod cookies;
 mod db;

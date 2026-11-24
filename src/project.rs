@@ -321,12 +321,14 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
             .call_flow_js("readStoreSnapshot", json!([]))
             .await
             .unwrap_or(Value::Null);
-        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true)
-            && !probe
-            && ensure_flow_store(engine).await.is_ok()
-        {
+        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true) && !probe {
+            let method_args = if ensure_flow_store(engine).await.is_ok() {
+                json!([])
+            } else {
+                json!([true])
+            };
             snap = engine
-                .call_flow_js("readStoreSnapshot", json!([]))
+                .call_flow_js("readStoreSnapshot", method_args)
                 .await
                 .unwrap_or(Value::Null);
         }
@@ -438,6 +440,9 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             }
             return Ok(());
         }
+        if discovery.get("cooldownSkipped").and_then(Value::as_bool) == Some(true) {
+            break;
+        }
         if attempt == 2 && !input_pending {
             let pos = eval_project_nav(engine, "first_tile_center")
                 .await
@@ -490,6 +495,22 @@ async fn build_suffix(engine: &ChromeEngine) -> String {
     }
 }
 
+/// Binds `lService` when available, or permits DOM-backed fallbacks when a `/project/<id>` workspace is open.
+pub(crate) async fn ensure_flow_store_or_dom(engine: &ChromeEngine) -> Result<bool> {
+    match ensure_flow_store(engine).await {
+        Ok(()) => Ok(true),
+        Err(err) if crate::project_store::can_use_ui_fallback(&err) => {
+            let cur = engine.current_url().await.unwrap_or_default();
+            if project_id_from_url(&cur).is_some() {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// Binds the Flow store if needed and returns a JSON snapshot of assets, collections, title, and credits.
 pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
     if engine.has_page().await
@@ -500,7 +521,17 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
     }
     let mut last_err = "store_not_bound".to_string();
     for _ in 0..25 {
-        ensure_flow_store(engine).await?;
+        if let Err(err) = ensure_flow_store(engine).await {
+            if crate::project_store::can_use_ui_fallback(&err)
+                && let Ok(dom_snap) = engine
+                    .call_flow_js("readStoreSnapshot", json!([true]))
+                    .await
+                && dom_snap.get("ok").and_then(|v| v.as_bool()) == Some(true)
+            {
+                return Ok(dom_snap);
+            }
+            return Err(err);
+        }
         let snap = store_loading_result(engine.call_flow_js("readStoreSnapshot", json!([])).await)?;
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             return Ok(snap);
@@ -691,7 +722,7 @@ async fn open_project(
     let project_url = project_workspace_url(&cur, &pid);
     engine.navigate(&project_url).await?;
     tokio::time::sleep(Duration::from_millis(800)).await;
-    ensure_flow_store(engine).await?;
+    let _ = ensure_flow_store_or_dom(engine).await?;
     let snap = read_snapshot(engine).await?;
     Ok(json!({
         "opened": true,
@@ -715,7 +746,7 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
             let _ = open_project(engine, Some(pid), None).await?;
         }
     } else {
-        ensure_flow_store(engine).await?;
+        let _ = ensure_flow_store_or_dom(engine).await?;
     }
     let mut net_rx = engine.subscribe_network().await.ok();
     let res = run_projects_op(engine, json!({ "action": "set_title", "title": trimmed })).await?;

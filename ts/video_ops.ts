@@ -5,9 +5,13 @@
 
 import { createScene, findRouter } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import { inferVideoTrimShape } from "./mutation_shapes";
 import { writePromptBox } from "./prompt_writer";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, VideoOpRequest } from "./types";
+
+/** Maximum wait for `set_video_trim_seconds` store mutation. */
+const VIDEO_TRIM_TIMEOUT_MS = 15_000;
 
 /** Trims video clip timestamps or orchestrates scene-builder video extension. */
 export async function videoOp(req: VideoOpRequest): Promise<unknown> {
@@ -19,6 +23,13 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
   if (action === "trim") {
     if (!(tileMap instanceof Map) || !helper?.mutate) {
       return { ok: false, error: "store_not_bound" };
+    }
+    const trimShape = inferVideoTrimShape();
+    if (!trimShape.ok) {
+      return {
+        ok: false,
+        error: `${trimShape.reason}:${trimShape.check.name}:${trimShape.check.detail}`,
+      };
     }
     const id = String(req?.asset_id || "").trim();
     const tile = tileMap.get(id);
@@ -34,20 +45,32 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     const startSec =
       typeof req.start_seconds === "number" ? req.start_seconds : null;
     const endSec = typeof req.end_seconds === "number" ? req.end_seconds : null;
-    await helper.mutate({
-      type: "single_tile",
-      Xc: String(tile.id ?? id),
-      Uc: String(tile.id ?? id),
-      Ve: {
-        type: "set_video_trim_seconds",
-        mediaId,
-        Cg: startSec,
-        Rf: endSec,
-        Gg: startSec,
-        Wf: endSec,
-      },
-    });
-    await delay(500);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        helper.mutate({
+          type: "single_tile",
+          tileId: String(tile.id ?? id),
+          change: {
+            type: "set_video_trim_seconds",
+            mediaId,
+            startSeconds: startSec,
+            endSeconds: endSec,
+          },
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("video_trim_timeout")), VIDEO_TRIM_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err ?? "video_trim_failed"),
+      };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    await delay(300);
     return {
       ok: true,
       asset_id: id,

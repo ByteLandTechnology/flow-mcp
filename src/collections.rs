@@ -1,25 +1,26 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-//! Collection operations on the active Google Flow project store.
+//! Collection operations on the active Google Flow project store with workspace UI fallbacks.
 
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::collections_ui::{delete_collection_ui, handle_collections_ui, rename_collection_ui};
 use crate::engine::ChromeEngine;
-use crate::project_store::ProjectStoreSession;
+use crate::project_store::{ProjectStoreSession, can_use_ui_fallback};
 
 /// Collection summary in the active Flow project.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FlowCollection {
     /// Collection tile ID.
     pub(crate) id: String,
     /// Collection display name.
     pub(crate) name: String,
     /// Asset count in this collection.
-    count: usize,
+    pub(crate) count: usize,
 }
 
 /// Parameters for `flow_collections`.
@@ -65,16 +66,30 @@ impl ProjectStoreSession<'_> {
         Ok(res.get("collection").and_then(Value::as_bool) == Some(true))
     }
 
-    /// Requests a verified rename for a collection ID.
+    /// Requests a verified rename for a collection ID, falling back to the tile menu on unverified shapes.
     pub(crate) async fn rename(&self, id: &str, name: &str) -> Result<Value> {
-        self.run_collections(json!({ "action": "rename", "id": id, "name": name }))
+        match self
+            .run_collections(json!({ "action": "rename", "id": id, "name": name }))
             .await
+        {
+            Ok(val) => Ok(val),
+            Err(err) if can_use_ui_fallback(&err) => {
+                rename_collection_ui(self.engine(), id, name).await
+            }
+            Err(err) => Err(err),
+        }
     }
 
-    /// Requests deletion of a collection ID through the collection path.
+    /// Requests deletion of a collection ID, falling back to the workspace menu when direct delete is unavailable.
     pub(crate) async fn delete(&self, id: &str) -> Result<Value> {
-        self.run_collections(json!({ "action": "delete", "id": id }))
+        match self
+            .run_collections(json!({ "action": "delete", "id": id }))
             .await
+        {
+            Ok(val) => Ok(val),
+            Err(err) if can_use_ui_fallback(&err) => delete_collection_ui(self.engine(), id).await,
+            Err(err) => Err(err),
+        }
     }
 
     /// Resolves an existing collection or creates and verifies a new one.
@@ -184,12 +199,11 @@ fn move_ids(ids: Option<Vec<String>>, action: &str) -> Result<Vec<String>> {
     })
 }
 
-/// Dispatches the six actions of `flow_collections`.
-pub(crate) async fn handle_collections(
-    engine: &ChromeEngine,
+/// Runs one `flow_collections` action against an open direct store session.
+async fn handle_collections_store(
+    session: &ProjectStoreSession<'_>,
     req: CollectionsParams,
 ) -> Result<Value> {
-    let session = ProjectStoreSession::open(engine).await?;
     match req.action.as_str() {
         "list" => Ok(json!({ "collections": session.list().await? })),
         "create" => {
@@ -205,7 +219,7 @@ pub(crate) async fn handle_collections(
             let to = req.to.context("flow_collections rename requires 'to'")?;
             let to = to.trim();
             anyhow::ensure!(!to.is_empty(), "Target collection name must not be empty");
-            let id = require_collection(&session, &from).await?;
+            let id = require_collection(session, &from).await?;
             let mut result = session.rename(&id, to).await?;
             result["renamed"] = json!(true);
             result["from"] = json!(from);
@@ -231,9 +245,28 @@ pub(crate) async fn handle_collections(
                 .or(req.name)
                 .or(req.from)
                 .context("flow_collections delete requires 'collection', 'name', or 'from'")?;
-            let id = require_collection(&session, &target).await?;
+            let id = require_collection(session, &target).await?;
             session.delete(&id).await
         }
         other => anyhow::bail!("Unknown collections action: {other}"),
+    }
+}
+
+/// Dispatches the six actions of `flow_collections`, falling back to workspace UI when direct store access is unavailable.
+pub(crate) async fn handle_collections(
+    engine: &ChromeEngine,
+    req: CollectionsParams,
+) -> Result<Value> {
+    match ProjectStoreSession::open(engine).await {
+        Ok(session) => match handle_collections_store(&session, req.clone()).await {
+            Ok(val) => Ok(val),
+            Err(err) if can_use_ui_fallback(&err) => {
+                drop(session);
+                handle_collections_ui(engine, req).await
+            }
+            Err(err) => Err(err),
+        },
+        Err(err) if can_use_ui_fallback(&err) => handle_collections_ui(engine, req).await,
+        Err(err) => Err(err),
     }
 }

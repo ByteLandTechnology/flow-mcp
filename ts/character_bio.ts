@@ -30,21 +30,67 @@ function entityField(message: unknown, field: number): unknown {
     : readOwn(sparse, String(field)) ?? message[field - 1];
 }
 
+/** Extracts personality notes from a candidate character entity with `toJSON` or `toObject`. */
+function readEntityNotes(entity: unknown): string | null {
+  if (!entity || typeof entity !== "object") return null;
+  const serialize = readOwn(entity, "toJSON");
+  if (typeof serialize === "function") {
+    try {
+      // The nested fields are entity_info (4), character_info (3), and personality_notes (3).
+      const info = entityField(entityField(serialize.call(entity), 4), 3);
+      if (Array.isArray(info)) {
+        const notes = entityField(info, 3);
+        if (notes == null) return "";
+        if (typeof notes === "string") return notes;
+      }
+    } catch {
+      // Fall through to toObject check.
+    }
+  }
+  const toObj = readOwn(entity, "toObject");
+  if (typeof toObj === "function") {
+    try {
+      const obj = toObj.call(entity) as unknown;
+      if (Array.isArray(obj) && obj.length >= 4 && (obj[3] == null || typeof obj[3] === "string")) {
+        return obj[3] ?? "";
+      }
+      const charInfo = readOwn(readOwn(obj, "entityInfo"), "characterInfo");
+      const notes = readOwn(charInfo, "personalityNotes");
+      if (typeof notes === "string") return notes;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /** Reads the notes from the character entity. Returns null when the entity cannot be read. */
 export function characterPersonalityNotes(tile: FlowTile): string | null {
-  const entity = readOwn(tile, "Rc");
-  const serialize = readOwn(entity, "toJSON");
-  if (typeof serialize !== "function") return null;
-  try {
-    // The nested fields are entity_info (4), character_info (3), and personality_notes (3).
-    const info = entityField(entityField(serialize.call(entity), 4), 3);
-    if (!Array.isArray(info)) return null;
-    const notes = entityField(info, 3);
-    if (notes == null) return "";
-    return typeof notes === "string" ? notes : null;
-  } catch {
-    return null;
+  if (!tile || typeof tile !== "object") return null;
+  const known = readEntityNotes(readOwn(tile, "Rc"));
+  if (known !== null) return known;
+  const matches = new Set<string>();
+  const inspect = (val: unknown): void => {
+    const extracted = readEntityNotes(val);
+    if (extracted !== null) matches.add(extracted);
+  };
+  for (const key of Object.keys(tile)) {
+    const val = readOwn(tile, key);
+    if (!val || typeof val !== "object" || Array.isArray(val) || val instanceof Map) continue;
+    inspect(val);
+    for (const subKey of Object.keys(val).slice(0, 12)) {
+      const sub = readOwn(val, subKey);
+      if (sub && typeof sub === "object" && !Array.isArray(sub) && !(sub instanceof Map)) {
+        inspect(sub);
+      }
+    }
   }
+  if (matches.size === 1) {
+    const [only] = matches;
+    return only;
+  }
+  if (matches.size > 1) return null;
+  return typeof tile.personalityNotes === "string" ? tile.personalityNotes : null;
 }
 
 /** Returns true for a character that can receive new notes. */

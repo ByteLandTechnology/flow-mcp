@@ -262,6 +262,14 @@ export interface FlowStoreService extends AngularLifecycleHandle {
   _ap?: FlowStoreService & { RC?: { isPending?: () => boolean }; lc?: MutationQueueObj };
   /** Underlying `_uo` store variant. */
   _uo?: FlowStoreService;
+  /** Structurally discovered query-cache tile service descriptor. */
+  _qt?: {
+    owner: object;
+    tilesService: object;
+    queryClient: string;
+    rows: string;
+    dispatcher: string;
+  };
   /** Tile map getter or inner signal container. */
   ka?: (() => Map<string, FlowTile> | null | undefined) | MutationQueueObj;
   /** Nested signal container or mutator. */
@@ -450,6 +458,8 @@ export interface DiscoverStoreResult {
   bound: boolean;
   /** True when this call discovered a fresh store handle. */
   newlyDiscovered: boolean;
+  /** True when invasive DOM probing was skipped within the route cooldown window. */
+  cooldownSkipped?: boolean;
 }
 
 /** Asset entry normalized for `readStoreSnapshot`. */
@@ -611,6 +621,8 @@ export interface CharacterOpRequest {
   character_id?: string | null;
   /** Character display name. */
   name?: string | null;
+  /** Character personality notes written through the character editor textarea. */
+  bio?: string | null;
   /** Optional voice name triggering editor navigation after create. */
   voice?: string | null;
   /** Optional project reference asset IDs triggering editor navigation after create. */
@@ -661,14 +673,6 @@ export interface CharacterExtraOpRequest {
   voice_name?: string | null;
 }
 
-/** Viewport click point computed in browser coordinates. */
-export interface ViewportPoint {
-  /** Horizontal viewport pixel coordinate. */
-  x: number;
-  /** Vertical viewport pixel coordinate. */
-  y: number;
-}
-
 /** Viewport coordinates of a control center. */
 export interface ViewportPoint {
   /** Horizontal viewport coordinate in CSS pixels. */
@@ -687,10 +691,16 @@ export interface LocatePointRequest {
 
 /** Request for `tileDomOp`. */
 export interface TileDomOpRequest {
-  /** `locate`, `state`, `view`, `open_view`, `text_select`, `text_value`, or `dismiss`. */
+  /** `locate`, `state`, `view`, `open_view`, `text_point`, `text_select`, `text_value`, `create_collection_ui`, `move_collection_menu`, or `dismiss`. */
   action: string;
   /** Store tile ID for `locate` and `state`, or the collection ID for `open_view` (empty for the main grid). */
   id?: string;
+  /** Optional control selector (`tile`, `item`, or `title`) for text input actions. */
+  control?: string;
+  /** Optional display or collection name for `create_collection_ui`, `move_collection_menu`, or `title` control actions. */
+  name?: string;
+  /** Optional target collection ID for `move_collection_menu` (empty string moves out to main grid). */
+  target_id?: string;
 }
 
 /** One check of the store probe. */
@@ -735,12 +745,14 @@ export interface FlowMcpRuntime {
   agentStatus: typeof import("./agent_chat").agentStatus;
   /** Binds the Agent services of the project page. */
   bindAgent: typeof import("./agent_chat").bindAgent;
+  /** Binds the Agent workspace panel in UI fallback mode. */
+  agentUiBind: typeof import("./agent_chat").agentUiBind;
   /** Probes Google Flow authentication shell status. */
   checkAuth: () => AuthCheckResult;
   /** Discovers Angular Ivy store services and binds module state. */
   discoverStore: () => Promise<DiscoverStoreResult>;
-  /** Reads normalized assets, collections, title, and credits from bound store. */
-  readStoreSnapshot: () => StoreSnapshotResult;
+  /** Reads normalized assets, collections, title, and credits from bound store or DOM fallback. */
+  readStoreSnapshot: (allowDomFallback?: boolean) => StoreSnapshotResult;
   /** Navigates Google Flow home, project tiles, and sub-routes. */
   projectNav: (action: string) => Promise<unknown>;
   /** Lists, renames, or deletes Google Flow projects on home or workspace pages. */

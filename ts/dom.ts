@@ -31,6 +31,22 @@ function hasDimensions(d: { width?: number; height?: number } | undefined): bool
 /** Media status values of the Flow front end. */
 const MEDIA_STATUSES = new Set(["success", "pending", "scheduled", "failed", "canceled"]);
 
+/** Optional reader returning an inferred trashed boolean property name on FlowTile. */
+let trashedFieldReader: (() => string | null) | null = null;
+
+/** Registers a reader for an inferred trashed field name so `isTrashedTile` checks it. */
+export function registerTrashedFieldReader(reader: () => string | null): void {
+  trashedFieldReader = reader;
+}
+
+/** Returns the first own string field on `m` that holds an HTTP, blob, or data URL. */
+function findMediaUrlField(m: object): string | undefined {
+  for (const [, v] of ownEntries(m)) {
+    if (typeof v === "string" && /^(?:https?:\/\/|blob:|data:)/i.test(v)) return v;
+  }
+  return undefined;
+}
+
 /** Returns the own enumerable values of `o` with their keys. */
 function ownEntries(o: object): Array<[string, unknown]> {
   return Object.entries(o as Record<string, unknown>);
@@ -71,6 +87,8 @@ export function legacyMedia<T extends FlowMediaPayload | null | undefined>(m: T)
         ? raw.Cf
         : undefined;
   const created = [m.hc, m.kc, raw.lc].find((v) => v instanceof Date) as Date | undefined;
+  const fallbackUrl =
+    m.Wb ?? m.fifeUrl ?? m.imageUrl ?? m.videoUrl ?? m.mediaUrl ?? m.url ?? m.Bd ?? findMediaUrlField(m);
   return {
     ...m,
     Zc: m.Zc ?? m.od ?? findStatus(m),
@@ -78,17 +96,26 @@ export function legacyMedia<T extends FlowMediaPayload | null | undefined>(m: T)
     nf: m.nf ?? m.Bf,
     Lf: m.Lf ?? duration,
     hc: m.hc ?? created,
+    ...(fallbackUrl && !m.url && !m.Wb && !m.fifeUrl && !m.videoUrl && !m.Bd ? { url: fallbackUrl } : {}),
   };
 }
 
-/** Returns the field of tile `t` that holds its media payload: an object with a string `id` and a string `workflowId`. The key name changes with each front-end build. */
+/** Returns the field of tile `t` that holds its media payload: an object with a string `id` and workflow or media metadata. */
 function findMediaContainer(t: object): FlowMediaPayload | undefined {
+  const secondary: FlowMediaPayload[] = [];
   for (const [, v] of ownEntries(t)) {
     if (!v || typeof v !== "object" || Array.isArray(v) || v instanceof Map || v instanceof Date) continue;
     const c = v as { id?: unknown; workflowId?: unknown };
     if (typeof c.id === "string" && typeof c.workflowId === "string") return v as FlowMediaPayload;
+    if (
+      typeof c.id === "string" &&
+      c.id.length > 0 &&
+      (findStatus(v) !== undefined || findMediaUrlField(v) !== undefined)
+    ) {
+      secondary.push(v as FlowMediaPayload);
+    }
   }
-  return undefined;
+  return secondary.length === 1 ? secondary[0] : undefined;
 }
 
 /** Returns `t` with `Fb` set to its media payload under the old field names and `hc` set to its date. It finds the media payload by shape, because the key name changes with each front-end build. */
@@ -134,8 +161,17 @@ export function collectionIdOf(
 
 /** Returns true when the project store marks the tile as trashed. */
 export function isTrashedTile(t: FlowTile): boolean {
-  return t.trashed === true || t.isTrashed === true || t.Cb === true ||
-    t.yb === true || t.Ab === true;
+  if (
+    t.trashed === true ||
+    t.isTrashed === true ||
+    t.Cb === true ||
+    t.yb === true ||
+    t.Ab === true
+  ) {
+    return true;
+  }
+  const inferred = trashedFieldReader?.();
+  return Boolean(inferred && (t as Record<string, unknown>)[inferred] === true);
 }
 
 /** Returns the look map of character tile `t`, or null. It accepts the old `oi` field, or any other `Map` field whose entries hold a `primaryMediaId` or a `history`, because the key name changes with each front-end build. */

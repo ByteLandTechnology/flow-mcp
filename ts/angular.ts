@@ -4,7 +4,7 @@
 // Shared Angular Ivy LView traversal, router lookup, and scene creation helpers.
 
 import { delay, elText, fifeBase } from "./dom";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { inferCreateSceneShape } from "./mutation_shapes";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
@@ -210,13 +210,19 @@ export function findRouter(): AngularRouter | null {
 }
 
 /** Maximum time to confirm scene creation and the initial clip load. */
-const SCENE_CREATE_TIMEOUT_MS = 30_000;
+const SCENE_CREATE_TIMEOUT_MS = 15_000;
 
 /** Reads the ID from a native scene creation result. */
 function readSceneId(scene: unknown): string | undefined {
   if (typeof scene === "string" && scene) return scene;
+  if (!scene || typeof scene !== "object") return undefined;
   const id = readOwn(scene, "id");
-  return typeof id === "string" && id ? id : undefined;
+  if (typeof id === "string" && id) return id;
+  for (const key of Object.keys(scene)) {
+    const nestedId = readOwn(readOwn(scene, key), "id");
+    if (typeof nestedId === "string" && nestedId) return nestedId;
+  }
+  return undefined;
 }
 
 /** Returns the IDs of the confirmed scenes in the store. */
@@ -231,28 +237,39 @@ export async function createScene(
   getMap: () => Map<string, FlowTile> | null | undefined,
   workflowIds: string[],
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const shape = inferCreateSceneShape();
+  if (!shape.ok) {
+    return {
+      ok: false,
+      error: `${shape.reason}:${shape.check.name}:${shape.check.detail}`,
+    };
+  }
   const before = new Set(sceneIds(getMap()));
-  const resultField = frontendBuild(readBuildLabel())?.projectStore.mutations?.sceneCreated ?? "VWa";
+  const resultField = shape.format.sceneCreated;
   let confirmedId: string | undefined;
   let failure: string | undefined;
   const completion = {
-    resolve: (scene: unknown) => { confirmedId ??= readSceneId(scene); },
+    resolve: (scene: unknown) => {
+      confirmedId ??= readSceneId(scene);
+    },
     reject: (error: unknown) => {
       failure ??= error instanceof Error ? error.message : String(error ?? "create_scene_failed");
     },
   };
   const deadline = performance.now() + SCENE_CREATE_TIMEOUT_MS;
-  void Promise.resolve().then(() => helper.mutate({
-    type: "create_scene",
-    rg: workflowIds,
-    Fc: undefined,
-    wc: undefined,
-    aspectRatio: 1,
-    De: completion,
-    ve: completion,
-  })).then((response) => {
-    completion.resolve(readOwn(response, resultField));
-  }, completion.reject);
+  void Promise.resolve()
+    .then(() =>
+      helper.mutate({
+        type: "create_scene",
+        workflows: workflowIds,
+        aspectRatio: 1,
+        completion,
+      }),
+    )
+    .then((response) => {
+      const fromField = resultField ? readOwn(response, resultField) : undefined;
+      completion.resolve(fromField ?? response);
+    }, completion.reject);
 
   while (performance.now() < deadline) {
     if (confirmedId) return { ok: true, id: confirmedId };

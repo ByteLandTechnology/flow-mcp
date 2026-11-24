@@ -3,8 +3,8 @@
 
 //! Prepares local file paths and uploads media to Flow.
 //!
-//! Project uploads use the browser runtime in the active project. Menu uploads intercept the
-//! file chooser and assign files to the input that Flow creates.
+//! Project uploads use the browser runtime in the active project when supported, and fall back
+//! to the workspace upload menu or file chooser when direct upload services are unavailable.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -13,7 +13,8 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use crate::engine::{ChromeEngine, validate_local_files};
-use crate::project_store::ProjectStoreSession;
+use crate::project::ensure_flow_store_or_dom;
+use crate::project_store::{ProjectStoreSession, can_use_ui_fallback};
 
 /// Menu button that adds ingredients to the prompt box.
 pub(crate) const PROMPT_INGREDIENTS_MENU: &str = "Add ingredients to the prompt box";
@@ -38,28 +39,121 @@ pub(crate) async fn local_upload_paths(files: &[String], label: &str) -> Result<
     Ok(paths)
 }
 
-/// Uploads files to the pinned project and returns the saved assets.
-pub(crate) async fn upload_project_files(engine: &ChromeEngine, files: &[String]) -> Result<Value> {
-    let project = ProjectStoreSession::open(engine).await?;
-    let has_video = files.iter().any(|file| {
+/// Returns true when any file path in `files` has a video MIME type.
+fn contains_video_file(files: &[String]) -> bool {
+    files.iter().any(|file| {
         mime_guess::from_path(file)
             .first()
             .is_some_and(|mime| mime.type_() == mime_guess::mime::VIDEO)
-    });
-    if has_video && eval_value(engine, "document.hidden").await? == Value::Bool(true) {
+    })
+}
+
+/// Uploads files to the pinned project and returns the saved assets, falling back to UI upload on unsupported builds.
+pub(crate) async fn upload_project_files(engine: &ChromeEngine, files: &[String]) -> Result<Value> {
+    if contains_video_file(files)
+        && eval_value(engine, "document.hidden")
+            .await
+            .unwrap_or(Value::Null)
+            == Value::Bool(true)
+    {
         // Chrome can leave a video in the loading state while its tab is hidden.
         engine.cdp_call("Page.bringToFront", json!({})).await?;
     }
-    engine
-        .upload_files_to("window.__flowMcp.stageMediaFiles()", files)
-        .await?;
-    project
-        .call(
-            "projectUpload",
-            json!(files.len()),
-            Some("upload local media"),
-        )
+    match ProjectStoreSession::open(engine).await {
+        Ok(project) => {
+            engine
+                .upload_files_to("window.__flowMcp.stageMediaFiles()", files)
+                .await?;
+            match project
+                .call(
+                    "projectUpload",
+                    json!(files.len()),
+                    Some("upload local media"),
+                )
+                .await
+            {
+                Ok(val) => Ok(val),
+                Err(err) if can_use_ui_fallback(&err) => {
+                    drop(project);
+                    upload_project_files_ui(engine, files).await
+                }
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) if can_use_ui_fallback(&err) => upload_project_files_ui(engine, files).await,
+        Err(err) => Err(err),
+    }
+}
+
+/// Uploads local images and videos through the workspace menu or file input and waits for new assets.
+async fn upload_project_files_ui(engine: &ChromeEngine, files: &[String]) -> Result<Value> {
+    ensure_flow_store_or_dom(engine).await?;
+    let before_snap = crate::assets::list_assets_with_project(engine).await?;
+    let project_id = before_snap.project_id;
+    let before: HashSet<String> = before_snap.assets.into_iter().map(|a| a.id).collect();
+
+    if upload_through_menu(engine, LIBRARY_MEDIA_MENU, LIBRARY_UPLOAD_ITEM, files)
         .await
+        .is_err()
+    {
+        let cap = engine
+            .call_flow_js("uploadUiAction", json!(["capture_project_file_input"]))
+            .await?;
+        let selector = if cap.as_bool() == Some(true) {
+            r#"input[type="file"][data-flow-mcp-upload="project"]"#
+        } else {
+            cap.get("selector")
+                .and_then(Value::as_str)
+                .context("Could not find a workspace upload button or file input")?
+        };
+        engine
+            .upload_files(selector, files)
+            .await
+            .context("Failed to assign files to the workspace upload input")?;
+    }
+
+    let mut matched = Vec::new();
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        let _ = engine
+            .call_flow_js("uploadUiAction", json!(["accept_consent"]))
+            .await;
+        let snap = engine
+            .call_flow_js("readStoreSnapshot", json!([true]))
+            .await?;
+        let Some(raw_assets) = snap.get("assets").and_then(Value::as_array) else {
+            continue;
+        };
+        matched = raw_assets
+            .iter()
+            .filter(|a| {
+                let id = a.get("id").and_then(Value::as_str).unwrap_or("");
+                let kind = a.get("kind").and_then(Value::as_str).unwrap_or("");
+                !id.is_empty() && !before.contains(id) && matches!(kind, "image" | "video")
+            })
+            .map(|a| {
+                json!({
+                    "id": a.get("id"),
+                    "primary_media_id": a.get("primary_media_id"),
+                    "name": a.get("name"),
+                    "kind": a.get("kind"),
+                })
+            })
+            .collect();
+        if matched.len() >= files.len() {
+            return Ok(json!({
+                "project_id": project_id,
+                "count": matched.len(),
+                "assets": matched,
+                "method": "ui:upload",
+            }));
+        }
+    }
+    anyhow::bail!(
+        "outcome_unknown (project upload UI): observed {} of {} uploaded assets within 60 seconds",
+        matched.len(),
+        files.len()
+    )
 }
 
 /// Script that keeps the next file input that the page clicks in `window.__fmUploadInput`.
@@ -104,7 +198,26 @@ async fn click_when_visible(engine: &ChromeEngine, by: &str, name: &str) -> Resu
     anyhow::bail!("{} is not visible", name)
 }
 
-/// Clicks `menu` and its `upload <item>` entry, and assigns `files` to the file input that the page opens.
+/// Clicks an upload menu entry matching either `upload <item>` or `<item>`.
+async fn click_upload_menu_entry(engine: &ChromeEngine, item: &str) -> Result<()> {
+    let prefixed = format!("upload {item}");
+    for _ in 0..20 {
+        for spec in [
+            json!([{ "by": "text", "name": prefixed }]),
+            json!([{ "by": "menuitem", "name": item }]),
+            json!([{ "by": "text", "name": item }]),
+        ] {
+            let point = engine.call_flow_js("locatePoint", spec).await?;
+            if engine.click_point(&point).await? {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    anyhow::bail!("{} is not visible", item)
+}
+
+/// Clicks `menu` and its upload entry, and assigns `files` to the file input that the page opens.
 async fn upload_steps(
     engine: &ChromeEngine,
     menu: &str,
@@ -113,7 +226,7 @@ async fn upload_steps(
 ) -> Result<()> {
     click_when_visible(engine, "aria-label", menu).await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    click_when_visible(engine, "text", &format!("upload {item}")).await?;
+    click_upload_menu_entry(engine, item).await?;
     let mut opened = false;
     for _ in 0..30 {
         let v = eval_value(engine, "!!window.__fmUploadInput").await?;

@@ -5,16 +5,16 @@
 
 import type { LocatePointRequest, ViewportPoint } from "./types";
 
-/** Returns true when `el` is rendered. */
+/** Returns true when `el` is rendered in the viewport. */
 function isRendered(el: Element): boolean {
-  return (el as HTMLElement).offsetParent !== null;
+  return el.getClientRects().length > 0;
 }
 
 /** Returns the visible control that matches `req`, or null. */
 function findControl(req: LocatePointRequest): Element | null {
   if (req.by === "aria-label") {
     return (
-      Array.from(document.querySelectorAll("button")).find(
+      Array.from(document.querySelectorAll('button, [role="button"], [role="menuitem"]')).find(
         (b) => b.getAttribute("aria-label") === req.name && isRendered(b),
       ) ?? null
     );
@@ -32,9 +32,20 @@ function findControl(req: LocatePointRequest): Element | null {
       }) ?? null
     );
   }
+  const dialogs = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      'mat-dialog-container, [role="alertdialog"], [role="dialog"]',
+    ),
+  ).filter(isRendered);
+  for (const dialog of dialogs) {
+    const inDialog = Array.from(
+      dialog.querySelectorAll<HTMLElement>('button, [role="button"], [role="menuitem"]'),
+    ).find((e) => isRendered(e) && textOf(e) === want);
+    if (inDialog) return inDialog;
+  }
   return (
     Array.from(
-      document.querySelectorAll<HTMLElement>('[role="menuitem"], button'),
+      document.querySelectorAll<HTMLElement>('[role="menuitem"], button, [role="button"]'),
     ).find((e) => isRendered(e) && textOf(e) === want) ?? null
   );
 }

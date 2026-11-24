@@ -3,18 +3,21 @@
 
 // Read all project tiles, scene clips, and collections from the bound store map.
 
+import { readOwn, resolveLView } from "./angular";
 import { characterPersonalityNotes } from "./character_bio";
 import { sceneContents } from "./scene_tiles";
 
 import {
   characterLooksOf,
   collectionIdOf,
+  elText,
   fifeEnv as getFifeEnv,
   isTrashedTile,
   legacyMedia,
   legacyTile,
 } from "./dom";
 import { clearStore, runtimeState } from "./state";
+import { isComponentDestroyed } from "./store_shapes";
 import type {
   FlowMediaPayload,
   FlowTile,
@@ -45,28 +48,214 @@ function normalizeVoiceVal(v: unknown): string | null {
   return String(v);
 }
 
+/** Reads rendered tiles and collections directly from the workspace DOM when no JS store is bound. */
+function readDomWorkspaceSnapshot(projectId: string | null): StoreSnapshotResult {
+  if (!projectId) return { ok: false, error: "store_not_bound" };
+  const workspace = document.querySelector(
+    "flow-project-page, flow-project-shell, flow-grid-tile-container, flow-character-edit-page",
+  );
+  if (!workspace) return { ok: false, error: "store_not_bound" };
+
+  const cols = new Map<string, string>();
+  const counts = new Map<string, number>();
+  const assets: SnapshotAssetItem[] = [];
+  const seenIds = new Set<string>();
+  const activeColId = /\/collection\/([^/?#]+)/.exec(location.pathname || "")?.[1] ?? null;
+  if (activeColId) {
+    const colHeader = document.querySelector(
+      '[data-collection-title], .collection-title, input[aria-label="Collection name"], input[aria-label="Editable text"]',
+    );
+    const colName = colHeader
+      ? ((colHeader as HTMLInputElement).value || elText(colHeader)).trim()
+      : activeColId;
+    cols.set(activeColId, colName);
+    counts.set(activeColId, 0);
+  }
+
+  const readLViewTile = (container: Element): { id: string; name: string; type: string } | null => {
+    const nodes = [container, ...Array.from(container.querySelectorAll("*")).slice(0, 8)];
+    for (const node of nodes) {
+      const lv = resolveLView(node);
+      if (!Array.isArray(lv)) continue;
+      for (const slot of lv) {
+        if (!slot || typeof slot !== "object" || slot instanceof Node || Array.isArray(slot)) continue;
+        const id = readOwn(slot, "id");
+        const type = readOwn(slot, "type");
+        if (typeof id === "string" && id && typeof type === "string" && type) {
+          const disp = readOwn(slot, "displayName") ?? readOwn(slot, "name") ?? "";
+          return { id, name: typeof disp === "string" ? disp : "", type: type.toUpperCase() };
+        }
+      }
+    }
+    return null;
+  };
+
+  for (const container of document.querySelectorAll("flow-grid-tile-container")) {
+    const lvTile = readLViewTile(container);
+    const hostId =
+      container.getAttribute("data-tile-id") ||
+      container.getAttribute("data-id") ||
+      container.querySelector("[data-tile-id]")?.getAttribute("data-tile-id") ||
+      "";
+    const colLink = container.querySelector<HTMLAnchorElement>('a[href*="/collection/"]');
+    const charLink = container.querySelector<HTMLAnchorElement>('a[href*="/character/"]');
+    const sceneLink = container.querySelector<HTMLAnchorElement>('a[href*="/scene/"]');
+    const editLink = container.querySelector<HTMLAnchorElement>('a[href*="/edit/"]');
+    const mediaEl = container.querySelector("[data-media-id]");
+    const routeColId = colLink ? /\/collection\/([^/?#]+)/.exec(colLink.getAttribute("href") || "")?.[1] : null;
+    const routeCharId = charLink ? /\/character\/([^/?#]+)/.exec(charLink.getAttribute("href") || "")?.[1] : null;
+    const routeSceneId = sceneLink ? /\/scene\/([^/?#]+)/.exec(sceneLink.getAttribute("href") || "")?.[1] : null;
+    const routeEditId = editLink ? /\/edit\/([^/?#]+)/.exec(editLink.getAttribute("href") || "")?.[1] : null;
+    const rawKind = (
+      container.getAttribute("data-tile-kind") ||
+      container.getAttribute("data-kind") ||
+      ""
+    ).toLowerCase();
+    const isFolder =
+      rawKind === "collection" ||
+      lvTile?.type === "COLLECTION" ||
+      container.classList.contains("collection-tile") ||
+      Boolean(routeColId) ||
+      Boolean(container.querySelector('flow-collection-tile, [data-tile-type="COLLECTION"], .collection-folder'));
+
+    const id =
+      hostId ||
+      (isFolder ? container.getAttribute("data-collection-id") || "" : "") ||
+      routeColId ||
+      routeCharId ||
+      routeSceneId ||
+      routeEditId ||
+      mediaEl?.getAttribute("data-media-id") ||
+      lvTile?.id ||
+      "";
+    if (!id || seenIds.has(id)) continue;
+    seenIds.add(id);
+
+    const titleNode = container.querySelector(
+      ".asset-title, .tile-title, [data-tile-title], .collection-name, h3, h4",
+    );
+    const name = (
+      (titleNode ? elText(titleNode) : "") ||
+      container.getAttribute("data-tile-name") ||
+      container.getAttribute("aria-label") ||
+      lvTile?.name ||
+      ""
+    ).trim();
+
+    if (isFolder) {
+      cols.set(id, name);
+      const countAttr = Number.parseInt(container.getAttribute("data-collection-count") || "", 10);
+      if (!counts.has(id)) counts.set(id, Number.isFinite(countAttr) ? countAttr : 0);
+      continue;
+    }
+
+    const videoEl = container.querySelector<HTMLVideoElement>("video[src]");
+    const imgEl = container.querySelector<HTMLImageElement>("img[src]");
+    const lvKind =
+      lvTile?.type === "CHARACTER" || lvTile?.type === "ENTITY"
+        ? "character"
+        : lvTile?.type === "SCENE"
+          ? "scene"
+          : lvTile?.type === "VIDEO"
+            ? "video"
+            : lvTile?.type === "IMAGE"
+              ? "image"
+              : "";
+    const kind =
+      rawKind === "video" || rawKind === "image" || rawKind === "character" || rawKind === "scene"
+        ? rawKind
+        : lvKind ||
+          (routeCharId || container.classList.contains("character-tile")
+            ? "character"
+            : routeSceneId
+              ? "scene"
+              : videoEl
+                ? "video"
+                : "image");
+    const url = videoEl?.getAttribute("src") || imgEl?.getAttribute("src") || null;
+    const parentCol =
+      container.getAttribute("data-collection-id") || activeColId || null;
+    if (parentCol) counts.set(parentCol, (counts.get(parentCol) ?? 0) + 1);
+    const bioAttr =
+      container.getAttribute("data-personality-notes") ||
+      container.getAttribute("data-bio") ||
+      null;
+
+    assets.push({
+      id,
+      name,
+      kind,
+      prompt: container.getAttribute("data-prompt") || null,
+      url,
+      collection_id: parentCol,
+      collection_name: parentCol ? (cols.get(parentCol) ?? null) : null,
+      primary_media_id: mediaEl?.getAttribute("data-media-id") || null,
+      personality_notes: bioAttr,
+      voice: container.getAttribute("data-voice") || null,
+      trim_start_seconds: null,
+      trim_end_seconds: null,
+      media_status: "success",
+      media_error: null,
+      width: null,
+      height: null,
+      duration: null,
+      created_at: null,
+    });
+  }
+
+  for (const asset of assets) {
+    if (asset.collection_id && !asset.collection_name) {
+      asset.collection_name = cols.get(asset.collection_id) ?? null;
+    }
+  }
+  const collections: SnapshotCollectionItem[] = [...cols.entries()].map(([cid, cname]) => ({
+    id: cid,
+    name: cname,
+    count: counts.get(cid) ?? 0,
+  }));
+
+  const titleEl = document.querySelector(
+    'input[aria-label="Editable text"], .editable-text-input, [data-testid="project-title"]',
+  );
+  const rawTitle = titleEl
+    ? ((titleEl as HTMLInputElement).value || titleEl.textContent || "").trim()
+    : "";
+  const docTitle = (document.title || "")
+    .replace(/\s*[-–|]\s*(?:Google\s*)?Flow\s*$/i, "")
+    .trim();
+
+  return {
+    ok: true,
+    projectId,
+    projectTitle: rawTitle || docTitle || null,
+    credits: null,
+    assets,
+    collections,
+  };
+}
+
 /** Reads project tiles, scenes, characters, and collections from bound runtime state. */
-export function readStoreSnapshot(): StoreSnapshotResult {
+export function readStoreSnapshot(allowDomFallback = false): StoreSnapshotResult {
   const match = /\/project\/([^/?#]+)/.exec(location.pathname || "");
   const projectId = match ? match[1] : null;
   const helper = runtimeState.store;
   const l = runtimeState.lService;
-  if (
-    (helper || l) &&
-    (runtimeState.routePath !== location.pathname ||
-      l?.Ca?.Va ||
-      l?._ap?.Ca?.Va ||
-      l?.ha?.Ca?.Va)
-  ) {
+  const storeDestroyed = Boolean(
+    l &&
+      (isComponentDestroyed(l) ||
+        (l._ap ? isComponentDestroyed(l._ap) : false) ||
+        (l._qt ? isComponentDestroyed(l._qt.owner) : false)),
+  );
+  if ((helper || l) && (runtimeState.routePath !== location.pathname || storeDestroyed)) {
     clearStore();
-    return { ok: false, error: "route_changed" };
+    if (!allowDomFallback) return { ok: false, error: "route_changed" };
   }
   if (typeof helper?.isReady === "function" && !helper.isReady()) {
-    return { ok: false, error: "store_loading" };
+    return allowDomFallback ? readDomWorkspaceSnapshot(projectId) : { ok: false, error: "store_loading" };
   }
   const tileMap = helper?.getTileMap?.();
   if (!(tileMap instanceof Map)) {
-    return { ok: false, error: "store_not_bound" };
+    return allowDomFallback ? readDomWorkspaceSnapshot(projectId) : { ok: false, error: "store_not_bound" };
   }
   if (
     projectId &&

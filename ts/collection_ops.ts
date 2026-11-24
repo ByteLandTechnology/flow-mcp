@@ -3,7 +3,7 @@
 
 // Read and change collections in the active project without page controls.
 
-import { isTrashedTile, parentCollectionId } from "./dom";
+import { collectionIdOf, isTrashedTile } from "./dom";
 import { readBuildLabel } from "./frontend_builds";
 import type { CollectionWriteFormat } from "./frontend_builds";
 import { collectionWriteCompatibility } from "./frontend_compatibility";
@@ -62,6 +62,11 @@ function movable(tile: FlowTile | undefined): tile is FlowTile {
   return available(tile) && supportsMove(tile);
 }
 
+/** Reads the parent collection ID of `tile` by known fields or live collection ID reference. */
+function tileParentId(tile: FlowTile, tiles: Map<string, FlowTile>): string | null {
+  return collectionIdOf(tile, (cid) => tiles.get(cid)?.type === "COLLECTION");
+}
+
 /** Lists the active collections and counts the asset tiles in each collection. */
 function summarize(tiles: Map<string, FlowTile>): SnapshotCollectionItem[] {
   const collections = new Map<string, SnapshotCollectionItem>();
@@ -73,7 +78,7 @@ function summarize(tiles: Map<string, FlowTile>): SnapshotCollectionItem[] {
   for (const tile of tiles.values()) {
     if (isTrashedTile(tile) || tile.type === "COLLECTION" ||
         (tile.type === "SCENE" && tile.isPending)) continue;
-    const id = parentCollectionId(tile);
+    const id = tileParentId(tile, tiles);
     const parent = id === null ? undefined : collections.get(id);
     if (parent) parent.count++;
   }
@@ -119,7 +124,7 @@ async function create(writer: CollectionWriter, id: string, name: string): Promi
   // This build sets the server-side name to "Untitled collection" on creation.
   const created = await mutateAndVerify(writer.store, { type: "create_collection", id }, (tiles) => {
     const tile = tiles.get(id);
-    return available(tile) && tile.type === "COLLECTION" && parentCollectionId(tile) === null;
+    return available(tile) && tile.type === "COLLECTION" && tileParentId(tile, tiles) === null;
   });
   if (!created) return outcomeUnknown(writer.store, "create_collection", [id]);
 
@@ -148,7 +153,7 @@ async function move(
   }
   if (!found.length) return { ok: false, error: "no_matching_assets", missing };
 
-  const moving = found.filter((tile) => parentCollectionId(tile) !== target);
+  const moving = found.filter((tile) => tileParentId(tile, tiles) !== target);
   const after = moving.length === 0 ? tiles : await mutateAndVerify(
     store,
     moveRequest(format, target, moving),
@@ -159,7 +164,7 @@ async function move(
       }
       return found.every((asset) => {
         const tile = typeof asset.id === "string" ? fresh.get(asset.id) : undefined;
-        return available(tile) && tile.type === asset.type && parentCollectionId(tile) === target;
+        return available(tile) && tile.type === asset.type && tileParentId(tile, fresh) === target;
       });
     },
   );
@@ -183,7 +188,7 @@ function moveRequest(format: CollectionWriteFormat, target: string | null, tiles
 
 /** Returns each direct member of a collection. */
 function collectionMembers(tiles: Map<string, FlowTile>, id: string) {
-  return [...tiles.values()].filter((tile) => parentCollectionId(tile) === id);
+  return [...tiles.values()].filter((tile) => tileParentId(tile, tiles) === id);
 }
 
 /** Moves the members and confirms an empty collection before it sends the deletion. */
@@ -197,7 +202,7 @@ async function deleteCollection({ store, format }: CollectionWriter, id: string)
   if (!available(collection) || collection.type !== "COLLECTION") {
     return { ok: false, error: "collection_not_found", id };
   }
-  const parent = parentCollectionId(collection);
+  const parent = tileParentId(collection, tiles);
   if (parent !== null && (parent === id || !available(tiles.get(parent)) || tiles.get(parent)?.type !== "COLLECTION")) {
     return { ok: false, error: "collection_parent_unavailable", id };
   }
@@ -209,7 +214,7 @@ async function deleteCollection({ store, format }: CollectionWriter, id: string)
   const moved = members.length ? await mutateAndVerify(store, moveRequest(format, parent, members), (fresh) =>
     ids.every((memberId) => {
       const member = fresh.get(memberId);
-      return member !== undefined && parentCollectionId(member) === parent;
+      return member !== undefined && tileParentId(member, fresh) === parent;
     })) : tiles;
   if (!moved) return outcomeUnknown(store, "move_collection_members", ids, parent);
   if (collectionMembers(moved, id).length) {

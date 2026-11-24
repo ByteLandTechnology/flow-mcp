@@ -7,7 +7,9 @@ import { isNgLViewMap, readOwn } from "./angular";
 import { delay } from "./dom";
 import { projectStoreFormats } from "./frontend_builds";
 import type { ProjectStoreFormat } from "./frontend_builds";
+import { registerBoundDispatcherReader } from "./mutation_shapes";
 import { runtimeState } from "./state";
+import { discoverProjectStoreCandidates } from "./store_shapes";
 import type { FlowTile, NgLView, StoreProbeCheck } from "./types";
 
 /** A Flow query for the tiles of one project. */
@@ -69,7 +71,14 @@ function isProjectKey(key: unknown, projectId: string): boolean {
 
 /** Indexes a complete result by tile ID. */
 function tileMap(data: unknown, field: string): Map<string, FlowTile> | null {
-  const rows = readOwn(data, field);
+  const rows =
+    field === "__self__"
+      ? data
+      : field === "__map__"
+        ? data instanceof Map
+          ? [...data.values()]
+          : null
+        : readOwn(data, field);
   if (!Array.isArray(rows)) return null;
   const tiles = new Map<string, FlowTile>();
   for (const tile of rows) {
@@ -112,36 +121,48 @@ export function bindProjectStore(maps: unknown[], projectId: string): ReturnType
     const storeClass = readOwn(frontEnd, format.storeClass);
     return typeof storeClass === "function" ? [{ format, storeClass }] : [];
   });
-  if (!layouts.length) {
-    return { ok: false, error: "collection_store_not_bound" };
-  }
 
   const seen = new Set<object>();
   const candidates: Array<{ store: ProjectStore; views: Map<number, NgLView> }> = [];
-  const consider = (value: unknown, views: Map<number, NgLView>): void => {
-    if (!value || typeof value !== "object" || seen.has(value)) return;
-    seen.add(value);
-    for (const { storeClass, format } of layouts) {
-      if (!(value instanceof storeClass)) continue;
-      const candidate = { projectId, service: value, format };
-      if (readProjectStore(candidate)) {
-        candidates.push({ store: candidate, views });
-        break;
+  if (layouts.length > 0) {
+    const consider = (value: unknown, views: Map<number, NgLView>): void => {
+      if (!value || typeof value !== "object" || seen.has(value)) return;
+      seen.add(value);
+      for (const { storeClass, format } of layouts) {
+        if (!(value instanceof storeClass)) continue;
+        const candidate = { projectId, service: value, format };
+        if (readProjectStore(candidate)) {
+          candidates.push({ store: candidate, views });
+          break;
+        }
+      }
+    };
+
+    for (const map of maps) {
+      if (!isNgLViewMap(map)) continue;
+      for (const view of map.values()) {
+        if (!Array.isArray(view)) continue;
+        for (const slot of view) {
+          consider(slot, map);
+          if (!slot || typeof slot !== "object") continue;
+          for (const key of Object.keys(slot).slice(0, 30)) {
+            consider(Object.getOwnPropertyDescriptor(slot, key)?.value, map);
+          }
+        }
       }
     }
-  };
+  }
 
-  for (const map of maps) {
-    if (!isNgLViewMap(map)) continue;
-    for (const view of map.values()) {
-      if (!Array.isArray(view)) continue;
-      for (const slot of view) {
-        consider(slot, map);
-        // The project shell holds the store in its component instance.
-        if (!slot || typeof slot !== "object") continue;
-        for (const key of ["ha", "Eu", "oa", "ka", "fh"]) {
-          consider(Object.getOwnPropertyDescriptor(slot, key)?.value, map);
-        }
+  if (candidates.length === 0) {
+    const discovered = discoverProjectStoreCandidates(maps, projectId);
+    if (discovered.ambiguousInner || discovered.candidates.length > 1) {
+      boundStore = null;
+      return { ok: false, error: "ambiguous_collection_store" };
+    }
+    for (const item of discovered.candidates) {
+      const candidate = { projectId: item.projectId, service: item.service, format: item.format };
+      if (readProjectStore(candidate)) {
+        candidates.push({ store: candidate, views: item.views });
       }
     }
   }
@@ -170,8 +191,19 @@ export function projectWriteChecks(scope: "collection" | "project"): StoreProbeC
 
 /** Returns the dispatcher of the tile service. */
 function storeDispatcher({ service, format }: ProjectStore): unknown {
-  return readOwn(readOwn(service, format.tilesService), format.dispatcher);
+  return format.dispatcher ? readOwn(readOwn(service, format.tilesService), format.dispatcher) : undefined;
 }
+
+registerBoundDispatcherReader(() => {
+  const store = boundStore && isCurrent(boundStore) ? boundStore : null;
+  const tilesService =
+    store ? ((readOwn(store.service, store.format.tilesService) as object | null) ?? null) : null;
+  return {
+    service: store?.service ?? null,
+    tilesService,
+    dispatcher: store ? storeDispatcher(store) : undefined,
+  };
+});
 
 /** Sends one mutation to the server with the bound project ID. */
 async function submitProjectMutation(

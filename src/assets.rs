@@ -14,12 +14,16 @@ use std::collections::HashMap;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Duration, Instant};
 
+use crate::characters::{exit_character_editor, open_character_editor};
 use crate::collections::{FlowCollection, find_collection};
+use crate::collections_ui::{delete_collection_ui, is_collection_ui, rename_collection_ui};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
-use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
-use crate::project_store::ProjectStoreSession;
+use crate::project::{
+    ensure_flow_store_or_dom, is_flow_mutation_rpc_ok, project_id_from_url, read_snapshot,
+};
+use crate::project_store::{ProjectStoreSession, can_use_ui_fallback};
 use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu};
 
 /// Maximum number of URL lookups that can run at the same time.
@@ -383,34 +387,78 @@ fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
         })
 }
 
-/// Renames collections through the collection store and other tiles through the page or store.
+/// Renames a character tile by opening the character editor page and updating its display name.
+async fn rename_character_via_editor(
+    engine: &ChromeEngine,
+    character_id: &str,
+    name: &str,
+) -> Result<bool> {
+    let cur_url = engine.current_url().await.unwrap_or_default();
+    let Some(pid) = project_id_from_url(&cur_url) else {
+        return Ok(false);
+    };
+    open_character_editor(engine, &cur_url, &pid, character_id).await?;
+    let res = engine
+        .call_flow_async(
+            "characterOp",
+            json!([{
+                "action": "update",
+                "character_id": character_id,
+                "name": name,
+            }]),
+        )
+        .await;
+    exit_character_editor(engine, Some(&pid)).await;
+    Ok(res?.get("ok").and_then(Value::as_bool) == Some(true))
+}
+
+/// Renames collections through the collection store or UI, and other tiles through the page or store.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
-    let collections = ProjectStoreSession::open(engine).await?;
+    let collections = match ProjectStoreSession::open(engine).await {
+        Ok(session) => Some(session),
+        Err(err) if can_use_ui_fallback(&err) => None,
+        Err(err) => return Err(err),
+    };
+    let initial_snap = read_snapshot(engine).await.ok();
     let total = items.len();
     let mut renamed = Vec::new();
     let mut failed = Vec::new();
-    let mut asset_store_ready = false;
+    let mut store_bound = false;
+    let mut store_checked = false;
 
     'items: for (idx, entry) in items.into_iter().enumerate() {
-        match collections.is_collection(&entry.id).await {
-            Ok(false) => {}
-            Ok(true) => {
-                match collections.rename(&entry.id, &entry.name).await {
-                    Ok(result) => renamed.push(json!({
-                        "id": entry.id, "name": entry.name, "method": result["method"]
-                    })),
-                    Err(err) => failed.push(rename_error(&entry, &err)),
+        let is_col = if let Some(session) = &collections {
+            match session.is_collection(&entry.id).await {
+                Ok(flag) => flag,
+                Err(err) if can_use_ui_fallback(&err) => {
+                    is_collection_ui(engine, &entry.id).await.unwrap_or(false)
                 }
-                continue 'items;
+                Err(err) => {
+                    failed.push(rename_error(&entry, &err));
+                    continue 'items;
+                }
             }
-            Err(err) => {
-                failed.push(rename_error(&entry, &err));
-                continue 'items;
+        } else {
+            is_collection_ui(engine, &entry.id).await.unwrap_or(false)
+        };
+        if is_col {
+            let res = if let Some(session) = &collections {
+                session.rename(&entry.id, &entry.name).await
+            } else {
+                rename_collection_ui(engine, &entry.id, &entry.name).await
+            };
+            match res {
+                Ok(result) => renamed.push(json!({
+                    "id": entry.id, "name": entry.name, "method": result["method"]
+                })),
+                Err(err) => failed.push(rename_error(&entry, &err)),
             }
+            continue 'items;
         }
-        if !asset_store_ready {
-            ensure_flow_store(engine).await?;
-            asset_store_ready = true;
+
+        if !store_checked {
+            store_bound = ensure_flow_store_or_dom(engine).await?;
+            store_checked = true;
         }
         // Use the rename control of the page first. The page then builds its own mutation.
         if tile_state(engine, &entry.id).await.is_present()
@@ -425,6 +473,38 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
             }
             continue 'items;
         }
+
+        let is_character = initial_snap
+            .as_ref()
+            .and_then(|s| s.get("assets"))
+            .and_then(Value::as_array)
+            .is_some_and(|arr| {
+                arr.iter().any(|a| {
+                    a.get("id").and_then(Value::as_str) == Some(entry.id.as_str())
+                        && a.get("kind").and_then(Value::as_str) == Some("character")
+                })
+            });
+
+        if !store_bound {
+            if is_character
+                && matches!(
+                    rename_character_via_editor(engine, &entry.id, &entry.name).await,
+                    Ok(true)
+                )
+            {
+                renamed.push(
+                    json!({ "id": entry.id, "name": entry.name, "method": "ui:character_editor" }),
+                );
+            } else {
+                failed.push(json!({
+                    "id": entry.id,
+                    "name": entry.name,
+                    "error": "tile rename menu unavailable and project store not bound",
+                }));
+            }
+            continue 'items;
+        }
+
         let mut ok = false;
         for attempt in 0..2 {
             // Subscribe before calling rename so the listener catches store RPC responses.
@@ -440,6 +520,19 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
                 )
                 .await?;
             if let Some(e) = res.get("err").and_then(|v| v.as_str()) {
+                if is_character
+                    && matches!(
+                        rename_character_via_editor(engine, &entry.id, &entry.name).await,
+                        Ok(true)
+                    )
+                {
+                    renamed.push(json!({
+                        "id": entry.id,
+                        "name": entry.name,
+                        "method": "ui:character_editor",
+                    }));
+                    continue 'items;
+                }
                 failed.push(json!({ "id": entry.id, "name": entry.name, "error": e }));
                 continue 'items;
             }
@@ -514,23 +607,30 @@ fn rename_error(entry: &RenameEntry, err: &anyhow::Error) -> Value {
 /// Moves an asset to trash through the tile menu or the pinned project store.
 async fn invoke_trash_tile(
     engine: &ChromeEngine,
-    session: &ProjectStoreSession<'_>,
+    session: Option<&ProjectStoreSession<'_>>,
     id: &str,
 ) -> Result<Value> {
-    let menu_error =
-        if ensure_flow_store(engine).await.is_ok() && tile_state(engine, id).await.is_present() {
-            match trash_through_menu(engine, id).await {
-                Ok(true) => {
-                    return Ok(
-                        json!({ "ok": true, "method": "menu:move_to_trash", "confirmed": true }),
-                    );
-                }
-                Ok(false) => None,
-                Err(err) => Some(format!("{err:#}")),
+    let menu_error = if ensure_flow_store_or_dom(engine).await.is_ok()
+        && tile_state(engine, id).await.is_present()
+    {
+        match trash_through_menu(engine, id).await {
+            Ok(true) => {
+                return Ok(
+                    json!({ "ok": true, "method": "menu:move_to_trash", "confirmed": true }),
+                );
             }
-        } else {
-            None
-        };
+            Ok(false) => None,
+            Err(err) => Some(format!("{err:#}")),
+        }
+    } else {
+        None
+    };
+    let Some(session) = session else {
+        anyhow::bail!(
+            "Could not move tile '{id}' to trash through the workspace menu{}",
+            menu_error.map(|e| format!(" ({e})")).unwrap_or_default()
+        );
+    };
     let mut result = session
         .call("trashAssetOp", json!(id), Some("trash asset"))
         .await?;
@@ -542,32 +642,69 @@ async fn invoke_trash_tile(
     Ok(result)
 }
 
-/// Moves a matching asset, character, scene, or collection to trash through the Flow store.
+/// Moves a matching asset, character, scene, or collection to trash through the Flow menu or store.
 pub(crate) async fn trash_asset(
     engine: &ChromeEngine,
     db: &FlowDb,
     match_str: &str,
 ) -> Result<Value> {
-    let collections = ProjectStoreSession::open(engine).await?;
+    let collections = match ProjectStoreSession::open(engine).await {
+        Ok(session) => Some(session),
+        Err(err) if can_use_ui_fallback(&err) => None,
+        Err(err) => return Err(err),
+    };
     let query = match_str.trim();
-    if collections.is_collection(query).await? {
-        return collections.delete(query).await;
+    let direct_col = if let Some(session) = &collections {
+        match session.is_collection(query).await {
+            Ok(flag) => flag,
+            Err(err) if can_use_ui_fallback(&err) => is_collection_ui(engine, query).await?,
+            Err(err) => return Err(err),
+        }
+    } else {
+        is_collection_ui(engine, query).await?
+    };
+    if direct_col {
+        return if let Some(session) = &collections {
+            session.delete(query).await
+        } else {
+            delete_collection_ui(engine, query).await
+        };
     }
 
-    let mut tiles = collections
-        .run_collections(json!({ "action": "assets" }))
-        .await?;
-    let assets: Vec<FlowAsset> = serde_json::from_value(tiles["assets"].take())?;
+    let mut tiles = if let Some(session) = &collections {
+        match session.run_collections(json!({ "action": "assets" })).await {
+            Ok(val) => val,
+            Err(err) if can_use_ui_fallback(&err) => read_snapshot(engine).await?,
+            Err(err) => return Err(err),
+        }
+    } else {
+        read_snapshot(engine).await?
+    };
+    let assets: Vec<FlowAsset> = serde_json::from_value(
+        tiles
+            .get_mut("assets")
+            .map(Value::take)
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+    )?;
     let Some(asset) = match_asset(&assets, query, true) else {
-        let summaries: Vec<FlowCollection> = serde_json::from_value(tiles["collections"].take())?;
+        let summaries: Vec<FlowCollection> = serde_json::from_value(
+            tiles
+                .get_mut("collections")
+                .map(Value::take)
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        )?;
         let collection = find_collection(&summaries, query, true)?
             .with_context(|| format!("No asset or collection matches '{query}' for flow_trash"))?;
-        return collections.delete(&collection.id).await;
+        return if let Some(session) = &collections {
+            session.delete(&collection.id).await
+        } else {
+            delete_collection_ui(engine, &collection.id).await
+        };
     };
 
     let id = &asset.id;
     let is_character = asset.kind == "character";
-    let res = invoke_trash_tile(engine, &collections, id)
+    let res = invoke_trash_tile(engine, collections.as_ref(), id)
         .await
         .map_err(|err| anyhow::anyhow!("Failed to trash '{id}': {err:#}"))?;
     if is_character {

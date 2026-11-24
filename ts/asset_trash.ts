@@ -3,7 +3,9 @@
 
 // Move an asset to trash through the active project store.
 
+import { readOwn } from "./angular";
 import { isTrashedTile } from "./dom";
+import { readBuildLabel } from "./frontend_builds";
 import { assetTrashCompatibility } from "./frontend_compatibility";
 import { mutateAndVerify, projectMutationPending, projectsToRefresh, projectStore, readProjectStore, refreshAfterUnknown } from "./project_store";
 import { sceneContents } from "./scene_tiles";
@@ -38,9 +40,22 @@ export async function trashAssetOp(projectId: string, session: string, id: strin
   const { format } = support;
   const tile = tiles.get(id);
   if (tile?.type === "COLLECTION") return { ok: false, error: "collection_path_required" };
-  if (tile && isTrashedTile(tile)) return { ok: true, method: "already_trashed", confirmed: true };
+  if (tile && (isTrashedTile(tile) || readOwn(tile, format.trashed) === true)) {
+    return { ok: true, method: "already_trashed", confirmed: true };
+  }
   if (tile ? tile.isPending || !TRASHABLE_TYPES.has(tile.type ?? "") : !isSceneClip(tiles.values(), id)) {
     return { ok: false, error: "asset_not_found", id };
+  }
+  if (!tile && !format.sceneWorkflows) {
+    return {
+      ok: false,
+      error: "unsupported_front_end",
+      build: readBuildLabel(),
+      operation: "asset_trash_store",
+      failed_checks: [
+        { name: "scene_clip_delete_shape", ok: false, detail: "no verified sceneWorkflows field" },
+      ],
+    };
   }
 
   const payload = tile ? {
@@ -51,7 +66,7 @@ export async function trashAssetOp(projectId: string, session: string, id: strin
   const after = await mutateAndVerify(store, payload, (fresh) => {
     if (!tile) return !isSceneClip(fresh.values(), id);
     const state = fresh.get(id);
-    return !state || isTrashedTile(state);
+    return !state || isTrashedTile(state) || readOwn(state, format.trashed) === true;
   });
   const method = tile ? `batch_set_tiles_trashed:${format.entries}` : "batch_delete_tiles:scene_clip";
   return after

@@ -4,19 +4,12 @@
 // Flow Agent session queries, live turns, and user responses.
 
 import { buildAttachmentMessage } from "./agent_attachments";
+import { agentSettingsUiOp } from "./agent_settings_ui";
+import { agentUiAllocate, agentUiBind, agentUiBound, agentUiBusy, agentUiOp } from "./agent_ui";
 import { MEDIA_UPLOAD_TIMEOUT_MS, takeMediaFiles, waitForMedia } from "./project_upload";
 import type {
-  AgentDecision,
-  AgentRequest,
-  FlowAgentExports,
-  FlowAnswer,
-  LiveTurn,
-  PendingAction,
-  QuestionResponder,
-  ReplyBlock,
-  Session,
-  StoredTurn,
-  Transport,
+  AgentDecision, AgentRequest, FlowAgentExports, FlowAnswer, LiveTurn, PendingAction,
+  QuestionResponder, ReplyBlock, Session, StoredTurn, Transport,
 } from "./agent_protocol";
 import { agentSettingsOp, settingsWritePending } from "./agent_settings";
 import type { AgentInjector } from "./agent_settings";
@@ -59,29 +52,20 @@ const LEGACY_PERMISSION_ID = "legacy-permission";
 const AGENT_SURFACE = "SIDE_PANEL";
 
 /** Permission decisions and the labels that Flow uses in the legacy transport. */
-const PERMISSION_DECISIONS: Partial<
-  Record<AgentDecision, { code: number; label: string }>
-> = {
+const PERMISSION_DECISIONS: Partial<Record<AgentDecision, { code: number; label: string }>> = {
   approve: { code: 1, label: "Approve" },
   approve_and_remember: { code: 2, label: "Always approve" },
   deny: { code: 3, label: "Reject" },
 };
 
 /** Plan decisions that Flow accepts. */
-const PLAN_DECISIONS: Partial<
-  Record<AgentDecision, { aja: number; label: string }>
-> = {
+const PLAN_DECISIONS: Partial<Record<AgentDecision, { aja: number; label: string }>> = {
   run_full_plan: { aja: 1, label: "Run full plan" },
   previz: { aja: 2, label: "Previz" },
 };
 
 /** Phase of a turn before the tool checks for pending actions. */
-type TurnStatus =
-  | "in_progress"
-  | "completed"
-  | "failed"
-  | "stopped"
-  | "unknown";
+type TurnStatus = "in_progress" | "completed" | "failed" | "stopped" | "unknown";
 
 /** Position and phase of a turn in the conversation. */
 interface TurnPosition {
@@ -110,34 +94,31 @@ function namespace(): Record<string, unknown> {
 
 /** Checks that the page route still belongs to the requested project. */
 function onProject(projectId: string): boolean {
-  return (
-    location.pathname.match(/(?:^|\/)project\/([^/]+)\/?$/)?.[1] === projectId
-  );
+  return location.pathname.match(/(?:^|\/)project\/([^/]+)\/?$/)?.[1] === projectId;
 }
 
 /** Returns the binding if the project page is still active. */
 function liveBinding(projectId: string): Binding | undefined {
-  if (!binding || binding.projectId !== projectId || !onProject(projectId))
-    return;
+  if (!binding || binding.projectId !== projectId || !onProject(projectId)) return;
   const { page, format } = binding;
-  const life = Reflect.get(page, format.lifecycle) as
-    | Record<string, unknown>
-    | undefined;
+  const life = Reflect.get(page, format.lifecycle) as Record<string, unknown> | undefined;
   if (life?.[format.destroyed] !== false) return;
   const project = Reflect.get(page, format.project);
-  if (typeof project === "function" && project.call(page) === projectId)
-    return binding;
+  if (typeof project === "function" && project.call(page) === projectId) return binding;
 }
+
+export { agentUiBind };
 
 /** Returns true if the active document has a binding for this project. */
 export function agentBound(projectId: string): boolean {
-  return liveBinding(projectId) !== undefined;
+  return liveBinding(projectId) !== undefined || agentUiBound(projectId);
 }
 
 /** Returns true while a turn uses the live transport. */
 export function agentBusy(projectId: string): boolean {
   const bound = liveBinding(projectId);
-  return Boolean(bound && (bound.transport.ha.size > 0 || settingsWritePending));
+  if (bound) return Boolean(bound.transport.ha.size > 0 || settingsWritePending);
+  return agentUiBusy(projectId);
 }
 
 /** Checks the frontend build and verifies the native Agent exports. */
@@ -225,14 +206,7 @@ export function bindAgent(
       )
         continue;
       binding = {
-        projectId,
-        format,
-        page,
-        injector,
-        transport,
-        questions,
-        permissions,
-        flow,
+        projectId, format, page, injector, transport, questions, permissions, flow,
         canSend: () => composer.wb?.() === true,
         drafts: binding?.page === page ? binding.drafts : new Set(),
       };
@@ -247,7 +221,11 @@ export function bindAgent(
 /** Allocates an ID without submitting a message or changing remote state. */
 export async function agentAllocate(projectId: string) {
   const bound = liveBinding(projectId);
-  if (!bound) return failure("agent_project_changed");
+  if (!bound) {
+    return agentUiBound(projectId)
+      ? agentUiAllocate(projectId)
+      : failure("agent_project_changed");
+  }
   const { id } = await bound.flow.allocate();
   return { ok: true as const, session_id: id };
 }
@@ -780,16 +758,25 @@ export async function agentOp(request: AgentRequest) {
   if (files.length !== (request.file_count ?? 0))
     return failure("agent_attachment_files_unavailable");
   const bound = liveBinding(request.project_id);
-  if (!bound) return failure("agent_project_changed");
+  if (!bound) {
+    if (agentUiBound(request.project_id)) {
+      return agentUiOp(request, files);
+    }
+    return failure("agent_project_changed");
+  }
   const { projectId, transport } = bound;
   if (request.action === "get_settings" || request.action === "update_settings") {
     if (request.action === "update_settings" && transport.ha.size > 0)
       return failure("agent_turn_active");
-    return agentSettingsOp({
+    const nativeSettings = await agentSettingsOp({
       projectId,
       injector: bound.injector,
       isCurrent: () => liveBinding(projectId) === bound,
     }, request.settings ?? undefined);
+    if (!nativeSettings.ok && nativeSettings.error === "unsupported_front_end") {
+      return agentSettingsUiOp(projectId, request.settings ?? undefined);
+    }
+    return nativeSettings;
   }
   const id = request.session_id;
   if (request.action === "list_sessions") {
@@ -806,7 +793,11 @@ export async function agentOp(request: AgentRequest) {
     request.action === "create_session" ||
     request.action === "send_message"
   ) {
-    return sendUserMessage(bound, request, id, files);
+    const sent = await sendUserMessage(bound, request, id, files);
+    if (!sent.ok && sent.error === "unsupported_front_end") {
+      return agentUiOp(request, files);
+    }
+    return sent;
   }
   const session = await getSession(bound, id);
   if (!session) return failure("agent_session_not_found", { session_id: id });

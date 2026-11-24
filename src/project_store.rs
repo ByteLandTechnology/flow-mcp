@@ -46,6 +46,11 @@ impl<'a> ProjectStoreSession<'a> {
         })
     }
 
+    /// Returns the browser engine for this session.
+    pub(crate) fn engine(&self) -> &'a ChromeEngine {
+        self.engine
+    }
+
     /// Returns the active project ID at the time of binding.
     pub(crate) fn project_id(&self) -> &str {
         &self.project_id
@@ -91,4 +96,31 @@ async fn bind_current_store(engine: &ChromeEngine, project_id: &str) -> Result<V
         return engine.bind_project_store(project_id).await;
     }
     Ok(status)
+}
+
+/// Returns true when `err` comes from an unavailable or unverified front-end store shape before any server write.
+pub(crate) fn can_use_ui_fallback(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}");
+    if text.contains("outcome_unknown")
+        || text.contains("Open a Google Flow project")
+        || text.contains("not signed in")
+        || text.contains("No Google Flow project is open")
+    {
+        return false;
+    }
+    [
+        "unsupported_front_end",
+        "collection_store_not_bound",
+        "ambiguous_collection_store",
+        "collection_delete_unavailable",
+        "unverified_mutation_shape",
+        "ambiguous_mutation_shape",
+        "project_upload_page_not_ready",
+        "Failed to find the Flow project store",
+        "The browser did not return the project store session",
+        "store_not_bound",
+        "mutation_unavailable",
+    ]
+    .iter()
+    .any(|code| text.contains(code))
 }

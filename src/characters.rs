@@ -11,16 +11,16 @@ use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
 use crate::assets::{FlowAsset, list_assets_with_project, match_asset, trash_asset};
-use crate::character_bio::{edit_character_bio, set_character_bio};
+use crate::character_bio::{edit_character_bio, open_character_bio_store, set_character_bio};
 use crate::db::FlowDb;
 use crate::download::download_resolved_asset;
 use crate::engine::{ChromeEngine, checked_runtime_result, validate_local_files};
 use crate::generation::inspect_generation_network;
 use crate::project::{
-    ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_subroute_url,
-    project_workspace_url,
+    ensure_flow_store, ensure_flow_store_or_dom, ensure_project_workspace_root,
+    project_id_from_url, project_subroute_url, project_workspace_url,
 };
-use crate::project_store::ProjectStoreSession;
+use crate::project_store::can_use_ui_fallback;
 use crate::queue::{ProgressCallback, SceneParams};
 use crate::voices::{
     VoiceRequest, apply_voice_with_fallback, delete_portrait, list_all_voices, scene_voice,
@@ -393,20 +393,12 @@ pub(crate) async fn create_or_update_character_job(
 
     validate_local_files(scene.refs.as_deref(), "Character reference image").await?;
     ensure_project_workspace_root(engine).await?;
-    ensure_flow_store(engine).await?;
+    ensure_flow_store_or_dom(engine).await?;
     let snap = list_assets_with_project(engine).await?;
     let project_id = snap.project_id.clone();
     let project_title = snap.project_title.clone();
     let mut bio_store = if effective_bio.is_some() {
-        let store = ProjectStoreSession::open(engine).await?;
-        anyhow::ensure!(
-            project_id.as_deref() == Some(store.project_id()),
-            "The active project changed before the character update"
-        );
-        store
-            .call("characterBioOp", json!({ "action": "check" }), None)
-            .await?;
-        Some(store)
+        open_character_bio_store(engine, project_id.as_deref()).await?
     } else {
         None
     };
@@ -450,10 +442,13 @@ pub(crate) async fn create_or_update_character_job(
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("Character creation returned no character ID"))?;
 
+        let mut ui_bio = effective_bio.as_deref();
         if let (Some(store), Some(bio)) = (bio_store.take(), effective_bio.as_deref()) {
-            set_character_bio(&store, &cid, bio).await.map_err(|err| {
-                anyhow::anyhow!("Failed to save personality notes for '{cid}': {err:#}")
-            })?;
+            match set_character_bio(&store, &cid, bio).await {
+                Ok(()) => ui_bio = None,
+                Err(err) if can_use_ui_fallback(&err) => {}
+                Err(err) => anyhow::bail!("Failed to save personality notes for '{cid}': {err:#}"),
+            }
         }
 
         let need_update_on_page = res
@@ -461,7 +456,7 @@ pub(crate) async fn create_or_update_character_job(
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let mut submitted_meta = None;
-        editor_opened = need_update_on_page || has_refs;
+        editor_opened = need_update_on_page || has_refs || ui_bio.is_some();
         if editor_opened {
             let cur_url = engine.current_url().await.unwrap_or_default();
             let fallback_pid = project_id_from_url(&cur_url);
@@ -470,6 +465,14 @@ pub(crate) async fn create_or_update_character_job(
                 .or(fallback_pid.as_deref())
                 .ok_or_else(|| anyhow::anyhow!("Missing project ID for character route"))?;
             open_character_editor(engine, &cur_url, pid, &cid).await?;
+            if let Some(bio) = ui_bio {
+                let _ = engine
+                    .call_flow_async(
+                        "characterOp",
+                        json!([{ "action": "update", "character_id": cid, "bio": bio }]),
+                    )
+                    .await?;
+            }
 
             if need_update_on_page {
                 let media_res = apply_character_page_media(
@@ -518,8 +521,13 @@ pub(crate) async fn create_or_update_character_job(
                 format!("No character matches '{}' in active project", target_query)
             })?;
         on_progress(format!("editing character '{}'", target.name));
+        let mut ui_bio = effective_bio.as_deref();
         if let (Some(store), Some(bio)) = (bio_store.take(), effective_bio.as_deref()) {
-            set_character_bio(&store, &target.id, bio).await?;
+            match set_character_bio(&store, &target.id, bio).await {
+                Ok(()) => ui_bio = None,
+                Err(err) if can_use_ui_fallback(&err) => {}
+                Err(err) => return Err(err),
+            }
         }
         editor_opened = true;
 
@@ -527,6 +535,7 @@ pub(crate) async fn create_or_update_character_job(
             "action": "update",
             "character_id": target.id,
             "name": scene.new_name,
+            "bio": ui_bio,
         });
         let mut res = engine
             .call_flow_async("characterOp", json!([payload.clone()]))

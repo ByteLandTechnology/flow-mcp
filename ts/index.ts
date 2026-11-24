@@ -12,6 +12,7 @@ import {
   agentOp,
   agentPrototype,
   agentStatus,
+  agentUiBind,
   bindAgent,
 } from "./agent_chat";
 import { bindAngularViews } from "./angular";
@@ -63,6 +64,7 @@ if (!window.__flowMcp) {
     agentOp,
     agentPrototype,
     agentStatus,
+    agentUiBind,
     bindAgent,
     bindAngularViews,
     collectionOps,

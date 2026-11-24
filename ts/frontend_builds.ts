@@ -575,6 +575,17 @@ export interface VoiceConfirmationFormat {
   pickerSelection: string;
 }
 
+/** Character preview panel format of build 20261120.00. */
+export const NOVEMBER_20_CHARACTER_PREVIEW: CharacterPreviewFormat = {
+  lifecycle: "Ba",
+  upload: "NV",
+  marker: "hh",
+  portrait: "ka",
+  body: "ma",
+  source: "Gza",
+  busy: "mB",
+};
+
 /** Request formats by exact build label. Include only verified operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
@@ -609,9 +620,7 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
       previewSaved: "MK", pickerSelection: "Qn",
     },
-    characterPreview: {
-      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma", source: "Gza", busy: "mB",
-    },
+    characterPreview: NOVEMBER_20_CHARACTER_PREVIEW,
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
@@ -643,5 +652,5 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
 /** Returns the layouts to check when the runtime binds the active project store. */
 export function projectStoreFormats(): readonly ProjectStoreFormat[] {
   const format = frontendBuild(readBuildLabel())?.projectStore;
-  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE];
+  return format ? [format] : [NOVEMBER_20_STORE, NOVEMBER_18_STORE, NOVEMBER_17_STORE];
 }

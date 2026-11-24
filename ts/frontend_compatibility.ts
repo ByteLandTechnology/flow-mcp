@@ -16,6 +16,13 @@ import type {
 } from "./frontend_builds";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
+import {
+  buildValidatedMutation,
+  inferAssetTrashShape,
+  inferCharacterBioShape,
+  inferCollectionWriteShape,
+  type ShapeValidation,
+} from "./mutation_shapes";
 import { runtimeState } from "./state";
 import type { FlowTile, StoreProbeCheck, StoreProbeResult } from "./types";
 
@@ -36,24 +43,22 @@ interface UnsupportedFrontend {
 /** Result of checking a build and runtime for an operation. */
 type FrontendCompatibility<Format> = { ok: true; format: Format } | UnsupportedFrontend;
 
-/** Adds the native fields used by the general project store. */
+/** Builds a validated mutation payload or throws before any unverified or ambiguous write. */
 export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
-  const format = frontendBuild(readBuildLabel())?.projectStore.mutations;
-  if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
-    if (!format) return { ...payload, We: payload.We ?? payload.Ve, df: payload.df ?? payload.Ve };
-    const change = payload.Ve as Record<string, unknown>;
-    const native = change.type === "set_video_trim_seconds" ? {
-      ...change, [format.trimStart]: change.Cg, [format.trimEnd]: change.Rf,
-    } : change;
-    return { ...payload, [format.tileId]: payload.Xc ?? payload.Uc, [format.tileChange]: native };
-  }
-  if (format && payload.type === "create_scene") {
-    return { ...payload, [format.sceneWorkflows]: payload.rg, [format.sceneCollection]: payload.Fc };
-  }
-  if (format && payload.type === "add_workflows_to_scene") {
-    return { ...payload, [format.sceneId]: payload.Lc, [format.sceneWorkflows]: payload.rg };
-  }
-  return payload;
+  return buildValidatedMutation(payload);
+}
+
+/** Validates a store write operation using both live store checks and inferred mutation shapes. */
+function checkStoreShape<Operation extends "collection_write" | "character_bio" | "asset_trash_store">(
+  operation: Operation,
+  shape: ShapeValidation<FrontendFormats[Operation]>,
+  storeChecks: StoreProbeCheck[],
+): FrontendCompatibility<FrontendFormats[Operation]> {
+  const build = readBuildLabel();
+  const failed = storeChecks.filter(({ ok }) => !ok);
+  if (shape.ok && failed.length === 0) return { ok: true, format: shape.format };
+  if (!shape.ok) failed.unshift(shape.check);
+  return { ok: false, error: "unsupported_front_end", build, operation, failed_checks: failed };
 }
 
 /** Returns the verified format when the build and runtime checks pass. */
@@ -133,17 +138,29 @@ export function projectUploadCompatibility(
 
 /** Returns the collection format for the active project when its checks pass. */
 export function collectionWriteCompatibility(): FrontendCompatibility<CollectionWriteFormat> {
-  return checkOperation("collection_write", readBuildLabel(), projectWriteChecks("collection"));
+  return checkStoreShape(
+    "collection_write",
+    inferCollectionWriteShape(),
+    projectWriteChecks("collection"),
+  );
 }
 
 /** Returns the personality update format when the project store can submit and confirm it. */
 export function characterBioCompatibility(): FrontendCompatibility<CharacterBioFormat> {
-  return checkOperation("character_bio", readBuildLabel(), projectWriteChecks("project"));
+  return checkStoreShape(
+    "character_bio",
+    inferCharacterBioShape(),
+    projectWriteChecks("project"),
+  );
 }
 
 /** Returns the asset trash format when its checks pass. */
 export function assetTrashCompatibility(): FrontendCompatibility<AssetTrashFormat> {
-  return checkOperation("asset_trash_store", readBuildLabel(), projectWriteChecks("project"));
+  return checkStoreShape(
+    "asset_trash_store",
+    inferAssetTrashShape(),
+    projectWriteChecks("project"),
+  );
 }
 
 /** Counts readable image and video tiles in the first 200 tiles. */
@@ -217,8 +234,8 @@ export function probeStore(): StoreProbeResult {
       agent_attachments: operationStatus(agentAttachmentCompatibility()),
       agent_settings: operationStatus(agentSettingsCompatibility()),
       project_upload: operationStatus(projectUploadCompatibility()),
-      collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
-      character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
+      collection_write: operationStatus(collectionWriteCompatibility()),
+      character_bio: operationStatus(characterBioCompatibility()),
       asset_trash_store: operationStatus(assetTrashCompatibility()),
     },
   };

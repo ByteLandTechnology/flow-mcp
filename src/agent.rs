@@ -379,20 +379,36 @@ impl AgentPage {
         self.page.navigate(&route).await?;
         self.project_id.clear();
         let mut last = Value::Null;
-        for _ in 0..BIND_ATTEMPTS {
+        for attempt in 0..BIND_ATTEMPTS {
             if let Ok(status) = self.page.call("agentStatus", json!([project_id])).await {
                 if status["ok"].as_bool() == Some(true) {
                     if self.page.bind_agent(project_id).await? {
                         self.project_id = project_id.to_string();
                         return Ok(());
                     }
+                    if attempt >= 8
+                        && let Ok(ui) = self.page.call("agentUiBind", json!([project_id])).await
+                        && ui["ok"].as_bool() == Some(true)
+                    {
+                        self.project_id = project_id.to_string();
+                        return Ok(());
+                    }
                 } else if status["error"].as_str() == Some("unsupported_front_end") {
-                    checked_runtime_result(status)?;
+                    if let Ok(ui) = self.page.call("agentUiBind", json!([project_id])).await
+                        && ui["ok"].as_bool() == Some(true)
+                    {
+                        self.project_id = project_id.to_string();
+                        return Ok(());
+                    }
+                    last = status;
                 } else {
                     last = status;
                 }
             }
             sleep(BIND_INTERVAL).await;
+        }
+        if last["error"].as_str() == Some("unsupported_front_end") {
+            return checked_runtime_result(last).map(|_| ());
         }
         anyhow::bail!(
             "Cannot open the Flow Agent page. Check Flow sign-in and project access. {last}"

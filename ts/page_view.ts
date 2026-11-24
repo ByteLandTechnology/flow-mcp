@@ -39,11 +39,31 @@ export async function openView(collection: string): Promise<Record<string, unkno
   const want = collection || null;
   if (view.collection === want) return { ok: true, changed: false };
   const router = findRouter();
-  if (!router) return { ok: false, error: "router_not_found" };
-  const commands = want
-    ? ["/project", view.projectId, "collection", want]
-    : ["/project", view.projectId];
-  await router.navigate(commands, { queryParams: { hl: "en" } });
+  const prefix = (location.pathname || "").startsWith("/fx/tools/flow") ? "/fx/tools/flow" : "";
+  if (router) {
+    const commands = want
+      ? ["/project", view.projectId, "collection", want]
+      : ["/project", view.projectId];
+    await router.navigate(commands, { queryParams: { hl: "en" } });
+  } else if (want) {
+    const link = document.querySelector<HTMLElement>(`a[href*="/collection/${CSS.escape(want)}"]`);
+    if (link) {
+      link.click();
+    } else {
+      history.pushState({}, "", `${prefix}/project/${encodeURIComponent(view.projectId)}/collection/${encodeURIComponent(want)}?hl=en`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+  } else {
+    const back = document.querySelector<HTMLElement>(
+      'button[aria-label="Back to project"], button[aria-label="Go back"], a.collection-back-link',
+    );
+    if (back && back.getClientRects().length > 0) {
+      back.click();
+    } else {
+      history.pushState({}, "", `${prefix}/project/${encodeURIComponent(view.projectId)}?hl=en`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+  }
   for (let i = 0; i < 50; i++) {
     await delay(100);
     const now = currentView();
@@ -62,16 +82,55 @@ function isRendered(el: Element): boolean {
   return el.getClientRects().length > 0;
 }
 
-/** Returns the text input of the asset rename control. */
-function renameControl(): HTMLInputElement | null {
+/** Returns the text input of the requested asset or collection rename control. */
+function renameControl(control = "", current = ""): HTMLInputElement | null {
+  if (control === "item") {
+    return (
+      Array.from(
+        document.querySelectorAll<HTMLInputElement>('input[aria-label="Rename item"]'),
+      ).find(isRendered) ?? null
+    );
+  }
+  if (control === "title") {
+    const inputs = Array.from(
+      document.querySelectorAll<HTMLInputElement>('input[aria-label="Editable text"]'),
+    ).filter(isRendered);
+    const active = inputs.find(
+      (e) => e === document.activeElement && e.classList.contains("editing"),
+    );
+    if (active) return active;
+    const named = inputs.filter((e) => e.value === current);
+    return named.length === 1 ? named[0] : null;
+  }
   const host = Array.from(document.querySelectorAll('[aria-label="Rename tile"]')).find(isRendered);
-  const input = host?.querySelector("input");
-  return input instanceof HTMLInputElement ? input : null;
+  const hostInput = host?.querySelector("input");
+  if (hostInput instanceof HTMLInputElement && isRendered(hostInput)) return hostInput;
+  const direct = Array.from(
+    document.querySelectorAll<HTMLInputElement>(
+      'input[aria-label="Rename tile"], input[aria-label="Rename item"], input[aria-label="Collection name"], [role="dialog"] input, flow-grid-tile-container input',
+    ),
+  ).find(isRendered);
+  if (direct) return direct;
+  if (document.activeElement instanceof HTMLInputElement && isRendered(document.activeElement)) {
+    const insideTileOrHeader = document.activeElement.closest(
+      'flow-grid-tile-container, [role="dialog"], .collection-header',
+    );
+    if (insideTileOrHeader) return document.activeElement;
+  }
+  return null;
+}
+
+/** Returns the viewport center of the requested rename control. */
+export function textPoint(control = "", current = ""): Record<string, unknown> {
+  const el = renameControl(control, current);
+  if (!el) return { ok: false, error: "text_control_not_found" };
+  const r = el.getBoundingClientRect();
+  return { ok: true, point: { x: r.x + r.width / 2, y: r.y + r.height / 2 } };
 }
 
 /** Selects the text of the focused rename control. */
-export function selectText(): Record<string, unknown> {
-  const el = renameControl();
+export function selectText(control = "", current = ""): Record<string, unknown> {
+  const el = renameControl(control, current);
   if (!el) return { ok: false, error: "text_control_not_found" };
   const focused = document.activeElement === el;
   if (focused) el.select();
@@ -79,8 +138,8 @@ export function selectText(): Record<string, unknown> {
 }
 
 /** Returns the text in the rename control. */
-export function readText(): Record<string, unknown> {
-  const el = renameControl();
+export function readText(control = "", current = ""): Record<string, unknown> {
+  const el = renameControl(control, current);
   if (!el) return { ok: false, error: "text_control_not_found" };
   return { ok: true, value: el.value };
 }
