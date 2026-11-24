@@ -11,11 +11,9 @@ import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types"
 /** Object with optional Angular Ivy `__ngContext__` or internal `lView` links. */
 export interface NgContextCarrier {
   /** Angular Ivy LView array or registry slot index. */
-  __ngContext__?: number | NgLView;
+  __ngContext__?: number | NgLView | Record<string, unknown>;
   /** Embedded view LView reference. */
   lView?: NgLView;
-  /** Minified LView reference alias. */
-  Pn?: NgLView;
 }
 
 /** Reads an own or prototype property safely without triggering exceptions. */
@@ -75,8 +73,11 @@ export function resolveLView(elOrCtx: unknown): NgLView | null {
       : null;
   }
   if (raw && typeof raw === "object") {
-    const carrier = raw as NgContextCarrier;
-    return carrier.lView || carrier.Pn || null;
+    const lView = readOwn(raw, "lView");
+    if (Array.isArray(lView)) return lView;
+    const contextField = frontendBuild(readBuildLabel())?.projectStore.lContextView;
+    const verifiedView = contextField ? readOwn(raw, contextField) : undefined;
+    return Array.isArray(verifiedView) ? verifiedView : null;
   }
   return null;
 }

@@ -3,7 +3,8 @@
 
 // Check the build and runtime requirements of internal Flow operations.
 
-import { frontendBuild, MEDIA_UPLOAD_EXPORTS, readBuildLabel } from "./frontend_builds";
+import { frontendBuild, MEDIA_UPLOAD_EXPORTS, readBuildLabel, withMutationAliases } from "./frontend_builds";
+export { withMutationAliases };
 import type {
   AgentAttachmentFormat,
   AgentChatFormat,
@@ -16,7 +17,7 @@ import type {
 } from "./frontend_builds";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
-import { runtimeState } from "./state";
+import { clearStore, runtimeState } from "./state";
 import type { FlowTile, StoreProbeCheck, StoreProbeResult } from "./types";
 
 /** Compatibility failure returned before a request is sent. */
@@ -35,26 +36,6 @@ interface UnsupportedFrontend {
 
 /** Result of checking a build and runtime for an operation. */
 type FrontendCompatibility<Format> = { ok: true; format: Format } | UnsupportedFrontend;
-
-/** Adds the native fields used by the general project store. */
-export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
-  const format = frontendBuild(readBuildLabel())?.projectStore.mutations;
-  if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
-    if (!format) return { ...payload, We: payload.We ?? payload.Ve, df: payload.df ?? payload.Ve };
-    const change = payload.Ve as Record<string, unknown>;
-    const native = change.type === "set_video_trim_seconds" ? {
-      ...change, [format.trimStart]: change.Cg, [format.trimEnd]: change.Rf,
-    } : change;
-    return { ...payload, [format.tileId]: payload.Xc ?? payload.Uc, [format.tileChange]: native };
-  }
-  if (format && payload.type === "create_scene") {
-    return { ...payload, [format.sceneWorkflows]: payload.rg, [format.sceneCollection]: payload.Fc };
-  }
-  if (format && payload.type === "add_workflows_to_scene") {
-    return { ...payload, [format.sceneId]: payload.Lc, [format.sceneWorkflows]: payload.rg };
-  }
-  return payload;
-}
 
 /** Returns the verified format when the build and runtime checks pass. */
 function checkOperation<Operation extends keyof FrontendFormats>(
@@ -169,7 +150,9 @@ function tileLayout(tiles: Iterable<FlowTile>): StoreProbeCheck {
 
 /** Checks the bound store and tile layout used by asset trash. */
 function assetTrashChecks(tiles: Map<string, FlowTile> | null | undefined): StoreProbeCheck[] {
-  const store = runtimeState.store;
+  const rawStore = runtimeState.store;
+  const store = rawStore?.isCurrent() ? rawStore : null;
+  if (rawStore && !store) clearStore();
   const checks = [
     { name: "store_bound", ok: Boolean(store), detail: store ? "bound" : "not bound" },
     {
@@ -198,9 +181,21 @@ function operationStatus(result: FrontendCompatibility<unknown>): {
 /** Reports the general store checks and compatibility of each managed operation. */
 export function probeStore(): StoreProbeResult {
   const build = readBuildLabel();
-  const trashChecks = assetTrashChecks(runtimeState.store?.getTileMap());
+  const verified = Boolean(frontendBuild(build)?.projectStore);
+  const liveStore = runtimeState.store?.isCurrent() ? runtimeState.store : null;
+  if (runtimeState.store && !liveStore) clearStore();
+  const trashChecks = assetTrashChecks(liveStore?.getTileMap());
   const views = runtimeState.ngLViewMap;
   const checks = [
+    {
+      name: "verified_build",
+      ok: verified,
+      detail: verified
+        ? "verified"
+        : build === null
+          ? "Build label unavailable"
+          : "Build has no verified store format",
+    },
     {
       name: "lview_registry",
       ok: views instanceof Map,

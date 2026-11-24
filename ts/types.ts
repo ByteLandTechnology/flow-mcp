@@ -238,56 +238,12 @@ export interface FlowTile extends FlowMediaPayload {
   createDate?: string;
 }
 
-/** Mutation signal or queue object inside Angular store services. */
-export interface MutationQueueObj {
-  /** Pending item reader. */
-  ka?: () => { items?: Array<{ mutation?: unknown }> } | null | undefined;
-  /** Async promise mutation runner. */
-  oe?: (payload: Record<string, unknown>) => Promise<unknown>;
-  /** Async mutation helper. */
-  mutateAsync?: (payload: Record<string, unknown>) => Promise<unknown>;
-  /** Queue mutation dispatcher. */
-  mutate?: (payload: Record<string, unknown>) => unknown;
-  /** Signal error accessor. */
-  error?: () => unknown;
-  /** Status stream with `subscribe`. */
-  Ha?: { subscribe?: (cb: (ev: { mutation?: unknown; error?: unknown }) => void) => { unsubscribe?: () => void } };
-  /** Alternate status stream with `subscribe`. */
-  ua?: { subscribe?: (cb: (ev: { mutation?: unknown; error?: unknown }) => void) => { unsubscribe?: () => void } };
-}
-
-/** Resolved Angular project store service instance or wrapper. */
-export interface FlowStoreService extends AngularLifecycleHandle {
-  /** Underlying `_ap` store variant. */
-  _ap?: FlowStoreService & { RC?: { isPending?: () => boolean }; lc?: MutationQueueObj };
-  /** Underlying `_uo` store variant. */
-  _uo?: FlowStoreService;
-  /** Tile map getter or inner signal container. */
-  ka?: (() => Map<string, FlowTile> | null | undefined) | MutationQueueObj;
-  /** Nested signal container or mutator. */
-  ha?: (FlowStoreService & MutationQueueObj) | null;
-  /** Lifecycle controller or mutation runner. */
-  lc?: MutationQueueObj;
-  /** Nested mutation runner. */
-  mutate?: (payload: Record<string, unknown>) => unknown;
-  /** Direct rename method on legacy store services. */
-  RK?: (id: string, displayName: string) => Promise<unknown>;
-  /** Legacy helper signature. */
-  ZA?: (...args: unknown[]) => unknown;
-  /** Optional nested query metadata. */
-  na?: unknown;
-  /** Optional tile fetcher signal. */
-  PG?: (projectId: string | null, payload: Record<string, unknown>) => Promise<unknown>;
-  /** Query key builder on UO stores. */
-  queryKey?: (projectId: string | null) => unknown;
-  /** Query cache handle on UO stores. */
-  ob?: { ha?: (qk: unknown) => { Cb?: FlowTile[] } | null | undefined };
-}
-
 /** Unified project store handle bound into module state. */
 export interface FlowStoreHandle {
   /** Active project identifier extracted from the route. */
   projectId: string | null;
+  /** Returns true when the bound store matches the active route and remains live. */
+  isCurrent: () => boolean;
   /** Returns the current project tile map if available. */
   getTileMap: () => Map<string, FlowTile> | null | undefined;
   /** Returns true when pending store fetches have settled. */
@@ -450,6 +406,8 @@ export interface DiscoverStoreResult {
   bound: boolean;
   /** True when this call discovered a fresh store handle. */
   newlyDiscovered: boolean;
+  /** Optional compatibility or discovery error code. */
+  error?: string;
 }
 
 /** Asset entry normalized for `readStoreSnapshot`. */

@@ -542,7 +542,17 @@ pub(crate) async fn create_or_update_character_job(
                 let _ = ensure_flow_store(engine).await;
             }
             res = engine
-                .call_flow_async("characterOp", json!([payload]))
+                .call_flow_async("characterOp", json!([payload.clone()]))
+                .await?;
+        }
+        for _ in 0..25 {
+            if res.get("error").and_then(Value::as_str) != Some("store_loading") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = ensure_flow_store(engine).await;
+            res = engine
+                .call_flow_async("characterOp", json!([payload.clone()]))
                 .await?;
         }
         if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {

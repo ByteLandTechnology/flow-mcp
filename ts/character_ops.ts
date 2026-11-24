@@ -5,6 +5,7 @@
 
 import { findRouter } from "./angular";
 import { clickButtonByRegex, delay, isVisibleEnabled, setNativeValue } from "./dom";
+import { activeProjectStoreFormat } from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
 import type { CharacterOpRequest } from "./types";
 
@@ -49,13 +50,10 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
         path: location.pathname,
       };
     }
-    if (
-      runtimeState.projectId === pid &&
-      runtimeState.lService &&
-      !runtimeState.lService.Ca?.Va &&
-      !runtimeState.lService._ap?.Ca?.Va
-    ) {
+    if (runtimeState.projectId === pid && helper?.isCurrent()) {
       runtimeState.routePath = location.pathname;
+    } else if (helper && !helper.isCurrent()) {
+      clearStore();
     }
     return { ok: true, spa: true, path: location.pathname };
   }
@@ -90,7 +88,14 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     return { ok: true, closed, in_workspace: inWorkspace };
   }
 
-  const tileMap = getMap();
+  if (!activeProjectStoreFormat()) {
+    clearStore();
+    return { ok: false, error: "unsupported_front_end" };
+  }
+  if (helper && !helper.isCurrent()) {
+    clearStore();
+  }
+  const activeHelper = runtimeState.store;
   const projectMatch = /(\/(?:fx\/tools\/flow\/)?project\/[^/?#]+)/.exec(
     location.pathname || "",
   );
@@ -98,9 +103,16 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
   let charId = req?.character_id ? String(req.character_id).trim() : null;
 
   if (action === "create") {
-    if (!helper?.mutate) {
+    if (!activeHelper) {
+      return { ok: false, error: "store_not_bound" };
+    }
+    if (!activeHelper.isReady()) {
+      return { ok: false, error: "store_loading" };
+    }
+    if (!activeHelper.mutate) {
       return { ok: false, error: "store_mutate_missing" };
     }
+    const tileMap = activeHelper.getTileMap();
     const existingIds = new Set<string>();
     if (tileMap instanceof Map) {
       for (const [k, v] of tileMap.entries()) {
@@ -130,8 +142,9 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     );
 
     const mutatePromise = Promise.resolve(
-      helper.mutate({
+      activeHelper.mutate({
         type: "create_entity",
+        pM: 1,
         A3: 1,
         AW: 1,
         displayName: charName,
@@ -142,8 +155,8 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       }),
     ).then(
       (v) => {
-        const resObj = v as { II?: unknown; MF?: unknown } | null;
-        const created = resObj?.MF ?? resObj?.II;
+        const resObj = v as { NH?: unknown; II?: unknown; MF?: unknown } | null;
+        const created = resObj?.NH ?? resObj?.MF ?? resObj?.II;
         if (created && !resolvedTile) resolvedTile = created;
       },
       (e) => {
@@ -234,6 +247,9 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       }
       return { ok: false, error: "not_in_project_route" };
     }
+    if (activeHelper && !activeHelper.isReady()) {
+      return { ok: false, error: "store_loading" };
+    }
 
     for (let i = 0; i < 50; i++) {
       if (
@@ -258,9 +274,16 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
         applied.push("ui_name");
         await delay(150);
       }
-      if (charId && helper?.rename) {
-        await helper.rename(charId, nameStr);
-        applied.push("store_name");
+      if (charId && activeHelper?.rename) {
+        try {
+          await activeHelper.rename(charId, nameStr);
+          applied.push("store_name");
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err ?? "rename_failed"),
+          };
+        }
       }
     }
 

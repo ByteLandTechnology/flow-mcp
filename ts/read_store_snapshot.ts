@@ -4,6 +4,7 @@
 // Read all project tiles, scene clips, and collections from the bound store map.
 
 import { characterPersonalityNotes } from "./character_bio";
+import { activeProjectStoreFormat } from "./frontend_builds";
 import { sceneContents } from "./scene_tiles";
 
 import {
@@ -47,25 +48,14 @@ function normalizeVoiceVal(v: unknown): string | null {
 
 /** Reads project tiles, scenes, characters, and collections from bound runtime state. */
 export function readStoreSnapshot(): StoreSnapshotResult {
+  if (!activeProjectStoreFormat()) {
+    clearStore();
+    return { ok: false, error: "unsupported_front_end" };
+  }
   const match = /\/project\/([^/?#]+)/.exec(location.pathname || "");
   const projectId = match ? match[1] : null;
   const helper = runtimeState.store;
-  const l = runtimeState.lService;
-  if (
-    (helper || l) &&
-    (runtimeState.routePath !== location.pathname ||
-      l?.Ca?.Va ||
-      l?._ap?.Ca?.Va ||
-      l?.ha?.Ca?.Va)
-  ) {
-    clearStore();
-    return { ok: false, error: "route_changed" };
-  }
-  if (typeof helper?.isReady === "function" && !helper.isReady()) {
-    return { ok: false, error: "store_loading" };
-  }
-  const tileMap = helper?.getTileMap?.();
-  if (!(tileMap instanceof Map)) {
+  if (!helper) {
     return { ok: false, error: "store_not_bound" };
   }
   if (
@@ -75,6 +65,17 @@ export function readStoreSnapshot(): StoreSnapshotResult {
   ) {
     clearStore();
     return { ok: false, error: "project_mismatch" };
+  }
+  if (!helper.isCurrent() || runtimeState.routePath !== location.pathname) {
+    clearStore();
+    return { ok: false, error: "route_changed" };
+  }
+  if (!helper.isReady()) {
+    return { ok: false, error: "store_loading" };
+  }
+  const tileMap = helper.getTileMap();
+  if (!(tileMap instanceof Map)) {
+    return { ok: false, error: "store_not_bound" };
   }
 
   const { assets, collections } = readStoreTiles(tileMap);

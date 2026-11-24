@@ -5,6 +5,7 @@
 
 import { createScene, findRouter } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import { activeProjectStoreFormat } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, VideoOpRequest } from "./types";
@@ -17,7 +18,18 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
   const action = String(req?.action || "").toLowerCase();
 
   if (action === "trim") {
-    if (!(tileMap instanceof Map) || !helper?.mutate) {
+    if (!activeProjectStoreFormat()) {
+      clearStore();
+      return { ok: false, error: "unsupported_front_end" };
+    }
+    if (!helper || !helper.isCurrent()) {
+      if (helper) clearStore();
+      return { ok: false, error: "store_not_bound" };
+    }
+    if (!helper.isReady()) {
+      return { ok: false, error: "store_loading" };
+    }
+    if (!(tileMap instanceof Map) || !helper.mutate) {
       return { ok: false, error: "store_not_bound" };
     }
     const id = String(req?.asset_id || "").trim();
@@ -34,19 +46,26 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     const startSec =
       typeof req.start_seconds === "number" ? req.start_seconds : null;
     const endSec = typeof req.end_seconds === "number" ? req.end_seconds : null;
-    await helper.mutate({
-      type: "single_tile",
-      Xc: String(tile.id ?? id),
-      Uc: String(tile.id ?? id),
-      Ve: {
-        type: "set_video_trim_seconds",
-        mediaId,
-        Cg: startSec,
-        Rf: endSec,
-        Gg: startSec,
-        Wf: endSec,
-      },
-    });
+    try {
+      await helper.mutate({
+        type: "single_tile",
+        Xc: String(tile.id ?? id),
+        Uc: String(tile.id ?? id),
+        Ve: {
+          type: "set_video_trim_seconds",
+          mediaId,
+          Cg: startSec,
+          Rf: endSec,
+          Gg: startSec,
+          Wf: endSec,
+        },
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err ?? "video_trim_failed"),
+      };
+    }
     await delay(500);
     return {
       ok: true,
@@ -61,7 +80,18 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     const id = String(req?.asset_id || "").trim();
     const activeScene = /\/scene\/([^/?#]+)/.exec(location.pathname)?.[1];
     if (!activeScene || (req.scene_id && activeScene !== req.scene_id)) {
-      if (!(tileMap instanceof Map) || !helper?.mutate) {
+      if (!activeProjectStoreFormat()) {
+        clearStore();
+        return { ok: false, error: "unsupported_front_end" };
+      }
+      if (!helper || !helper.isCurrent()) {
+        if (helper) clearStore();
+        return { ok: false, error: "store_not_bound" };
+      }
+      if (!helper.isReady()) {
+        return { ok: false, error: "store_loading" };
+      }
+      if (!(tileMap instanceof Map) || !helper.mutate) {
         return { ok: false, error: "store_not_bound" };
       }
       let sceneId = req?.scene_id ? String(req.scene_id).trim() : null;

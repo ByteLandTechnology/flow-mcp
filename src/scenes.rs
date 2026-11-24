@@ -19,7 +19,7 @@ use crate::engine::ChromeEngine;
 use crate::generation::{collect_created_assets, inspect_generation_network};
 use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_workspace_url,
-    wait_flow_mutation_rpc,
+    read_snapshot, wait_flow_mutation_rpc,
 };
 use crate::queue::ProgressCallback;
 
@@ -77,7 +77,7 @@ pub(crate) async fn handle_scenes(
         }
         "create" => {
             let asset_ids = req.asset_ids.unwrap_or_default();
-            ensure_flow_store(engine).await?;
+            let _ = read_snapshot(engine).await?;
             let payload = json!({
                 "action": "create",
                 "asset_ids": asset_ids,
@@ -100,7 +100,7 @@ pub(crate) async fn handle_scenes(
                 .asset_ids
                 .filter(|v| !v.is_empty())
                 .context("flow_scenes add_clips requires non-empty 'asset_ids'")?;
-            ensure_flow_store(engine).await?;
+            let _ = read_snapshot(engine).await?;
             let payload = json!({
                 "action": "add_clips",
                 "scene_id": scene_id,

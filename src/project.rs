@@ -4,7 +4,7 @@
 //! Google Flow project navigation, session checks, and Angular store discovery.
 //!
 //! Drives the Google Flow Angular SPA inside [`ChromeEngine`] to check session state,
-//! open or create a project workspace, locate the `lService` store, and read asset and
+//! open or create a project workspace, bind the verified project store, and read asset and
 //! collection snapshots.
 
 use anyhow::Result;
@@ -18,7 +18,7 @@ use tokio::time::{Duration, Instant};
 use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
-use crate::project_store::prepare_project_store_status;
+use crate::project_store::{bind_current_store, prepare_project_store_status};
 
 /// Angular error code for a required input that has no value yet.
 const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
@@ -316,19 +316,17 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     let mut assets_count = None;
     let mut collections_count = None;
 
+    if let Some(project_id) = &project_id {
+        prepare_project_store_status(engine, project_id).await;
+    }
+
     if in_project {
         let mut snap = engine
             .call_flow_js("readStoreSnapshot", json!([]))
             .await
             .unwrap_or(Value::Null);
-        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true)
-            && !probe
-            && ensure_flow_store(engine).await.is_ok()
-        {
-            snap = engine
-                .call_flow_js("readStoreSnapshot", json!([]))
-                .await
-                .unwrap_or(Value::Null);
+        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true) && !probe {
+            snap = read_snapshot(engine).await.unwrap_or(Value::Null);
         }
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             if let Some(t) = snap.get("projectTitle").and_then(|v| v.as_str())
@@ -371,9 +369,9 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     }
 }
 
-/// Signs in if needed, opens a `/project/<id>` route, and binds `lService` in runtime state.
+/// Signs in if needed, opens a `/project/<id>` route, and binds the verified project store.
 pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
-    let url = ensure_signed_in_flow_page(engine).await?;
+    let mut url = ensure_signed_in_flow_page(engine).await?;
     let mut navigated = false;
 
     if project_id_from_url(&url).is_none() {
@@ -398,6 +396,7 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
                 );
             }
             if project_id_from_url(&cur).is_some() {
+                url = cur;
                 entered_project = true;
                 navigated = true;
                 let has_workspace = eval_project_nav(engine, "has_workspace")
@@ -418,20 +417,47 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         }
     }
 
+    let Some(project_id) = project_id_from_url(&url) else {
+        anyhow::bail!(
+            "No Google Flow project is open. Call flow_new_project or flow_projects to open or create one first."
+        );
+    };
+
+    let _store_guard = engine.try_lock_project_store();
     let mut input_pending = false;
     for attempt in 0..10 {
+        let active_url = engine.current_url().await.unwrap_or_else(|_| url.clone());
+        let active_project = project_id_from_url(&active_url).unwrap_or_else(|| project_id.clone());
+        let status = store_loading_result(bind_current_store(engine, &active_project).await)?;
+        let status_err = status.get("error").and_then(Value::as_str);
+        if status_err == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
+        if status.get("bound").and_then(Value::as_bool) == Some(true) {
+            if navigated {
+                let _ = engine.save_cookies().await;
+            }
+            return Ok(());
+        }
+        input_pending = status_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
+
         let discovery =
             store_loading_result(engine.call_flow_async("discoverStore", json!([])).await)?;
-        input_pending =
-            discovery.get("error").and_then(Value::as_str) == Some(ANGULAR_REQUIRED_INPUT_ERROR);
-        let bound = discovery
-            .get("bound")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if bound {
+        let discovery_err = discovery.get("error").and_then(Value::as_str);
+        if discovery_err == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
+        input_pending |= discovery_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
+        if discovery.get("bound").and_then(Value::as_bool) == Some(true) {
             let newly_discovered = discovery
                 .get("newlyDiscovered")
-                .and_then(|v| v.as_bool())
+                .and_then(Value::as_bool)
                 .unwrap_or(false);
             if navigated || newly_discovered {
                 let _ = engine.save_cookies().await;
@@ -458,7 +484,7 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         );
     }
     anyhow::bail!(
-        "Failed to find the Flow project store (lService). Open a Flow project first.{}",
+        "Failed to bind the Flow project store. Open a Flow project first.{}",
         build_suffix(engine).await
     )
 }
@@ -494,9 +520,16 @@ async fn build_suffix(engine: &ChromeEngine) -> String {
 pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
     if engine.has_page().await
         && let Ok(snap) = engine.call_flow_js("readStoreSnapshot", json!([])).await
-        && snap.get("ok").and_then(|v| v.as_bool()) == Some(true)
     {
-        return Ok(snap);
+        if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(snap);
+        }
+        if snap.get("error").and_then(Value::as_str) == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
     }
     let mut last_err = "store_not_bound".to_string();
     for _ in 0..25 {
@@ -510,6 +543,12 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
+        if last_err == "unsupported_front_end" {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
         let delay_ms = if matches!(
             last_err.as_str(),
             "store_loading" | ANGULAR_REQUIRED_INPUT_ERROR

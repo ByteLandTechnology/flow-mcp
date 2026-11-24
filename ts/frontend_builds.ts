@@ -222,6 +222,16 @@ export interface ProjectStoreFormat {
   dispatcher: string;
   /** Tile rows in the query result. */
   rows: string;
+  /** Signal query that loads the tiles of the active project. */
+  tileQuery: string;
+  /** Mutation runner on the project store. */
+  mutator: string;
+  /** Error observable on the store mutation queue. */
+  errorStream: string;
+  /** Component slots that hold the injected project store. */
+  componentSlots: readonly string[];
+  /** Angular LView slot on an upgraded LContext wrapper. */
+  lContextView: string;
   /** Field names of a scene tile and its workflow history. */
   scene?: SceneTileFormat;
   /** Native names for mutations that use the general store adapter. */
@@ -266,6 +276,11 @@ const NOVEMBER_17_STORE: ProjectStoreFormat = {
   queryClient: "Xa",
   dispatcher: "VI",
   rows: "Bb",
+  tileQuery: "RC",
+  mutator: "lc",
+  errorStream: "Ha",
+  componentSlots: ["ha", "Eu", "oa", "ka"],
+  lContextView: "Pn",
   scene: { clips: "Tc", history: "tg" },
 };
 
@@ -279,6 +294,11 @@ const NOVEMBER_18_STORE: ProjectStoreFormat = {
   queryClient: "Wa",
   dispatcher: "sJ",
   rows: "Ab",
+  tileQuery: "Ir",
+  mutator: "lc",
+  errorStream: "Da",
+  componentSlots: ["Xg", "ha", "Eu", "oa", "ka"],
+  lContextView: "Pn",
 };
 
 /** Project store format of build 20261120.00. */
@@ -291,6 +311,11 @@ const NOVEMBER_20_STORE: ProjectStoreFormat = {
   queryClient: "Wa",
   dispatcher: "YJ",
   rows: "yb",
+  tileQuery: "rs",
+  mutator: "ld",
+  errorStream: "Da",
+  componentSlots: ["fh", "ha", "Ew", "la", "ka"],
+  lContextView: "zp",
   scene: { clips: "Uc", history: "Cg" },
   mutations: {
     tileId: "Xc", tileChange: "mf", sceneWorkflows: "ng", sceneCollection: "Dc",
@@ -640,8 +665,47 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
   return label === null ? undefined : VERIFIED_BUILDS.get(label);
 }
 
+/** Returns the verified project store layout of the active build, or undefined. */
+export function activeProjectStoreFormat(): ProjectStoreFormat | undefined {
+  return frontendBuild(readBuildLabel())?.projectStore;
+}
+
 /** Returns the layouts to check when the runtime binds the active project store. */
 export function projectStoreFormats(): readonly ProjectStoreFormat[] {
-  const format = frontendBuild(readBuildLabel())?.projectStore;
-  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE];
+  const format = activeProjectStoreFormat();
+  return format ? [format] : [];
+}
+
+/** Adds the native fields used by the verified project store mutator. */
+export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
+  const build = frontendBuild(readBuildLabel());
+  const format = build?.projectStore.mutations;
+  if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
+    const change = payload.Ve as Record<string, unknown>;
+    if (format) {
+      const native = change.type === "set_video_trim_seconds" ? {
+        ...change, [format.trimStart]: change.Cg, [format.trimEnd]: change.Rf,
+      } : change;
+      return { ...payload, [format.tileId]: payload.Xc ?? payload.Uc, [format.tileChange]: native };
+    }
+    const collectionWrite = build?.operations.collection_write;
+    if (collectionWrite) {
+      return {
+        ...payload,
+        [collectionWrite.tileId]: payload.Xc ?? payload.Uc,
+        [collectionWrite.tileChange]: change,
+      };
+    }
+    return payload;
+  }
+  if (format && payload.type === "create_scene") {
+    return { ...payload, [format.sceneWorkflows]: payload.rg, [format.sceneCollection]: payload.Fc };
+  }
+  if (format && payload.type === "add_workflows_to_scene") {
+    return { ...payload, [format.sceneId]: payload.Lc, [format.sceneWorkflows]: payload.rg };
+  }
+  if (format && payload.type === "create_entity") {
+    return { ...payload, pM: payload.pM ?? 1 };
+  }
+  return payload;
 }
