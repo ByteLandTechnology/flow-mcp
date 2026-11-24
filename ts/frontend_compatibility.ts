@@ -79,14 +79,63 @@ function checkOperation<Operation extends keyof FrontendFormats>(
 export function agentChatCompatibility(
   checks: StoreProbeCheck[] = [],
 ): FrontendCompatibility<AgentChatFormat> {
-  return checkOperation("agent_chat", readBuildLabel(), checks);
+  const build = readBuildLabel();
+  const format = frontendBuild(build)?.operations.agent_chat;
+  const namespace = Reflect.get(window, "default_AiSandboxAngularFrontend") ?? {};
+  const exports = format ? [
+    ...Object.entries(format.exports).map(([name, key]) => ({
+      name,
+      ok: name === "errors"
+        ? typeof namespace[key] === "object" && namespace[key] !== null
+        : name === "toolEventGroup"
+          ? Array.isArray(namespace[key])
+          : typeof namespace[key] === "function",
+      detail: "Agent frontend export",
+    })),
+    {
+      name: "agent_page",
+      ok: typeof namespace[format.page] === "function",
+      detail: "Agent project page class",
+    },
+    {
+      name: "agent_composer",
+      ok: typeof namespace[format.composer] === "function",
+      detail: "Agent composer service class",
+    },
+    {
+      name: "agent_permissions",
+      ok: typeof namespace[format.permissions] === "function",
+      detail: "Agent permission service class",
+    },
+    {
+      name: "agent_questions",
+      ok: typeof namespace[format.questions] === "function",
+      detail: "Agent question service class",
+    },
+  ] : [];
+  return checkOperation("agent_chat", build, [...exports, ...checks]);
 }
 
 /** Returns the verified project settings format when its checks pass. */
 export function agentSettingsCompatibility(
   checks: StoreProbeCheck[] = [],
 ): FrontendCompatibility<AgentSettingsFormat> {
-  return checkOperation("agent_settings", readBuildLabel(), checks);
+  const build = readBuildLabel();
+  const format = frontendBuild(build)?.operations.agent_settings;
+  const namespace = Reflect.get(window, "default_AiSandboxAngularFrontend") ?? {};
+  const exports = Object.entries(format?.exports ?? {}).map(([name, key]) => {
+    const value = namespace[key];
+    return {
+      name,
+      ok: name === "modelKey" || name === "videoAspects"
+        ? Array.isArray(value)
+        : name === "aspectLabels" || name === "locale" || name === "updateMethod"
+          ? value !== null && typeof value === "object"
+          : typeof value === "function",
+      detail: "Agent settings frontend export",
+    };
+  });
+  return checkOperation("agent_settings", build, [...exports, ...checks]);
 }
 
 /** Returns the Agent attachment format when the build and runtime checks pass. */
@@ -148,6 +197,8 @@ export function assetTrashCompatibility(): FrontendCompatibility<AssetTrashForma
 
 /** Counts readable image and video tiles in the first 200 tiles. */
 function tileLayout(tiles: Iterable<FlowTile>): StoreProbeCheck {
+  const namespace = Reflect.get(window, "default_AiSandboxAngularFrontend") ?? {};
+  const uploadSource = Reflect.get(namespace, "QE");
   let readable = 0;
   let unreadable = 0;
   let seen = 0;
@@ -156,7 +207,23 @@ function tileLayout(tiles: Iterable<FlowTile>): StoreProbeCheck {
     const kind = String(raw?.type ?? "").toUpperCase();
     if (kind !== "IMAGE" && kind !== "VIDEO") continue;
     const tile = legacyTile(raw);
-    if (tile.Fb && (tile.Fb.Zc !== undefined || pickTileUrl(tile))) readable++;
+    const media = tile.Fb;
+    if (!media) {
+      unreadable++;
+      continue;
+    }
+    const status = typeof media.Zc === "string" ? media.Zc.toLowerCase() : undefined;
+    const incomplete = tile.isPending === true ||
+      status === "pending" ||
+      status === "scheduled" ||
+      status === "failed" ||
+      status === "canceled";
+    const url = pickTileUrl(tile);
+    const isUpload = uploadSource !== undefined && (
+      Reflect.get(media as object, "source") === uploadSource ||
+      Reflect.get(raw as object, "source") === uploadSource
+    );
+    if (incomplete || Boolean(url) || (status === undefined && isUpload)) readable++;
     else unreadable++;
   }
   return {
@@ -195,12 +262,44 @@ function operationStatus(result: FrontendCompatibility<unknown>): {
   return { ok: result.ok, failed_checks: result.ok ? [] : result.failed_checks };
 }
 
+/** Creates the build verification check for the active page. */
+function buildCheck(build: string | null): StoreProbeCheck {
+  const verified = Boolean(frontendBuild(build));
+  return {
+    name: "verified_build",
+    ok: verified,
+    detail: build === null ? "Build label unavailable" : verified ? "verified" : "unverified build",
+  };
+}
+
+/** Reports build compatibility on Flow pages outside an open project. */
+export function probeBuild(): StoreProbeResult {
+  const build = readBuildLabel();
+  const checks = [buildCheck(build)];
+  const operations = {
+    agent_chat: operationStatus(checkOperation("agent_chat", build, [])),
+    agent_attachments: operationStatus(checkOperation("agent_attachments", build, [])),
+    agent_settings: operationStatus(checkOperation("agent_settings", build, [])),
+    project_upload: operationStatus(checkOperation("project_upload", build, [])),
+    collection_write: operationStatus(checkOperation("collection_write", build, [])),
+    character_bio: operationStatus(checkOperation("character_bio", build, [])),
+    asset_trash_store: operationStatus(checkOperation("asset_trash_store", build, [])),
+  };
+  return {
+    build,
+    ok: checks.every(({ ok }) => ok) && Object.values(operations).every(({ ok }) => ok),
+    checks,
+    operations,
+  };
+}
+
 /** Reports the general store checks and compatibility of each managed operation. */
 export function probeStore(): StoreProbeResult {
   const build = readBuildLabel();
   const trashChecks = assetTrashChecks(runtimeState.store?.getTileMap());
   const views = runtimeState.ngLViewMap;
   const checks = [
+    buildCheck(build),
     {
       name: "lview_registry",
       ok: views instanceof Map,
@@ -208,18 +307,19 @@ export function probeStore(): StoreProbeResult {
     },
     ...trashChecks,
   ];
+  const operations = {
+    agent_chat: operationStatus(agentChatCompatibility()),
+    agent_attachments: operationStatus(agentAttachmentCompatibility()),
+    agent_settings: operationStatus(agentSettingsCompatibility()),
+    project_upload: operationStatus(projectUploadCompatibility()),
+    collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
+    character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
+    asset_trash_store: operationStatus(assetTrashCompatibility()),
+  };
   return {
     build,
-    ok: checks.every(({ ok }) => ok),
+    ok: checks.every(({ ok }) => ok) && Object.values(operations).every(({ ok }) => ok),
     checks,
-    operations: {
-      agent_chat: operationStatus(agentChatCompatibility()),
-      agent_attachments: operationStatus(agentAttachmentCompatibility()),
-      agent_settings: operationStatus(agentSettingsCompatibility()),
-      project_upload: operationStatus(projectUploadCompatibility()),
-      collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
-      character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
-      asset_trash_store: operationStatus(assetTrashCompatibility()),
-    },
+    operations,
   };
 }

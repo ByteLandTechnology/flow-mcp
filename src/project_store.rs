@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::time::Duration;
 use tokio::sync::MutexGuard;
 
 use crate::auth::is_signed_in_flow_url;
@@ -75,10 +76,27 @@ impl<'a> ProjectStoreSession<'a> {
     }
 }
 
+/// Maximum attempts to bind the direct project store on a fresh project page.
+const STATUS_BIND_ATTEMPTS: usize = 12;
+
+/// Delay between direct project store bind attempts during status checks.
+const STATUS_BIND_DELAY: Duration = Duration::from_millis(250);
+
 /// Prepares the direct store for a status check without changing the page.
 pub(crate) async fn prepare_project_store_status(engine: &ChromeEngine, project_id: &str) {
-    if let Some(_guard) = engine.try_lock_project_store() {
-        let _ = bind_current_store(engine, project_id).await;
+    let _guard = engine.lock_project_store().await;
+    for attempt in 0..STATUS_BIND_ATTEMPTS {
+        let Ok(status) = bind_current_store(engine, project_id).await else {
+            return;
+        };
+        if status.get("ok").and_then(Value::as_bool) == Some(true) {
+            return;
+        }
+        let err = status.get("error").and_then(Value::as_str);
+        if err != Some("collection_store_not_bound") || attempt + 1 == STATUS_BIND_ATTEMPTS {
+            return;
+        }
+        tokio::time::sleep(STATUS_BIND_DELAY).await;
     }
 }
 

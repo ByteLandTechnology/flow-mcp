@@ -596,6 +596,10 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
     projectStore: NOVEMBER_18_STORE,
     operations: {
       collection_write: { tileId: "Vc", tileChange: "jf", moveTarget: "Wj", moveTiles: "Ab" },
+      asset_trash_store: {
+        entries: "Yv", tile: "Ia", trashed: "Bb", date: "Yb", destination: "Km",
+        sceneWorkflows: "Gj",
+      },
       character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
       agent_chat: NOVEMBER_18_AGENT,
       agent_attachments: NOVEMBER_18_ATTACHMENTS,
@@ -643,5 +647,5 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
 /** Returns the layouts to check when the runtime binds the active project store. */
 export function projectStoreFormats(): readonly ProjectStoreFormat[] {
   const format = frontendBuild(readBuildLabel())?.projectStore;
-  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE];
+  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE, NOVEMBER_20_STORE];
 }

@@ -15,7 +15,9 @@ use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{Duration, Instant};
 
-use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
+use crate::auth::{
+    check_page_signed_in, is_flow_host_url, is_signed_in_flow_url, redirect_sso_if_about,
+};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
 use crate::project_store::prepare_project_store_status;
@@ -273,10 +275,14 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     }
 
     let mut url = engine.current_url().await.unwrap_or_default();
+    let mut landing_frontend = None;
     if !probe {
         if url.is_empty() || url == "about:blank" {
             let _ = engine.navigate(FLOW_URL).await;
             url = engine.current_url().await.unwrap_or_default();
+        }
+        if is_flow_host_url(&url) && project_id_from_url(&url).is_none() {
+            landing_frontend = engine.call_flow_js("probeBuild", json!([])).await.ok();
         }
         let _ = redirect_sso_if_about(engine, &mut url).await;
     }
@@ -316,19 +322,29 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     let mut assets_count = None;
     let mut collections_count = None;
 
-    if in_project {
+    if let Some(project_id) = &project_id {
+        prepare_project_store_status(engine, project_id).await;
         let mut snap = engine
             .call_flow_js("readStoreSnapshot", json!([]))
             .await
             .unwrap_or(Value::Null);
-        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true)
-            && !probe
-            && ensure_flow_store(engine).await.is_ok()
-        {
-            snap = engine
-                .call_flow_js("readStoreSnapshot", json!([]))
-                .await
-                .unwrap_or(Value::Null);
+        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let bound = if probe {
+                engine
+                    .call_flow_async("discoverStore", json!([]))
+                    .await
+                    .ok()
+                    .and_then(|v| v.get("bound").and_then(Value::as_bool))
+                    .unwrap_or(false)
+            } else {
+                ensure_flow_store(engine).await.is_ok()
+            };
+            if bound {
+                snap = engine
+                    .call_flow_js("readStoreSnapshot", json!([]))
+                    .await
+                    .unwrap_or(Value::Null);
+            }
         }
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             if let Some(t) = snap.get("projectTitle").and_then(|v| v.as_str())
@@ -348,11 +364,12 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
     }
 
-    let frontend = if let Some(project_id) = &project_id {
-        prepare_project_store_status(engine, project_id).await;
+    let frontend = if in_project {
         engine.call_flow_js("probeStore", json!([])).await.ok()
+    } else if is_flow_host_url(&url) {
+        engine.call_flow_js("probeBuild", json!([])).await.ok()
     } else {
-        None
+        landing_frontend
     };
 
     FlowStatus {

@@ -27,6 +27,8 @@ npm install --global @flow-mcp/cli
 flow-mcp --help
 ```
 
+运行 `flow-mcp doctor` 可检查 Chrome 二进制文件、`<home>` 权限、实时 Google Flow 前端构建以及登录状态（任一检查失败时退出状态码为 `1`）。
+
 安装 `@flow-mcp/cli` 时，`npm` 会一并安装匹配的可选平台包（`@flow-mcp/darwin-arm64`、`@flow-mcp/darwin-x64`、`@flow-mcp/linux-arm64`、`@flow-mcp/linux-x64`、`@flow-mcp/win32-arm64` 或 `@flow-mcp/win32-x64`）。Linux 预编译包使用 `glibc`。在 `musl` 系统（例如 Alpine Linux）上，请从源码编译。
 
 > [!IMPORTANT]
@@ -82,7 +84,7 @@ cargo build --release
 
 | 领域 | 工具 | 用途 |
 | :--- | :--- | :--- |
-| 会话与项目 | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | 检查会话状态、使用 Chrome 登录以及管理项目 |
+| 会话与项目 | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | 检查会话状态与 Flow 构建兼容性、使用 Chrome 登录以及管理项目 |
 | 角色与音色 | `flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters`、`flow_voice_preview` | 列出 Flow 音色、创建或更新角色与自定义音色、试听音色并保存 SQLite 资料 |
 | 生成与编辑 | `flow_generate`、`flow_edit` | 提交视频和图像生成任务或编辑资产 |
 | Agent 对话 | `flow_agent` | 管理会话并与 Flow Agent 收发消息 |

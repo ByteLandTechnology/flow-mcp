@@ -795,6 +795,8 @@ export interface FlowMcpRuntime {
   characterExtraOp: (req: CharacterExtraOpRequest) => Promise<unknown>;
   /** Returns the front-end build label of the page, or null. */
   buildLabel: () => string | null;
+  /** Checks front-end build compatibility outside an open project. */
+  probeBuild: () => StoreProbeResult;
   /** Checks the bound project store shape without calling a mutation. */
   probeStore: () => StoreProbeResult;
   /** Returns the click point of a visible control by accessible name, or null. */

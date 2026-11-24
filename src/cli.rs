@@ -9,13 +9,14 @@ use serde_json::{Value, json};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::auth::{self, LoginParams};
 use crate::chrome;
-use crate::config::{self, Settings};
-use crate::engine::ChromeEngine;
+use crate::config::{self, FLOW_URL, Settings};
+use crate::engine::{ChromeEngine, DEFAULT_CHROME_UA, FLOW_RUNTIME_JS};
 use crate::http::{HttpOptions, serve_http};
 use crate::instance;
 use crate::mcp::FlowMcpServer;
@@ -27,6 +28,9 @@ const MAX_PAUSE_SECS: f64 = 86_400.0;
 
 /// Time limit for `<chrome> --version` during `doctor`.
 const CHROME_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Time limit for fetching the Google Flow landing page during `doctor`.
+const FLOW_BUILD_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Command-line flags and the subcommand for `flow-mcp`.
 #[derive(Debug, Parser)]
@@ -404,20 +408,208 @@ async fn check_sign_in(locked: bool) -> Value {
     }
 }
 
-/// Runs all `doctor` checks and writes the report.
-async fn run_doctor(as_json: bool) -> Result<()> {
-    let mut checks = vec![check_chrome().await];
+/// Extracts the exact build keys from `VERIFIED_BUILDS` in the embedded runtime bundle.
+fn verified_build_labels() -> Vec<String> {
+    let Some(decl_idx) = FLOW_RUNTIME_JS.find("VERIFIED_BUILDS") else {
+        return Vec::new();
+    };
+    let after_decl = &FLOW_RUNTIME_JS[decl_idx..];
+    let Some(map_idx) = after_decl.find("new Map") else {
+        return Vec::new();
+    };
+    let after_map = &after_decl[map_idx..];
+    let Some(open_idx) = after_map.find('[') else {
+        return Vec::new();
+    };
+    let chars: Vec<char> = after_map[open_idx..].chars().collect();
+    let mut labels = Vec::new();
+    let mut square_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut expect_key = false;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            i += 2;
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if ch == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i = (i + 2).min(chars.len());
+            continue;
+        }
+        if ch == '"' || ch == '\'' || ch == '`' {
+            let quote = ch;
+            i += 1;
+            let mut literal = String::new();
+            while i < chars.len() {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    literal.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == quote {
+                    i += 1;
+                    break;
+                }
+                literal.push(chars[i]);
+                i += 1;
+            }
+            if quote == '"' && square_depth == 2 && brace_depth == 0 && expect_key {
+                labels.push(literal);
+                expect_key = false;
+            }
+            continue;
+        }
+        match ch {
+            '[' => {
+                square_depth += 1;
+                if square_depth == 2 && brace_depth == 0 {
+                    expect_key = true;
+                }
+            }
+            ']' => {
+                square_depth = square_depth.saturating_sub(1);
+                if square_depth == 0 {
+                    break;
+                }
+            }
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            ',' if square_depth == 2 && brace_depth == 0 => expect_key = false,
+            _ => {}
+        }
+        i += 1;
+    }
+    labels
+}
+
+/// Reads `WIZ_global_data.cfb2h` from a Google Flow HTML document.
+fn extract_cfb2h(html: &str) -> Option<String> {
+    let scope = html
+        .find("WIZ_global_data")
+        .map(|idx| &html[idx..])
+        .unwrap_or(html);
+    let key_idx = scope.find("\"cfb2h\"")?;
+    let rest = scope[key_idx + "\"cfb2h\"".len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+            continue;
+        }
+        if ch == '"' {
+            let trimmed = out.trim();
+            return (!trimmed.is_empty()).then(|| trimmed.to_owned());
+        }
+        out.push(ch);
+    }
+    None
+}
+
+/// Fetches Google Flow and checks `WIZ_global_data.cfb2h` against `VERIFIED_BUILDS`.
+async fn check_flow_build() -> Value {
+    let verified = verified_build_labels();
+    if verified.is_empty() {
+        return check(
+            "flow-build",
+            "fail",
+            "Embedded runtime bundle contains no VERIFIED_BUILDS entries",
+        );
+    }
+    let client = match reqwest::Client::builder()
+        .user_agent(DEFAULT_CHROME_UA)
+        .timeout(FLOW_BUILD_TIMEOUT)
+        .build()
+    {
+        Ok(c) => c,
+        Err(err) => {
+            return check(
+                "flow-build",
+                "fail",
+                format!("Cannot create HTTP client: {err:#}"),
+            );
+        }
+    };
+    let response = match client
+        .get(FLOW_URL)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            return check(
+                "flow-build",
+                "fail",
+                format!("Cannot fetch Google Flow page: {err:#}"),
+            );
+        }
+    };
+    let html = match response.text().await {
+        Ok(body) => body,
+        Err(err) => {
+            return check(
+                "flow-build",
+                "fail",
+                format!("Cannot read Google Flow page body: {err:#}"),
+            );
+        }
+    };
+    let Some(label) = extract_cfb2h(&html) else {
+        return check(
+            "flow-build",
+            "fail",
+            "WIZ_global_data.cfb2h is missing from the Google Flow page",
+        );
+    };
+    if verified.iter().any(|entry| entry == &label) {
+        check("flow-build", "ok", format!("{label} (verified)"))
+    } else {
+        check(
+            "flow-build",
+            "fail",
+            format!("{label} is not in VERIFIED_BUILDS"),
+        )
+    }
+}
+
+/// Runs all `doctor` checks, writes the report, and returns exit code `1` when any check fails.
+async fn run_doctor(as_json: bool) -> Result<ExitCode> {
+    let (chrome_check, build_check) = tokio::join!(check_chrome(), check_flow_build());
+    let mut checks = vec![chrome_check];
     checks.extend(check_home());
     let (lock_check, locked) = check_instance_lock();
     checks.push(lock_check);
+    checks.push(build_check);
     checks.push(check_sign_in(locked).await);
+
+    let has_failure = checks
+        .iter()
+        .any(|c| c.get("status").and_then(Value::as_str) == Some("fail"));
+    let exit_code = if has_failure {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    };
 
     if as_json {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({ "checks": checks }))?
         );
-        return Ok(());
+        return Ok(exit_code);
     }
     for c in &checks {
         let status = c.get("status").map(plain_value).unwrap_or_default();
@@ -425,7 +617,7 @@ async fn run_doctor(as_json: bool) -> Result<()> {
         let detail = c.get("detail").map(plain_value).unwrap_or_default();
         println!("[{status:<4}] {name}: {detail}");
     }
-    Ok(())
+    Ok(exit_code)
 }
 
 /// Starts the MCP server over standard input and output, or over HTTP when `http` is set,
@@ -445,7 +637,7 @@ async fn run_serve(http: Option<HttpOptions>) -> Result<()> {
 }
 
 /// Stores the parsed settings and runs the selected subcommand.
-pub(crate) async fn run(cli: Cli) -> Result<()> {
+pub(crate) async fn run(cli: Cli) -> Result<ExitCode> {
     config::init_settings(Settings {
         home: cli.home,
         chrome: cli.chrome,
@@ -459,7 +651,8 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 addr,
                 token: http_token,
             }))
-            .await
+            .await?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Login {
             timeout,
@@ -475,13 +668,16 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             eprintln!(
                 "Complete the sign-in in the browser window. flow-mcp continues when it detects the sign-in, or when you close the window."
             );
-            print_result(&run_login_action(params).await?, json)
+            print_result(&run_login_action(params).await?, json)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Status { json } => {
-            print_result(&run_login_action(login_params("status")).await?, json)
+            print_result(&run_login_action(login_params("status")).await?, json)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Logout { json } => {
-            print_result(&run_login_action(login_params("logout")).await?, json)
+            print_result(&run_login_action(login_params("logout")).await?, json)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Doctor { json } => run_doctor(json).await,
     }

@@ -27,6 +27,8 @@ npm install --global @flow-mcp/cli
 flow-mcp --help
 ```
 
+`flow-mcp doctor` を実行すると、Chrome バイナリ、`<home>` の権限、現在の Google Flow フロントエンドビルド、およびサインイン状態を確認できます（いずれかのチェックが失敗した場合の終了ステータスは `1` です）。
+
 `@flow-mcp/cli` を導入すると、`npm` は対応するオプショナルパッケージ（`@flow-mcp/darwin-arm64`、`@flow-mcp/darwin-x64`、`@flow-mcp/linux-arm64`、`@flow-mcp/linux-x64`、`@flow-mcp/win32-arm64`、または `@flow-mcp/win32-x64`）をインストールします。Linux パッケージは `glibc` を使用します。Alpine Linux などの `musl` システムでは、ソースからビルドしてください。
 
 > [!IMPORTANT]
@@ -82,7 +84,7 @@ MCP stdio クライアント設定（`mcpServers`）へ `@flow-mcp/cli` を追�
 
 | 領域 | ツール | 用途 |
 | :--- | :--- | :--- |
-| セッション・プロジェクト | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | セッション状態確認、Chrome サインイン、プロジェクト管理 |
+| セッション・プロジェクト | `flow_status`、`flow_login`、`flow_new_project`、`flow_projects` | セッション状態と Flow ビルド互換性の確認、Chrome サインイン、プロジェクト管理 |
 | キャラクター・ボイス | `flow_voices`、`flow_character`、`flow_character_edit`、`flow_characters`、`flow_voice_preview` | Flow ボイス一覧取得、キャラクターとカスタムボイスの作成・更新、ボイス試聴、SQLite プロファイル保存 |
 | 生成と編集 | `flow_generate`、`flow_edit` | 動画と画像を生成し、アセットを編集 |
 | Agent チャット | `flow_agent` | セッションの管理と Flow Agent とのメッセージ送受信 |

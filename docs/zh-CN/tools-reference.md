@@ -18,11 +18,11 @@ flow-mcp [OPTIONS] <COMMAND>
 | `login [--timeout <SECS>] [--force] [--json]` | 打开可见 Chrome 窗口进行 Google 登录，并等待登录完成。`--timeout` 设置最长等待秒数（默认 `180`，范围 `15..=3600`）。`--force` 会先清除已保存的 Cookie 与会话。 |
 | `status [--json]` | 显示登录状态。若存在已保存的会话，此子命令会启动后台 Chrome。 |
 | `logout [--json]` | 删除 `<home>/chrome-profile` 与 `<home>/cookies.json`。 |
-| `doctor [--json]` | 检查 Chrome 二进制文件、`<home>` 与文件权限、单实例锁以及登录状态。 |
+| `doctor [--json]` | 检查 Chrome 二进制文件、`<home>` 与文件权限、单实例锁、Google Flow 前端构建以及登录状态。 |
 
 `login`、`status` 与 `logout` 使用与 `flow_login` 相同的操作，并为每个结果字段输出一行 `key: value`。加上 `--json` 时，输出 `flow_login` 的结果对象。`doctor` 为每项检查输出一行，状态为 `ok`、`warn`、`fail` 或 `skip`。
 
-子命令正常执行完毕时退出状态码为 `0`，即使尚未登录或 `doctor` 有检查未通过也是如此。发生错误时（例如登录超时，或 Chrome 配置目录正被另一个运行中的 `flow-mcp` 使用）退出状态码为 `1`。参数值无效时退出状态码为 `2`。
+子命令正常执行完毕且没有 `doctor` 检查报告 `fail` 时退出状态码为 `0`，即使尚未登录也是如此。任一 `doctor` 检查报告 `fail` 或发生运行时错误时（例如登录超时，或 Chrome 配置目录正被另一个运行中的 `flow-mcp` 使用）退出状态码为 `1`。参数值无效时退出状态码为 `2`。
 
 ### HTTP 传输
 
@@ -90,7 +90,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 返回 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`。不会自动打开或创建项目。
 
-当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。 `operations` 报告当前构建和 store 是否支持 `project_upload`、`collection_write`、`character_bio` 和 `asset_trash_store`，每项均包含 `ok` 和 `failed_checks`。
+在 Google Flow 页面上，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok`、`checks` 与 `operations`。在非项目页面上，`flow.frontend` 检查前端构建是否已验证并覆盖全部七项受管操作；在项目页（`/project/<id>`）上，它还会在不修改项目的情况下检查运行时项目 store、媒体资产 URL 以及 Agent 与上传导出符号。每个检查项均含 `name`、`ok` 和 `detail`。`operations` 报告 `agent_chat`、`agent_attachments`、`agent_settings`、`project_upload`、`collection_write`、`character_bio` 与 `asset_trash_store` 的状态，每项均包含 `ok` 和 `failed_checks`。仅当构建已验证且全部检查项与全部七项操作均通过时，顶层 `ok` 才为 `true`。
 
 ### `flow_login`
 

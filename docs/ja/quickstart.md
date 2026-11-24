@@ -154,7 +154,7 @@ MCP クライアントから次の手順を順番に実行します：
 
 ## トラブルシューティング
 
-- **インストール状態を確認する**：`flow-mcp doctor` を実行すると、Chrome バイナリ、`<home>` とファイル権限、インスタンスロック、サインイン状態を確認できます。
+- **インストール状態を確認する**：`flow-mcp doctor` を実行すると、Chrome バイナリ、`<home>` とファイル権限、インスタンスロック、Google Flow フロントエンドビルド、サインイン状態を確認できます。いずれかのチェックが失敗した場合、終了ステータス `1` で終了します。
 - **ネイティブ実行ファイルパッケージがない**：`--omit=optional` および `--no-optional` を付けずに `@flow-mcp/cli` を再インストールしてください。
 - **Chrome バイナリが見つからない**：`--chrome <PATH>` または `FLOW_MCP_CHROME` に Chrome または Chromium の実行ファイルパスを設定してください。
 - **Google サインインの期限切れや拒否**：`{"action": "login", "force": true}` で `flow_login` を呼び出し、クリーンな Chrome ウィンドウを開きます。または `{"action": "logout"}` を呼び出して `<home>/chrome-profile` と `<home>/cookies.json` を削除します。

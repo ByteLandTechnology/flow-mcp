@@ -27,7 +27,7 @@ import { bindProjectStore, projectStoreStatus } from "./project_store";
 import { discoverStore } from "./discover_store";
 import { fetchMedia } from "./fetch_media";
 import { readBuildLabel } from "./frontend_builds";
-import { probeStore } from "./frontend_compatibility";
+import { probeBuild, probeStore } from "./frontend_compatibility";
 import { openEditAsset } from "./open_edit_asset";
 import { uploadUiAction } from "./open_upload_trigger";
 import { tileDomOp } from "./tile_dom";
@@ -46,6 +46,7 @@ if (!window.__flowMcp) {
   window.__flowMcp = {
     checkAuth,
     buildLabel: readBuildLabel,
+    probeBuild,
     probeStore,
     locatePoint,
     tileDomOp,

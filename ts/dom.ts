@@ -353,17 +353,21 @@ export function fifeBase(u: unknown): string {
 /** Selects the best available media URL from a project tile object. */
 export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
   const t = legacyTile(tile);
+  const fifeKc = typeof t?.Fb?.kc === "string" ? t.Fb.kc : null;
+  const tileKc = typeof t?.kc === "string" ? t.kc : null;
   return (
     t?.Fb?.Wb ||
     t?.Fb?.fifeUrl ||
     t?.Fb?.imageUrl ||
     t?.Fb?.videoUrl ||
     t?.Fb?.url ||
+    fifeKc ||
     t?.Wb ||
     t?.fifeUrl ||
     t?.imageUrl ||
     t?.videoUrl ||
     t?.url ||
+    tileKc ||
     t?.ue ||
     null
   );

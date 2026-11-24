@@ -23,7 +23,7 @@ use crate::cookies::{
 pub(crate) const ENGINE_NAME: &str = "chrome-cdp";
 
 /// Compiled browser TypeScript runtime bundle exposing `window.__flowMcp`.
-const FLOW_RUNTIME_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/flow_runtime.js"));
+pub(crate) const FLOW_RUNTIME_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/flow_runtime.js"));
 
 /// Default macOS Chrome `User-Agent` fallback before Chrome launches.
 #[cfg(target_os = "macos")]
@@ -412,11 +412,6 @@ impl ChromeEngine {
     /// Locks the direct project store until the current operation ends.
     pub(crate) async fn lock_project_store(&self) -> MutexGuard<'_, ()> {
         self.project_store_lock.lock().await
-    }
-
-    /// Tries to lock the project store without waiting for a write to finish.
-    pub(crate) fn try_lock_project_store(&self) -> Option<MutexGuard<'_, ()>> {
-        self.project_store_lock.try_lock().ok()
     }
 
     /// Passes live Map objects to the project store binder in the same JavaScript context.
