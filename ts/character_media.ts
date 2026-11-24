@@ -24,7 +24,11 @@ import {
   pickTileUrl,
   setNativeValue,
 } from "./dom";
-import { frontendBuild, readBuildLabel, type CharacterPreviewFormat } from "./frontend_builds";
+import {
+  characterPreviewFormats,
+  frontendBuild,
+  readBuildLabel,
+} from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
 import { runtimeState } from "./state";
 import type {
@@ -50,11 +54,6 @@ interface CharacterPreview {
   /** Reads the loading state of the active slot. */
   busy: () => unknown;
 }
-
-/** Native methods used by the earlier preview panel. */
-const LEGACY_PREVIEW: CharacterPreviewFormat = {
-  lifecycle: "Ca", upload: "JR", marker: "Si", portrait: "ka", body: "ma", source: "psa", busy: "zy",
-};
 
 /** Snapshot of character preview slot state read from component signals and DOM. */
 interface PreviewSlotState {
@@ -90,46 +89,47 @@ function callPanel(panel: object, name: string): unknown {
   return typeof method === "function" ? method.call(panel) : undefined;
 }
 
-/** Finds the preview panel in a live Angular view and binds its methods. */
+/** Finds the preview panel in a live Angular view and binds its methods from newest to oldest format. */
 function getCharacterPreviewInstance(): CharacterPreview | null {
-  const format = frontendBuild(readBuildLabel())?.characterPreview ?? LEGACY_PREVIEW;
   const roots = document.querySelectorAll(
     "flow-character-preview-panel, flow-character-image-preview",
   );
-  const seen = new Set<unknown>();
-  for (const root of roots) {
-    const startLv = resolveLView(root);
-    if (!Array.isArray(startLv)) continue;
-    const queue: Array<[NgLView, number]> = [[startLv, 0]];
-    while (queue.length > 0) {
-      const next = queue.shift();
-      if (!next) break;
-      const [lv, depth] = next;
-      if (!Array.isArray(lv) || seen.has(lv)) continue;
-      seen.add(lv);
-      for (const slot of lv) {
-        if (
-          slot &&
-          typeof slot === "object" &&
-          !(slot instanceof Node) &&
-          !Array.isArray(slot) &&
-          !(slot instanceof Map) &&
-          !readOwn(readOwn(slot, format.lifecycle), "Va") &&
-          typeof readOwn(slot, format.upload) === "function" &&
-          typeof readOwn(slot, format.marker) === "function"
-        ) {
-          return {
-            upload: () => callPanel(slot, format.upload),
-            media: (which) =>
-              legacyMedia(callPanel(slot, format[which]) as FlowMediaPayload | null | undefined),
-            source: () => callPanel(slot, format.source),
-            busy: () => callPanel(slot, format.busy),
-          };
+  for (const format of characterPreviewFormats()) {
+    const seen = new Set<unknown>();
+    for (const root of roots) {
+      const startLv = resolveLView(root);
+      if (!Array.isArray(startLv)) continue;
+      const queue: Array<[NgLView, number]> = [[startLv, 0]];
+      while (queue.length > 0) {
+        const next = queue.shift();
+        if (!next) break;
+        const [lv, depth] = next;
+        if (!Array.isArray(lv) || seen.has(lv)) continue;
+        seen.add(lv);
+        for (const slot of lv) {
+          if (
+            slot &&
+            typeof slot === "object" &&
+            !(slot instanceof Node) &&
+            !Array.isArray(slot) &&
+            !(slot instanceof Map) &&
+            !readOwn(readOwn(slot, format.lifecycle), "Va") &&
+            typeof readOwn(slot, format.upload) === "function" &&
+            typeof readOwn(slot, format.marker) === "function"
+          ) {
+            return {
+              upload: () => callPanel(slot, format.upload),
+              media: (which) =>
+                legacyMedia(callPanel(slot, format[which]) as FlowMediaPayload | null | undefined),
+              source: () => callPanel(slot, format.source),
+              busy: () => callPanel(slot, format.busy),
+            };
+          }
         }
-      }
-      if (depth < 4) {
-        if (Array.isArray(lv[3])) queue.push([lv[3], depth + 1]);
-        if (Array.isArray(lv[15])) queue.push([lv[15], depth + 1]);
+        if (depth < 4) {
+          if (Array.isArray(lv[3])) queue.push([lv[3], depth + 1]);
+          if (Array.isArray(lv[15])) queue.push([lv[15], depth + 1]);
+        }
       }
     }
   }
@@ -267,7 +267,10 @@ export async function characterMediaOp(
       const controls = [...document.querySelectorAll("flow-character-preview-panel [mattooltip], flow-character-preview-panel button")];
       await withLViewMapCapture(() => hoverProbe(controls.slice(0, 6)));
       state = readPreviewSlotState(wantSlot);
-      if (!state.previewComp && frontendBuild(readBuildLabel())?.characterPreview) {
+      if (
+        !state.previewComp &&
+        (Boolean(frontendBuild(readBuildLabel())?.characterPreview) || !findPreviewUploadButton())
+      ) {
         return { ok: false, error: "character_preview_not_bound" };
       }
     }

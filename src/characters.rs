@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
 use crate::assets::{FlowAsset, list_assets_with_project, match_asset, trash_asset};
-use crate::character_bio::{edit_character_bio, set_character_bio};
+use crate::character_bio::{
+    edit_character_bio, prepare_bio_store, save_character_bio_in_editor, try_set_character_bio,
+};
 use crate::db::FlowDb;
 use crate::download::download_resolved_asset;
 use crate::engine::{ChromeEngine, checked_runtime_result, validate_local_files};
@@ -20,7 +22,6 @@ use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_subroute_url,
     project_workspace_url,
 };
-use crate::project_store::ProjectStoreSession;
 use crate::queue::{ProgressCallback, SceneParams};
 use crate::voices::{
     VoiceRequest, apply_voice_with_fallback, delete_portrait, list_all_voices, scene_voice,
@@ -398,15 +399,7 @@ pub(crate) async fn create_or_update_character_job(
     let project_id = snap.project_id.clone();
     let project_title = snap.project_title.clone();
     let mut bio_store = if effective_bio.is_some() {
-        let store = ProjectStoreSession::open(engine).await?;
-        anyhow::ensure!(
-            project_id.as_deref() == Some(store.project_id()),
-            "The active project changed before the character update"
-        );
-        store
-            .call("characterBioOp", json!({ "action": "check" }), None)
-            .await?;
-        Some(store)
+        prepare_bio_store(engine, project_id.as_deref()).await?
     } else {
         None
     };
@@ -450,18 +443,22 @@ pub(crate) async fn create_or_update_character_job(
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("Character creation returned no character ID"))?;
 
-        if let (Some(store), Some(bio)) = (bio_store.take(), effective_bio.as_deref()) {
-            set_character_bio(&store, &cid, bio).await.map_err(|err| {
-                anyhow::anyhow!("Failed to save personality notes for '{cid}': {err:#}")
-            })?;
-        }
+        let need_editor_bio = if let Some(bio) = effective_bio.as_deref() {
+            !try_set_character_bio(bio_store.take(), &cid, bio)
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("Failed to save personality notes for '{cid}': {err:#}")
+                })?
+        } else {
+            false
+        };
 
         let need_update_on_page = res
             .get("need_update_on_page")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let mut submitted_meta = None;
-        editor_opened = need_update_on_page || has_refs;
+        editor_opened = need_update_on_page || has_refs || need_editor_bio;
         if editor_opened {
             let cur_url = engine.current_url().await.unwrap_or_default();
             let fallback_pid = project_id_from_url(&cur_url);
@@ -470,6 +467,14 @@ pub(crate) async fn create_or_update_character_job(
                 .or(fallback_pid.as_deref())
                 .ok_or_else(|| anyhow::anyhow!("Missing project ID for character route"))?;
             open_character_editor(engine, &cur_url, pid, &cid).await?;
+
+            if need_editor_bio
+                && let Some(bio) = effective_bio.as_deref()
+                && let Err(err) = save_character_bio_in_editor(engine, bio).await
+            {
+                exit_character_editor(engine, project_id.as_deref()).await;
+                anyhow::bail!("Failed to save personality notes for '{cid}': {err:#}");
+            }
 
             if need_update_on_page {
                 let media_res = apply_character_page_media(
@@ -518,9 +523,11 @@ pub(crate) async fn create_or_update_character_job(
                 format!("No character matches '{}' in active project", target_query)
             })?;
         on_progress(format!("editing character '{}'", target.name));
-        if let (Some(store), Some(bio)) = (bio_store.take(), effective_bio.as_deref()) {
-            set_character_bio(&store, &target.id, bio).await?;
-        }
+        let need_editor_bio = if let Some(bio) = effective_bio.as_deref() {
+            !try_set_character_bio(bio_store.take(), &target.id, bio).await?
+        } else {
+            false
+        };
         editor_opened = true;
 
         let payload = json!({
@@ -561,6 +568,24 @@ pub(crate) async fn create_or_update_character_job(
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
             );
+        }
+        if need_editor_bio && let Some(bio) = effective_bio.as_deref() {
+            let cur_url = engine.current_url().await.unwrap_or_default();
+            if !cur_url.contains("/character/") {
+                let fallback_pid = project_id_from_url(&cur_url);
+                let pid = project_id
+                    .as_deref()
+                    .or(fallback_pid.as_deref())
+                    .context("Missing project ID for character route")?;
+                open_character_editor(engine, &cur_url, pid, &target.id).await?;
+            }
+            if let Err(err) = save_character_bio_in_editor(engine, bio).await {
+                exit_character_editor(engine, project_id.as_deref()).await;
+                anyhow::bail!(
+                    "Failed to save personality notes for '{}': {err:#}",
+                    target.id
+                );
+            }
         }
         let default_voice_name = scene
             .new_name

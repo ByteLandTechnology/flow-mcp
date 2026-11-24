@@ -3,7 +3,12 @@
 
 // Check the build and runtime requirements of internal Flow operations.
 
-import { frontendBuild, MEDIA_UPLOAD_EXPORTS, readBuildLabel } from "./frontend_builds";
+import {
+  frontendBuild,
+  MEDIA_UPLOAD_EXPORTS,
+  projectMutationFormat,
+  readBuildLabel,
+} from "./frontend_builds";
 import type {
   AgentAttachmentFormat,
   AgentChatFormat,
@@ -38,7 +43,7 @@ type FrontendCompatibility<Format> = { ok: true; format: Format } | UnsupportedF
 
 /** Adds the native fields used by the general project store. */
 export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
-  const format = frontendBuild(readBuildLabel())?.projectStore.mutations;
+  const format = projectMutationFormat();
   if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
     if (!format) return { ...payload, We: payload.We ?? payload.Ve, df: payload.df ?? payload.Ve };
     const change = payload.Ve as Record<string, unknown>;

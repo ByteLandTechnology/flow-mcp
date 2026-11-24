@@ -4,7 +4,7 @@
 // Write and confirm character personality notes in the project store.
 
 import { readOwn } from "./angular";
-import { isTrashedTile } from "./dom";
+import { delay, findSnackbarMatch, isTrashedTile, setNativeValue } from "./dom";
 import { characterBioCompatibility } from "./frontend_compatibility";
 import {
   mutateAndVerify,
@@ -14,6 +14,7 @@ import {
   readProjectStore,
   refreshAfterUnknown,
 } from "./project_store";
+import { runtimeState } from "./state";
 import type { FlowTile } from "./types";
 
 /** Arguments for an operation on character personality notes. */
@@ -102,4 +103,108 @@ export async function characterBioOp(
   return after
     ? { ok: true }
     : { ok: false, error: "outcome_unknown", stage: "set_character_bio", project_id: projectId, id };
+}
+
+/** Finds the rendered personality notes textarea in the open character editor. */
+function findPersonalityTextarea(): HTMLTextAreaElement | null {
+  const candidates = Array.from(
+    document.querySelectorAll<HTMLTextAreaElement>(
+      'textarea[aria-label="Character personality"], flow-character-form textarea',
+    ),
+  );
+  return (
+    candidates.find((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && !el.disabled && !el.closest("[inert]");
+    }) ?? null
+  );
+}
+
+/** Reads personality notes from a store tile across protobuf and flat fields. */
+function readTilePersonalityNotes(tile: FlowTile | undefined): string | null {
+  if (!tile) return null;
+  const fromProto = characterPersonalityNotes(tile);
+  if (fromProto !== null) return fromProto;
+  if (typeof tile.personalityNotes === "string") return tile.personalityNotes;
+  if (typeof tile.Mv === "string") return tile.Mv;
+  return null;
+}
+
+/** Returns true when the discovered store queue still holds pending mutations. */
+function storeQueuePending(): boolean {
+  const svc = runtimeState.lService;
+  const getters = [svc?.lc?.ka, svc?._ap?.lc?.ka, svc?.ha?.lc?.ka];
+  for (const ka of getters) {
+    if (typeof ka !== "function") continue;
+    try {
+      const q = ka();
+      if (Array.isArray(q?.items) && q.items.length > 0) return true;
+    } catch {
+      // Ignore unreadable queue handles.
+    }
+  }
+  return false;
+}
+
+/** Saves and confirms character personality notes through the open character editor view. */
+export async function characterBioEditorOp(bio: string): Promise<unknown> {
+  let textarea: HTMLTextAreaElement | null = null;
+  for (let i = 0; i < 25; i++) {
+    textarea = findPersonalityTextarea();
+    if (textarea) break;
+    await delay(200);
+  }
+  if (!textarea) {
+    return { ok: false, error: "character_bio_editor_not_found" };
+  }
+
+  const expected = bio.trim();
+  const routeCharId = /\/character\/([^/?#]+)/.exec(location.pathname || "")?.[1] ?? null;
+  textarea.scrollIntoView({ block: "center" });
+  textarea.focus();
+  setNativeValue(textarea, bio, true);
+
+  let blurFired = false;
+  const onBlur = (): void => {
+    blurFired = true;
+  };
+  textarea.addEventListener("blur", onBlur, { once: true });
+  textarea.blur();
+  textarea.removeEventListener("blur", onBlur);
+  if (!blurFired) {
+    textarea.dispatchEvent(new FocusEvent("blur", { bubbles: false }));
+    textarea.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  }
+
+  await delay(400);
+  for (let i = 0; i < 24; i++) {
+    const snackErr = findSnackbarMatch(/failed|error|unable|couldn't/i);
+    if (snackErr) {
+      return { ok: false, error: "character_bio_save_failed", detail: snackErr };
+    }
+    const live = findPersonalityTextarea() ?? textarea;
+    if (live.value.trim() !== expected) {
+      await delay(200);
+      continue;
+    }
+    if (storeQueuePending()) {
+      await delay(250);
+      continue;
+    }
+    const tileMap = runtimeState.store?.getTileMap?.();
+    const tile = routeCharId && tileMap instanceof Map ? tileMap.get(routeCharId) : undefined;
+    const stored = readTilePersonalityNotes(tile);
+    if (stored !== null) {
+      if (stored.trim() === expected) {
+        return { ok: true, confirmed: true, bio: live.value };
+      }
+      await delay(250);
+      continue;
+    }
+    if (i >= 2) {
+      return { ok: true, confirmed: true, bio: live.value };
+    }
+    await delay(250);
+  }
+  return { ok: false, error: "character_bio_not_confirmed" };
 }

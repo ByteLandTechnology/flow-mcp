@@ -12,6 +12,7 @@ mod character_bio;
 mod characters;
 mod chrome;
 mod cli;
+mod collection_page;
 mod collections;
 mod config;
 mod cookies;

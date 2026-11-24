@@ -629,6 +629,36 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
 ]);
 
+/** Native methods used by the earlier character preview panel. */
+const LEGACY_CHARACTER_PREVIEW: CharacterPreviewFormat = {
+  lifecycle: "Ca",
+  upload: "JR",
+  marker: "Si",
+  portrait: "ka",
+  body: "ma",
+  source: "psa",
+  busy: "zy",
+};
+
+/** Returns verified builds ordered from newest to oldest. */
+function newestFirstBuilds(): FrontendBuild[] {
+  return Array.from(VERIFIED_BUILDS.values()).reverse();
+}
+
+/** Keeps the first item for each key while preserving order. */
+function uniqueFormats<T>(items: readonly T[], keyOf: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    const key = keyOf(item);
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(item);
+    }
+  }
+  return out;
+}
+
 /** Returns the exact label published by the active page. */
 export function readBuildLabel(): string | null {
   const label = window.WIZ_global_data?.cfb2h;
@@ -640,8 +670,55 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
   return label === null ? undefined : VERIFIED_BUILDS.get(label);
 }
 
-/** Returns the layouts to check when the runtime binds the active project store. */
+/** Returns the layouts to check from newest to oldest when the runtime binds the active project store. */
 export function projectStoreFormats(): readonly ProjectStoreFormat[] {
-  const format = frontendBuild(readBuildLabel())?.projectStore;
-  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE];
+  const build = frontendBuild(readBuildLabel());
+  if (build) return [build.projectStore];
+  return uniqueFormats(
+    newestFirstBuilds().map((entry) => entry.projectStore),
+    (format) => JSON.stringify(format),
+  );
+}
+
+/** Returns character preview layouts from newest to oldest for the active build. */
+export function characterPreviewFormats(): readonly CharacterPreviewFormat[] {
+  const build = frontendBuild(readBuildLabel());
+  if (build) return [build.characterPreview ?? LEGACY_CHARACTER_PREVIEW];
+  const candidates = newestFirstBuilds()
+    .flatMap((entry) => (entry.characterPreview ? [entry.characterPreview] : []));
+  return uniqueFormats(
+    [...candidates, LEGACY_CHARACTER_PREVIEW],
+    (format) => JSON.stringify(format),
+  );
+}
+
+/** Returns voice confirmation layouts from newest to oldest for the active build. */
+export function voiceConfirmationFormats(): readonly VoiceConfirmationFormat[] {
+  const build = frontendBuild(readBuildLabel());
+  if (build) return build.voiceConfirmation ? [build.voiceConfirmation] : [];
+  return uniqueFormats(
+    newestFirstBuilds().flatMap((entry) =>
+      entry.voiceConfirmation ? [entry.voiceConfirmation] : [],
+    ),
+    (format) => JSON.stringify(format),
+  );
+}
+
+/** Returns scene tile field layouts from newest to oldest for the active build. */
+export function sceneTileFormats(): readonly SceneTileFormat[] {
+  const build = frontendBuild(readBuildLabel());
+  if (build) return build.projectStore.scene ? [build.projectStore.scene] : [];
+  return uniqueFormats(
+    newestFirstBuilds().flatMap((entry) =>
+      entry.projectStore.scene ? [entry.projectStore.scene] : [],
+    ),
+    (format) => `${format.clips}:${format.history}`,
+  );
+}
+
+/** Returns the mutation field layout for the active build, defaulting to the newest verified layout on unknown builds. */
+export function projectMutationFormat(): ProjectMutationFormat | undefined {
+  const build = frontendBuild(readBuildLabel());
+  if (build) return build.projectStore.mutations;
+  return newestFirstBuilds().find((entry) => entry.projectStore.mutations)?.projectStore.mutations;
 }

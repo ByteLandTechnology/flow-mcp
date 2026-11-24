@@ -8,6 +8,9 @@ import { delay } from "./dom";
 import { runtimeState } from "./state";
 import type { FlowTile, SceneOpRequest } from "./types";
 
+/** Maximum time to wait for a scene clip addition callback to settle. */
+const SCENE_ADD_CLIPS_TIMEOUT_MS = 10_000;
+
 /** Creates a scene or adds workflow clips to an existing scene. */
 export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
   const helper = runtimeState.store;
@@ -48,25 +51,63 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     if (!sceneId || !assetIds.length) {
       return { ok: false, error: "scene_id_and_asset_ids_required" };
     }
+    const timeoutMs =
+      typeof req?.timeout_ms === "number" && req.timeout_ms > 0
+        ? Math.min(req.timeout_ms, SCENE_ADD_CLIPS_TIMEOUT_MS)
+        : SCENE_ADD_CLIPS_TIMEOUT_MS;
     let resolveDe: (v: unknown) => void = () => {};
     let rejectDe: (e: unknown) => void = () => {};
     const dePromise = new Promise<unknown>((res, rej) => {
       resolveDe = res;
       rejectDe = rej;
     });
-    await helper.mutate({
-      type: "add_workflows_to_scene",
-      Lc: sceneId,
-      Ic: sceneId,
-      rg: resolveWfIds(assetIds),
-      YWa: resolveWfIds(assetIds),
-      position: typeof req.position === "number" ? req.position : undefined,
-      Mh: undefined,
-      Eh: undefined,
-      De: { resolve: resolveDe, reject: rejectDe },
-      ve: { resolve: resolveDe, reject: rejectDe },
-    });
-    await dePromise;
+    void dePromise.catch(() => undefined);
+    const workflows = resolveWfIds(assetIds);
+    try {
+      await helper.mutate({
+        type: "add_workflows_to_scene",
+        Lc: sceneId,
+        Ic: sceneId,
+        rg: workflows,
+        YWa: workflows,
+        position: typeof req.position === "number" ? req.position : undefined,
+        Mh: undefined,
+        Eh: undefined,
+        De: { resolve: resolveDe, reject: rejectDe },
+        ve: { resolve: resolveDe, reject: rejectDe },
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: "scene_add_clips_failed",
+        scene_id: sceneId,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        dePromise.then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({
+            ok: false as const,
+            error: "scene_add_clips_failed" as const,
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        ),
+        new Promise<{ ok: false; error: "scene_add_clips_timeout" }>((resolve) => {
+          timer = setTimeout(
+            () => resolve({ ok: false, error: "scene_add_clips_timeout" }),
+            timeoutMs,
+          );
+        }),
+      ]);
+      if (!outcome.ok) {
+        return { ...outcome, scene_id: sceneId };
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
     await delay(400);
     return { ok: true, scene_id: sceneId, added: assetIds.length };
   }

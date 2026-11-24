@@ -13,7 +13,12 @@ import {
   isVisibleEnabled,
   setNativeValue,
 } from "./dom";
-import { frontendBuild, readBuildLabel, type VoiceConfirmationFormat } from "./frontend_builds";
+import {
+  frontendBuild,
+  readBuildLabel,
+  voiceConfirmationFormats,
+  type VoiceConfirmationFormat,
+} from "./frontend_builds";
 import type { CharacterExtraOpRequest } from "./types";
 import { bindCustomVoiceReceipt, bindVoiceConfirmation } from "./voice_confirmation";
 
@@ -198,7 +203,7 @@ function paneButton(pane: Element, re: RegExp): HTMLElement | null {
 async function saveCustomVoice(
   pane: Element,
   { sample, performance, name, deadline }: CustomVoiceInput,
-  format?: VoiceConfirmationFormat,
+  formats: readonly VoiceConfirmationFormat[],
 ): Promise<CustomVoiceSaveResult> {
   const sampleEl = field(pane, /hi there/i);
   const perfEl = field(pane, /performance style/i);
@@ -228,7 +233,11 @@ async function saveCustomVoice(
   const oldRows = new Set(renderedRows(voicePane() ?? pane)
     .filter((row) => row.custom && row.name === savedName)
     .map((row) => row.el));
-  const receipt = format && bindCustomVoiceReceipt(voicePane() ?? pane, format);
+  let receipt: ReturnType<typeof bindCustomVoiceReceipt>;
+  for (const format of formats) {
+    receipt = bindCustomVoiceReceipt(voicePane() ?? pane, format);
+    if (receipt) break;
+  }
   try {
     save.click();
     // Flow can keep Add to character active for the base voice during the save.
@@ -290,11 +299,20 @@ async function applyVoice(
   const custom = Boolean(sample || performance);
   if (custom && sample.length > 120)
     return { ok: false, error: "voice_sample_over_120_characters" };
-  const format = frontendBuild(readBuildLabel())?.voiceConfirmation;
-  let pane = format ? await withLViewMapCapture(openDialog) : await openDialog();
+  const formats = voiceConfirmationFormats();
+  const requireConfirmation = Boolean(frontendBuild(readBuildLabel())?.voiceConfirmation);
+  let pane = formats.length > 0 ? await withLViewMapCapture(openDialog) : await openDialog();
   if (!pane) return { ok: false, error: "voice_dialog_not_available" };
-  const confirm = format && bindVoiceConfirmation(format);
-  if (format && !confirm) {
+  let confirm: ReturnType<typeof bindVoiceConfirmation>;
+  let activeFormats = formats;
+  for (const candidate of formats) {
+    confirm = bindVoiceConfirmation(candidate);
+    if (confirm) {
+      activeFormats = [candidate];
+      break;
+    }
+  }
+  if (requireConfirmation && !confirm) {
     await dismissOverlay();
     return { ok: false, error: "voice_confirmation_unavailable" };
   }
@@ -310,7 +328,11 @@ async function applyVoice(
   let expected = base;
   let expectedId: string | undefined;
   if (custom) {
-    const result = await saveCustomVoice(voicePane() ?? pane, { sample, performance, name, deadline }, format);
+    const result = await saveCustomVoice(
+      voicePane() ?? pane,
+      { sample, performance, name, deadline },
+      activeFormats,
+    );
     if ("error" in result) {
       await dismissOverlay();
       return { ok: false, ...result };

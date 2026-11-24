@@ -583,6 +583,8 @@ export interface SceneOpRequest {
   scene_id?: string | null;
   /** Optional insertion position index. */
   position?: number | null;
+  /** Optional confirmation timeout in milliseconds for `add_clips`. */
+  timeout_ms?: number | null;
 }
 
 /** Request payload for `videoOp`. */
@@ -687,10 +689,16 @@ export interface LocatePointRequest {
 
 /** Request for `tileDomOp`. */
 export interface TileDomOpRequest {
-  /** `locate`, `state`, `view`, `open_view`, `text_select`, `text_value`, or `dismiss`. */
+  /** `locate`, `drop_target`, `root_drop_target`, `html5_drag`, `state`, `view`, `open_view`, `text_point`, `text_select`, `text_value`, or `dismiss`. */
   action: string;
-  /** Store tile ID for `locate` and `state`, or the collection ID for `open_view` (empty for the main grid). */
+  /** Store tile ID for `locate` and `state`, or the collection ID for `open_view` and `drop_target` (empty for the main grid). */
   id?: string;
+  /** Text control kind (`tile`, `item`, or `title`) for `text_point`, `text_select`, and `text_value`. */
+  control?: string;
+  /** Expected current text or display name for text controls and drop targets. */
+  name?: string;
+  /** Source and target viewport coordinates (`[sx, sy, tx, ty]`) for `html5_drag`. */
+  coords?: [number, number, number, number];
 }
 
 /** One check of the store probe. */
@@ -787,6 +795,8 @@ export interface FlowMcpRuntime {
     session: string,
     request: import("./character_bio").CharacterBioRequest,
   ) => Promise<unknown>;
+  /** Saves and confirms character personality notes through the open character editor view. */
+  characterBioEditorOp: (bio: string) => Promise<unknown>;
   /** Lists available character voices and sets a voice on the character form. */
   characterVoiceOp: (req: CharacterVoiceOpRequest) => Promise<unknown>;
   /** Opens character uploads, attaches project references, and generates looks. */

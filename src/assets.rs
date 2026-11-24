@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Duration, Instant};
 
+use crate::collection_page::{delete_collection_through_page, rename_collection_through_page};
 use crate::collections::{FlowCollection, find_collection};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
@@ -371,49 +372,67 @@ pub(crate) async fn list_assets(
     Ok(filtered)
 }
 
-/// Checks whether the asset snapshot shows the requested name.
+/// Checks whether the project snapshot shows the requested name for an asset or collection.
 fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
-    snap.get("assets")
-        .and_then(Value::as_array)
-        .is_some_and(|assets| {
-            assets.iter().any(|item| {
-                item.get("id").and_then(Value::as_str) == Some(id)
-                    && item.get("name").and_then(Value::as_str) == Some(name)
+    ["assets", "collections"].into_iter().any(|section| {
+        snap.get(section)
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("id").and_then(Value::as_str) == Some(id)
+                        && item.get("name").and_then(Value::as_str) == Some(name)
+                })
             })
-        })
+    })
 }
 
-/// Renames collections through the collection store and other tiles through the page or store.
+/// Renames media, character, scene, and collection tiles without requiring an upfront direct store session.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
-    let collections = ProjectStoreSession::open(engine).await?;
+    let mut store_lock = Some(engine.lock_project_store().await);
+    ensure_flow_store(engine).await?;
     let total = items.len();
     let mut renamed = Vec::new();
     let mut failed = Vec::new();
-    let mut asset_store_ready = false;
 
     'items: for (idx, entry) in items.into_iter().enumerate() {
-        match collections.is_collection(&entry.id).await {
-            Ok(false) => {}
-            Ok(true) => {
-                match collections.rename(&entry.id, &entry.name).await {
-                    Ok(result) => renamed.push(json!({
-                        "id": entry.id, "name": entry.name, "method": result["method"]
-                    })),
-                    Err(err) => failed.push(rename_error(&entry, &err)),
-                }
-                continue 'items;
-            }
-            Err(err) => {
-                failed.push(rename_error(&entry, &err));
-                continue 'items;
-            }
-        }
-        if !asset_store_ready {
+        if store_lock.is_none() {
+            store_lock = Some(engine.lock_project_store().await);
             ensure_flow_store(engine).await?;
-            asset_store_ready = true;
+        }
+        let state = tile_state(engine, &entry.id).await;
+        if state.is_present() && state.kind == "collection" {
+            match rename_collection_through_page(engine, &entry.id, &entry.name).await {
+                Ok(result) => {
+                    renamed.push(json!({
+                        "id": entry.id,
+                        "name": entry.name,
+                        "method": result["method"],
+                    }));
+                    if idx + 1 < total {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    continue 'items;
+                }
+                Err(page_err) => {
+                    drop(store_lock.take());
+                    let direct = match ProjectStoreSession::open(engine).await {
+                        Ok(session) => session.rename(&entry.id, &entry.name).await,
+                        Err(_) => Err(page_err),
+                    };
+                    match direct {
+                        Ok(result) => renamed.push(json!({
+                            "id": entry.id,
+                            "name": entry.name,
+                            "method": result["method"],
+                        })),
+                        Err(err) => failed.push(rename_error(&entry, &err)),
+                    }
+                    continue 'items;
+                }
+            }
         }
         // Use the rename control of the page first. The page then builds its own mutation.
-        if tile_state(engine, &entry.id).await.is_present()
+        if state.is_present()
             && matches!(
                 rename_through_menu(engine, &entry.id, &entry.name).await,
                 Ok(true)
@@ -511,10 +530,29 @@ fn rename_error(entry: &RenameEntry, err: &anyhow::Error) -> Value {
     json!({ "id": entry.id, "name": entry.name, "error": format!("{err:#}") })
 }
 
-/// Moves an asset to trash through the tile menu or the pinned project store.
+/// Deletes a collection through page controls first and falls back to the direct store session.
+async fn invoke_trash_collection(
+    engine: &ChromeEngine,
+    store_lock: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+    id: &str,
+) -> Result<Value> {
+    match delete_collection_through_page(engine, id).await {
+        Ok(result) => Ok(result),
+        Err(err) if format!("{err:#}").contains("collection_has_child_collections") => Err(err),
+        Err(page_err) => {
+            drop(store_lock.take());
+            match ProjectStoreSession::open(engine).await {
+                Ok(session) => session.delete(id).await,
+                Err(_) => Err(page_err),
+            }
+        }
+    }
+}
+
+/// Moves a non-collection tile to trash through its context menu or a direct store session.
 async fn invoke_trash_tile(
     engine: &ChromeEngine,
-    session: &ProjectStoreSession<'_>,
+    store_lock: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
     id: &str,
 ) -> Result<Value> {
     let menu_error =
@@ -531,6 +569,14 @@ async fn invoke_trash_tile(
         } else {
             None
         };
+    drop(store_lock.take());
+    let session = ProjectStoreSession::open(engine).await.map_err(|err| {
+        if let Some(menu_err) = &menu_error {
+            anyhow::anyhow!("{err:#} (menu fallback: {menu_err})")
+        } else {
+            err
+        }
+    })?;
     let mut result = session
         .call("trashAssetOp", json!(id), Some("trash asset"))
         .await?;
@@ -542,32 +588,38 @@ async fn invoke_trash_tile(
     Ok(result)
 }
 
-/// Moves a matching asset, character, scene, or collection to trash through the Flow store.
+/// Moves a matching asset, character, scene, or collection to trash without requiring an upfront store session.
 pub(crate) async fn trash_asset(
     engine: &ChromeEngine,
     db: &FlowDb,
     match_str: &str,
 ) -> Result<Value> {
-    let collections = ProjectStoreSession::open(engine).await?;
+    let mut store_lock = Some(engine.lock_project_store().await);
+    let snap = read_snapshot(engine).await?;
     let query = match_str.trim();
-    if collections.is_collection(query).await? {
-        return collections.delete(query).await;
+    let collections: Vec<FlowCollection> = serde_json::from_value(
+        snap.get("collections")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+    )?;
+    if let Some(exact_col) = collections.iter().find(|c| c.id == query) {
+        return invoke_trash_collection(engine, &mut store_lock, &exact_col.id).await;
     }
 
-    let mut tiles = collections
-        .run_collections(json!({ "action": "assets" }))
-        .await?;
-    let assets: Vec<FlowAsset> = serde_json::from_value(tiles["assets"].take())?;
-    let Some(asset) = match_asset(&assets, query, true) else {
-        let summaries: Vec<FlowCollection> = serde_json::from_value(tiles["collections"].take())?;
-        let collection = find_collection(&summaries, query, true)?
+    let assets: Vec<FlowAsset> = serde_json::from_value(
+        snap.get("assets")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+    )?;
+    let Some(asset) = match_asset(&assets, query, true).cloned() else {
+        let collection = find_collection(&collections, query, true)?
             .with_context(|| format!("No asset or collection matches '{query}' for flow_trash"))?;
-        return collections.delete(&collection.id).await;
+        return invoke_trash_collection(engine, &mut store_lock, &collection.id).await;
     };
 
     let id = &asset.id;
     let is_character = asset.kind == "character";
-    let res = invoke_trash_tile(engine, &collections, id)
+    let res = invoke_trash_tile(engine, &mut store_lock, id)
         .await
         .map_err(|err| anyhow::anyhow!("Failed to trash '{id}': {err:#}"))?;
     if is_character {

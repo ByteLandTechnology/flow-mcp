@@ -16,7 +16,7 @@ import {
 } from "./agent_chat";
 import { bindAngularViews } from "./angular";
 import { attachIngredients } from "./attach_ingredients";
-import { characterBioOp } from "./character_bio";
+import { characterBioEditorOp, characterBioOp } from "./character_bio";
 import { characterExtraOp } from "./character_extra";
 import { characterMediaOp } from "./character_media";
 import { characterOp } from "./character_ops";
@@ -79,6 +79,7 @@ if (!window.__flowMcp) {
     videoOp,
     characterOp,
     characterBioOp,
+    characterBioEditorOp,
     characterVoiceOp,
     characterMediaOp,
     characterExtraOp,

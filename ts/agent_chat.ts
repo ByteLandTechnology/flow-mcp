@@ -21,7 +21,11 @@ import type {
 import { agentSettingsOp, settingsWritePending } from "./agent_settings";
 import type { AgentInjector } from "./agent_settings";
 import { adaptAgentWire } from "./agent_wire";
-import { agentChatCompatibility } from "./frontend_compatibility";
+import {
+  agentAttachmentCompatibility,
+  agentChatCompatibility,
+  agentSettingsCompatibility,
+} from "./frontend_compatibility";
 import { readBuildLabel } from "./frontend_builds";
 import type { AgentChatFormat } from "./frontend_builds";
 
@@ -141,9 +145,10 @@ export function agentBusy(projectId: string): boolean {
 }
 
 /** Checks the frontend build and verifies the native Agent exports. */
-export function agentStatus(projectId: string) {
-  if (!onProject(projectId) || readBuildLabel() === null)
-    return failure("agent_page_not_ready");
+export function agentStatus(projectId: string, operation?: "agent_chat" | "agent_settings" | "agent_attachments") {
+  if (!onProject(projectId) || readBuildLabel() === null) return failure("agent_page_not_ready");
+  const extra = operation === "agent_settings" ? agentSettingsCompatibility() : operation === "agent_attachments" ? agentAttachmentCompatibility() : null;
+  if (extra && !extra.ok) return extra;
   const compatibility = agentChatCompatibility();
   if (!compatibility.ok) return compatibility;
   const ns = namespace();

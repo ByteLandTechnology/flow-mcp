@@ -19,8 +19,14 @@ use crate::project::ensure_flow_store;
 /// Menu item text that moves a tile to trash.
 const TRASH_MENU_ITEM: &str = "Move to trash";
 
+/// Menu item text that moves a collection to trash.
+const TRASH_COLLECTION_MENU_ITEM: &str = "Move all contents to trash";
+
 /// Menu item text that opens the rename control of a tile.
 const RENAME_MENU_ITEM: &str = "Rename";
+
+/// Menu item text that moves a tile out of its collection.
+pub(crate) const MOVE_OUT_MENU_ITEM: &str = "Move out of collection";
 
 /// Number of queue jobs that use the page now.
 static PAGE_JOBS: AtomicUsize = AtomicUsize::new(0);
@@ -44,7 +50,7 @@ impl Drop for PageHold {
 }
 
 /// Returns true when no queue job uses the page. A menu operation clicks the page and can change the route, so it must not run while a job waits on the page.
-fn page_is_free() -> bool {
+pub(crate) fn page_is_free() -> bool {
     PAGE_JOBS.load(Ordering::Acquire) == 0
 }
 
@@ -53,10 +59,18 @@ fn page_is_free() -> bool {
 pub(crate) struct TileState {
     /// `present`, `trashed`, or `gone`. Empty when the store is not readable.
     pub(crate) state: String,
+    /// Lowercase tile kind (`image`, `video`, `character`, `scene`, or `collection`).
+    pub(crate) kind: String,
     /// Display name of a present tile.
     pub(crate) name: String,
     /// Collection ID of a present tile, or `None` when no collection holds it.
     pub(crate) collection: Option<String>,
+    /// Active member count when the tile is a collection.
+    pub(crate) count: usize,
+    /// Direct non-collection member IDs when the tile is a collection.
+    pub(crate) member_ids: Vec<String>,
+    /// True when the collection holds one or more child collections.
+    pub(crate) has_child_collections: bool,
 }
 
 impl TileState {
@@ -66,23 +80,23 @@ impl TileState {
     }
 
     /// Returns true when the tile is in trash or the tile map does not show it.
-    fn is_trashed_or_gone(&self) -> bool {
+    pub(crate) fn is_trashed_or_gone(&self) -> bool {
         self.state == "trashed" || self.state == "gone"
     }
 }
 
 /// Runs one `tileDomOp` action of the browser runtime with the request `req`.
-async fn page_op(engine: &ChromeEngine, req: Value) -> Result<Value> {
+pub(crate) async fn page_op(engine: &ChromeEngine, req: Value) -> Result<Value> {
     engine.call_flow_async("tileDomOp", json!([req])).await
 }
 
 /// Runs one `tileDomOp` action of the browser runtime for tile `id`.
-async fn tile_dom_op(engine: &ChromeEngine, action: &str, id: &str) -> Result<Value> {
+pub(crate) async fn tile_dom_op(engine: &ChromeEngine, action: &str, id: &str) -> Result<Value> {
     page_op(engine, json!({ "action": action, "id": id })).await
 }
 
 /// Returns true when the result `res` of a page action has `ok` set.
-fn is_ok(res: &Value) -> bool {
+pub(crate) fn is_ok(res: &Value) -> bool {
     res.get("ok").and_then(|v| v.as_bool()) == Some(true)
 }
 
@@ -92,15 +106,37 @@ pub(crate) async fn tile_state(engine: &ChromeEngine, id: &str) -> TileState {
         return TileState::default();
     };
     let text = |key: &str| res.get(key).and_then(|v| v.as_str()).map(str::to_string);
+    let count = res
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0);
+    let member_ids = res
+        .get("member_ids")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let has_child_collections = res
+        .get("has_child_collections")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     TileState {
         state: text("state").unwrap_or_default(),
+        kind: text("kind").unwrap_or_default(),
         name: text("name").unwrap_or_default(),
         collection: text("collection").filter(|v| !v.is_empty()),
+        count,
+        member_ids,
+        has_child_collections,
     }
 }
 
 /// Polls the store state of tile `id` every 250 ms, and returns true when `done` accepts it within `tries` polls.
-async fn wait_tile_state(
+pub(crate) async fn wait_tile_state(
     engine: &ChromeEngine,
     id: &str,
     tries: u32,
@@ -121,36 +157,83 @@ pub(crate) async fn wait_trashed(engine: &ChromeEngine, id: &str, tries: u32) ->
 }
 
 /// Closes an open menu or overlay of the page.
-async fn dismiss_overlay(engine: &ChromeEngine) {
+pub(crate) async fn dismiss_overlay(engine: &ChromeEngine) {
     let _ = tile_dom_op(engine, "dismiss", "").await;
 }
 
-/// Hovers the tile that `loc` describes, opens its "More options" menu, and clicks the menu item `item`.
-///
-/// Returns false when the page does not show the tile, the menu, or the menu item. It closes the menu in that case.
-async fn click_menu_item_at(engine: &ChromeEngine, loc: &Value, item: &str) -> Result<bool> {
-    if !is_ok(loc) {
+/// Sends a trusted right-click at `(x, y)` to open the context menu of a grid tile.
+async fn right_click_at(engine: &ChromeEngine, x: f64, y: f64) -> Result<()> {
+    engine.mouse_move(x, y).await?;
+    engine
+        .cdp_call(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": "right",
+                "buttons": 2,
+                "clickCount": 1,
+            }),
+        )
+        .await?;
+    engine
+        .cdp_call(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": "right",
+                "buttons": 0,
+                "clickCount": 1,
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Opens the menu of tile `id` and clicks the first visible item from `items`.
+pub(crate) async fn click_tile_menu_items(
+    engine: &ChromeEngine,
+    id: &str,
+    items: &[&str],
+) -> Result<bool> {
+    let mut loc = tile_dom_op(engine, "locate", id).await?;
+    if !is_ok(&loc) {
         return Ok(false);
     }
-    let (Some(tile), Some(menu)) = (loc.get("tile"), loc.get("menu")) else {
+    let Some((x, y)) = loc.get("tile").and_then(|tile| {
+        Some((
+            tile.get("x").and_then(|v| v.as_f64())?,
+            tile.get("y").and_then(|v| v.as_f64())?,
+        ))
+    }) else {
         return Ok(false);
     };
-    if let (Some(x), Some(y)) = (
-        tile.get("x").and_then(|v| v.as_f64()),
-        tile.get("y").and_then(|v| v.as_f64()),
-    ) {
-        engine.mouse_move(x, y).await?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+    engine.mouse_move(x, y).await?;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    if loc.get("menu").is_none_or(Value::is_null)
+        && let Ok(refreshed) = tile_dom_op(engine, "locate", id).await
+        && is_ok(&refreshed)
+    {
+        loc = refreshed;
     }
-    if !engine.click_point(menu).await? {
-        return Ok(false);
+    let menu_clicked = match loc.get("menu") {
+        Some(menu) if !menu.is_null() => engine.click_point(menu).await?,
+        _ => false,
+    };
+    if !menu_clicked {
+        right_click_at(engine, x, y).await?;
     }
     for _ in 0..15 {
-        let point = engine
-            .call_flow_js("locatePoint", json!([{ "by": "menuitem", "name": item }]))
-            .await?;
-        if engine.click_point(&point).await? {
-            return Ok(true);
+        for item in items {
+            let point = engine
+                .call_flow_js("locatePoint", json!([{ "by": "menuitem", "name": item }]))
+                .await?;
+            if engine.click_point(&point).await? {
+                return Ok(true);
+            }
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
@@ -158,19 +241,22 @@ async fn click_menu_item_at(engine: &ChromeEngine, loc: &Value, item: &str) -> R
     Ok(false)
 }
 
-/// Opens the "More options" menu of tile `id` and clicks the menu item `item`.
-async fn click_tile_menu_item(engine: &ChromeEngine, id: &str, item: &str) -> Result<bool> {
-    let loc = tile_dom_op(engine, "locate", id).await?;
-    click_menu_item_at(engine, &loc, item).await
+/// Opens the menu of tile `id` and clicks `item`.
+pub(crate) async fn click_tile_menu_item(
+    engine: &ChromeEngine,
+    id: &str,
+    item: &str,
+) -> Result<bool> {
+    click_tile_menu_items(engine, id, &[item]).await
 }
 
 /// Page view to restore after an operation: `Some(collection ID)`, with an empty ID for the main grid.
-type SavedView = Option<String>;
+pub(crate) type SavedView = Option<String>;
 
 /// Opens the main grid when `collection` is `None`, or the page of that collection, and binds the store again.
 ///
 /// Returns the view to restore when the route changed. Returns `None` when the page already shows the view or cannot change to it.
-async fn enter_view(engine: &ChromeEngine, collection: Option<&str>) -> SavedView {
+pub(crate) async fn enter_view(engine: &ChromeEngine, collection: Option<&str>) -> SavedView {
     let before = page_op(engine, json!({ "action": "view" })).await.ok()?;
     let previous = before
         .get("collection")
@@ -188,7 +274,7 @@ async fn enter_view(engine: &ChromeEngine, collection: Option<&str>) -> SavedVie
 }
 
 /// Opens the view that shows tile `id`: the page of its collection, or the main grid.
-async fn enter_tile_view(engine: &ChromeEngine, id: &str) -> SavedView {
+pub(crate) async fn enter_tile_view(engine: &ChromeEngine, id: &str) -> SavedView {
     let state = tile_state(engine, id).await;
     if !state.is_present() {
         return None;
@@ -197,18 +283,61 @@ async fn enter_tile_view(engine: &ChromeEngine, id: &str) -> SavedView {
 }
 
 /// Opens the view that `saved` holds again, and binds the store again.
-async fn restore_view(engine: &ChromeEngine, saved: SavedView) {
+pub(crate) async fn restore_view(engine: &ChromeEngine, saved: SavedView) {
     if let Some(collection) = saved {
         let _ = tile_dom_op(engine, "open_view", &collection).await;
         let _ = ensure_flow_store(engine).await;
     }
 }
 
-/// Moves a media tile to trash through its menu, and returns true when the store confirms it.
-///
-/// Returns false when the page does not show the tile, the menu, or the menu item, so that the caller can use the store mutation.
+/// Moves a tile or collection to trash through its context menu, and returns true when the store confirms it.
 async fn trash_in_view(engine: &ChromeEngine, id: &str) -> Result<bool> {
-    if !click_tile_menu_item(engine, id, TRASH_MENU_ITEM).await? {
+    let state = tile_state(engine, id).await;
+    if state.kind == "collection" {
+        if !click_tile_menu_items(
+            engine,
+            id,
+            &[
+                TRASH_COLLECTION_MENU_ITEM,
+                "Delete collection",
+                TRASH_MENU_ITEM,
+            ],
+        )
+        .await?
+        {
+            return Ok(false);
+        }
+        for _ in 0..20 {
+            if tile_state(engine, id).await.is_trashed_or_gone() {
+                return Ok(true);
+            }
+            let mut confirmed = false;
+            for label in [
+                TRASH_COLLECTION_MENU_ITEM,
+                "Delete collection",
+                TRASH_MENU_ITEM,
+                "Delete",
+            ] {
+                let confirm = engine
+                    .call_flow_js("locatePoint", json!([{ "by": "text", "name": label }]))
+                    .await?;
+                if engine.click_point(&confirm).await? {
+                    confirmed = true;
+                    break;
+                }
+            }
+            if confirmed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        if wait_trashed(engine, id, 40).await {
+            return Ok(true);
+        }
+        dismiss_overlay(engine).await;
+        return Ok(false);
+    }
+    if !click_tile_menu_items(engine, id, &[TRASH_MENU_ITEM, "Delete"]).await? {
         return Ok(false);
     }
     if wait_trashed(engine, id, 40).await {
@@ -239,11 +368,20 @@ async fn press_enter(engine: &ChromeEngine) -> Result<()> {
     Ok(())
 }
 
-/// Types `name` into the focused rename control and submits it with the Enter key.
-async fn type_rename(engine: &ChromeEngine, name: &str) -> Result<bool> {
+/// Types `text` into the focused `control` (`tile`, `item`, or `title`) and submits it with Enter.
+pub(crate) async fn type_text_control(
+    engine: &ChromeEngine,
+    control: &str,
+    current: &str,
+    text: &str,
+) -> Result<bool> {
     let mut selected = false;
     for _ in 0..15 {
-        let res = page_op(engine, json!({ "action": "text_select" })).await?;
+        let res = page_op(
+            engine,
+            json!({ "action": "text_select", "control": control, "name": current }),
+        )
+        .await?;
         if is_ok(&res) && res.get("focused").and_then(|v| v.as_bool()) == Some(true) {
             selected = true;
             break;
@@ -255,12 +393,16 @@ async fn type_rename(engine: &ChromeEngine, name: &str) -> Result<bool> {
         return Ok(false);
     }
     engine
-        .cdp_call("Input.insertText", json!({ "text": name }))
+        .cdp_call("Input.insertText", json!({ "text": text }))
         .await?;
     tokio::time::sleep(Duration::from_millis(150)).await;
-    let typed = page_op(engine, json!({ "action": "text_value" })).await?;
-    if typed.get("value").and_then(|v| v.as_str()) != Some(name) {
-        // The control does not hold the new name. Do not submit a wrong name.
+    let typed = page_op(
+        engine,
+        json!({ "action": "text_value", "control": control, "name": text }),
+    )
+    .await?;
+    if typed.get("value").and_then(|v| v.as_str()) != Some(text) {
+        // The control does not hold the new text. Do not submit a wrong value.
         dismiss_overlay(engine).await;
         return Ok(false);
     }
@@ -268,12 +410,12 @@ async fn type_rename(engine: &ChromeEngine, name: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Renames a media tile in the current view through the "Rename" item of its menu.
+/// Renames a tile in the current view through the "Rename" item of its context menu.
 async fn rename_in_view(engine: &ChromeEngine, id: &str, name: &str) -> Result<bool> {
     if !click_tile_menu_item(engine, id, RENAME_MENU_ITEM).await? {
         return Ok(false);
     }
-    if !type_rename(engine, name).await? {
+    if !type_text_control(engine, "tile", "", name).await? {
         return Ok(false);
     }
     let renamed = wait_tile_state(engine, id, 40, |s| s.name == name).await;

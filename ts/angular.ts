@@ -4,7 +4,7 @@
 // Shared Angular Ivy LView traversal, router lookup, and scene creation helpers.
 
 import { delay, elText, fifeBase } from "./dom";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { projectMutationFormat } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
@@ -232,7 +232,7 @@ export async function createScene(
   workflowIds: string[],
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
   const before = new Set(sceneIds(getMap()));
-  const resultField = frontendBuild(readBuildLabel())?.projectStore.mutations?.sceneCreated ?? "VWa";
+  const resultField = projectMutationFormat()?.sceneCreated ?? "VWa";
   let confirmedId: string | undefined;
   let failure: string | undefined;
   const completion = {
@@ -251,7 +251,9 @@ export async function createScene(
     De: completion,
     ve: completion,
   })).then((response) => {
-    completion.resolve(readOwn(response, resultField));
+    completion.resolve(
+      readOwn(response, resultField) ?? readOwn(response, "t6a") ?? readOwn(response, "VWa"),
+    );
   }, completion.reject);
 
   while (performance.now() < deadline) {
