@@ -8,12 +8,16 @@ export type NgLView = unknown[];
 
 /** Google internal Wiz payload attached to window. */
 export interface WizGlobalData {
+  /** True when the server rendered an authenticated Google session. */
+  awbSEf?: boolean;
   /** Signed request token for batchexecute calls. */
   SNlM0e?: string;
   /** Session identifier for batchexecute calls. */
   FdrFJe?: string;
   /** Build label for batchexecute calls. */
   cfb2h?: string;
+  /** Frontend data path prefix for batchexecute calls. */
+  eptZe?: string;
   /** Encoded FIFE host configuration string. */
   TSDtV?: string;
 }
@@ -21,7 +25,7 @@ export interface WizGlobalData {
 /** Angular Router subset used for in-app navigation. */
 export interface AngularRouter {
   /** Navigate to an Angular route command array with optional extras. */
-  navigate: (commands: unknown[], extras?: { queryParams?: Record<string, string> }) => Promise<boolean>;
+  navigate: (commands: unknown[], extras?: Record<string, unknown>) => Promise<boolean>;
   /** Router location reference. */
   location: unknown;
   /** Router configuration options. */
@@ -30,6 +34,8 @@ export interface AngularRouter {
 
 /** Destroyable Angular component or service lifecycle handle. */
 export interface AngularLifecycleHandle {
+  /** Lifecycle destroy marker in the Flow front end from 2026-11-18 on. */
+  Ba?: { Va?: boolean };
   /** Ivy destroy marker containing the disposed flag `Va`. */
   Ca?: { Va?: boolean };
 }
@@ -56,6 +62,8 @@ export interface FlowMediaPayload {
   mediaUrl?: string;
   /** Fallback media URL field. */
   url?: string;
+  /** Media MIME type from the Flow front end. */
+  mimeType?: string;
   /** Media lifecycle status string. */
   Zc?: string;
   /** Media lifecycle status string in the Flow front end from 2026-11-15 on. */
@@ -70,7 +78,7 @@ export interface FlowMediaPayload {
   resolution?: number;
   /** Media width divided by media height. */
   aspectRatio?: number;
-  /** Submission time in the Flow front end from 2026-11-15 on. */
+  /** Uploaded media URL in build 20261120.00, or submission Date in earlier builds. */
   kc?: unknown;
   /** Text prompt used to generate the media. */
   prompt?: string;
@@ -114,8 +122,12 @@ export interface FlowMediaPayload {
 
 /** Character look history entry stored in tile look maps. */
 export interface CharacterLookEntry {
+  /** Media item identifier on look history entries. */
+  id?: string | number;
   /** Primary media identifier for the look. */
   primaryMediaId?: string | number;
+  /** Direct look image URL in build 20261120.00. */
+  kc?: unknown;
   /** FIFE look URL. */
   Wb?: string;
   /** Explicit FIFE URL alias. */
@@ -140,8 +152,12 @@ export interface SceneClipItem {
   primaryMediaId?: string | number;
   /** Clip status field. */
   Zc?: string;
+  /** Clip status field in the Flow front end from 2026-11-15 on. */
+  od?: string;
   /** Clip error field. */
   nf?: unknown;
+  /** Clip error field in the Flow front end from 2026-11-15 on. */
+  Bf?: unknown;
   /** Direct clip video URL. */
   Bd?: string;
   /** Secondary clip video URL. */
@@ -152,6 +168,8 @@ export interface SceneClipItem {
   Wb?: string;
   /** Explicit FIFE URL alias. */
   fifeUrl?: string;
+  /** Direct clip media URL in build 20261120.00. */
+  kc?: unknown;
   /** Trim start in seconds. */
   Mh?: number;
   /** Trim end in seconds. */
@@ -178,7 +196,7 @@ export interface FlowTile extends FlowMediaPayload {
   primaryMediaId?: string | number;
   /** Tile display title. */
   displayName?: string;
-  /** Uppercase tile kind (`IMAGE`, `VIDEO`, `SCENE`, `CHARACTER`, `COLLECTION`). */
+  /** Uppercase tile kind (`IMAGE`, `VIDEO`, `AUDIO`, `SCENE`, `CHARACTER`, `COLLECTION`). */
   type?: string;
   /** True while creation mutation is pending. */
   isPending?: boolean;
@@ -196,6 +214,8 @@ export interface FlowTile extends FlowMediaPayload {
   yb?: boolean;
   /** Minified trash flag of the 2026-11-15 front end. */
   Ab?: boolean;
+  /** Trash flag in build 20261118.14. */
+  Bb?: boolean;
   /** Trash flag in build 20261120.00. */
   Cb?: boolean;
   /** Primary uppercase media container. */
@@ -204,10 +224,16 @@ export interface FlowTile extends FlowMediaPayload {
   fb?: FlowMediaPayload;
   /** Primary media container in the Flow front end from 2026-11-15 on. */
   Eb?: FlowMediaPayload;
+  /** Primary media container in build 20261120.00. */
+  Kb?: FlowMediaPayload;
   /** Character preview fallback URL. */
   ue?: string;
+  /** Preview media identifier or fallback URL in build 20261120.00. */
+  Kd?: string;
   /** Character look slots map. */
   oi?: Map<unknown, CharacterLookEntry>;
+  /** Character look slots map in build 20261120.00. */
+  Ng?: Map<unknown, CharacterLookEntry>;
   /** Character personality biography notes. */
   personalityNotes?: string;
   /** Minified character personality notes. */
@@ -238,56 +264,12 @@ export interface FlowTile extends FlowMediaPayload {
   createDate?: string;
 }
 
-/** Mutation signal or queue object inside Angular store services. */
-export interface MutationQueueObj {
-  /** Pending item reader. */
-  ka?: () => { items?: Array<{ mutation?: unknown }> } | null | undefined;
-  /** Async promise mutation runner. */
-  oe?: (payload: Record<string, unknown>) => Promise<unknown>;
-  /** Async mutation helper. */
-  mutateAsync?: (payload: Record<string, unknown>) => Promise<unknown>;
-  /** Queue mutation dispatcher. */
-  mutate?: (payload: Record<string, unknown>) => unknown;
-  /** Signal error accessor. */
-  error?: () => unknown;
-  /** Status stream with `subscribe`. */
-  Ha?: { subscribe?: (cb: (ev: { mutation?: unknown; error?: unknown }) => void) => { unsubscribe?: () => void } };
-  /** Alternate status stream with `subscribe`. */
-  ua?: { subscribe?: (cb: (ev: { mutation?: unknown; error?: unknown }) => void) => { unsubscribe?: () => void } };
-}
-
-/** Resolved Angular project store service instance or wrapper. */
-export interface FlowStoreService extends AngularLifecycleHandle {
-  /** Underlying `_ap` store variant. */
-  _ap?: FlowStoreService & { RC?: { isPending?: () => boolean }; lc?: MutationQueueObj };
-  /** Underlying `_uo` store variant. */
-  _uo?: FlowStoreService;
-  /** Tile map getter or inner signal container. */
-  ka?: (() => Map<string, FlowTile> | null | undefined) | MutationQueueObj;
-  /** Nested signal container or mutator. */
-  ha?: (FlowStoreService & MutationQueueObj) | null;
-  /** Lifecycle controller or mutation runner. */
-  lc?: MutationQueueObj;
-  /** Nested mutation runner. */
-  mutate?: (payload: Record<string, unknown>) => unknown;
-  /** Direct rename method on legacy store services. */
-  RK?: (id: string, displayName: string) => Promise<unknown>;
-  /** Legacy helper signature. */
-  ZA?: (...args: unknown[]) => unknown;
-  /** Optional nested query metadata. */
-  na?: unknown;
-  /** Optional tile fetcher signal. */
-  PG?: (projectId: string | null, payload: Record<string, unknown>) => Promise<unknown>;
-  /** Query key builder on UO stores. */
-  queryKey?: (projectId: string | null) => unknown;
-  /** Query cache handle on UO stores. */
-  ob?: { ha?: (qk: unknown) => { Cb?: FlowTile[] } | null | undefined };
-}
-
 /** Unified project store handle bound into module state. */
 export interface FlowStoreHandle {
   /** Active project identifier extracted from the route. */
   projectId: string | null;
+  /** Returns true when the bound store matches the active route and remains live. */
+  isCurrent: () => boolean;
   /** Returns the current project tile map if available. */
   getTileMap: () => Map<string, FlowTile> | null | undefined;
   /** Returns true when pending store fetches have settled. */
@@ -308,57 +290,123 @@ export interface FifeEnv {
   isSignedCdnHost: (parsed: URL) => boolean;
 }
 
+/** Serialized prompt text segment sent to `PromptStateController`. */
+export interface PromptTextSegment {
+  /** Segment kind, such as `"text"`. */
+  type: string;
+  /** Segment text payload. */
+  content: string;
+}
+
+/** Serialized prompt document accepted by `PromptStateController`. */
+export interface PromptDocumentPayload {
+  /** Prompt segments in earlier builds. */
+  Oe?: PromptTextSegment[];
+  /** Prompt segments in build 20261120.00. */
+  Te?: PromptTextSegment[];
+}
+
 /** Flow prompt validation and submission state controller. */
 export interface PromptStateController {
-  /** Applies serialized prompt segments. */
-  Wn?: (doc: { Oe: Array<{ type: string; content: string }> }) => void;
+  /** Applies serialized prompt segments in earlier builds. */
+  Wn?: (doc: PromptDocumentPayload) => void;
+  /** Applies serialized prompt segments in build 20261120.00. */
+  Gp?: (doc: PromptDocumentPayload) => void;
   /** Prompt text helper object. */
-  prompt?: { Le?: () => boolean };
-  /** Validator status object. */
+  prompt?: {
+    /** Returns true when the prompt is empty in earlier builds. */
+    Le?: () => boolean;
+    /** Returns true when the prompt is empty in build 20261120.00. */
+    Ke?: () => boolean;
+  };
+  /** Validator status object in earlier builds. */
   lf?: { isValid?: () => boolean; jYa?: () => string };
+  /** Validator status object in build 20261120.00. */
+  Ff?: { isValid?: () => boolean; N7a?: () => string };
   /** Mode, output count, and model config signals. */
   config?: {
     mode?: () => string;
     outputCount?: () => number;
   };
+  /** Attached item signal container in legacy builds. */
+  kc?: { all?: () => Array<Record<string, unknown>> };
+  /** Attached item signal container in build 20261120.00 and later. */
+  oc?: { all?: () => Array<Record<string, unknown>> };
 }
+
+/** Rich text editor component wrapper that holds a ProseMirror view. */
+export interface RichTextEditorInstance {
+  /** ProseMirror editor view in earlier builds. */
+  th?: unknown;
+  /** ProseMirror editor view in build 20261120.00. */
+  Tb?: unknown;
+}
+
+/** Writable signal subset that controls an open state boolean. */
+export type BooleanOverlaySignal =
+  | ((() => unknown) & { set?: (open: boolean) => void })
+  | { set?: (open: boolean) => void };
 
 /** Angular component controller for a base prompt box. */
 export interface BasePromptBoxInstance {
   /** Prompt state signal container. */
   Qa?: PromptStateController;
-  /** Returns rich editor wrapper containing ProseMirror `th`. */
-  CQ?: () => { th?: unknown } | null | undefined;
-  /** Submits or prepares prompt state. */
+  /** Returns the rich editor wrapper in earlier builds. */
+  CQ?: () => RichTextEditorInstance | null | undefined;
+  /** Returns the rich editor wrapper in build 20261120.00. */
+  IU?: () => RichTextEditorInstance | null | undefined;
+  /** Submits or prepares prompt state in earlier builds. */
   Wn?: (...args: unknown[]) => unknown;
-  /** Returns true when the prompt box can submit. */
+  /** Submits or prepares prompt state in build 20261120.00. */
+  Gp?: (...args: unknown[]) => unknown;
+  /** Returns true when the prompt box can submit in earlier builds. */
   qf?: () => boolean;
-  /** Controls settings overlay visibility. */
-  VJ?: (() => unknown) & { set?: (open: boolean) => void };
+  /** Returns true when the prompt box can submit in build 20261120.00. */
+  wf?: () => boolean;
+  /** Controls settings overlay visibility in earlier builds. */
+  VJ?: BooleanOverlaySignal;
+  /** Controls settings overlay visibility in build 20261120.00. */
+  rN?: BooleanOverlaySignal;
+  /** Returns the disabled submit reason in earlier builds. */
+  sL?: () => string;
+  /** Returns the disabled submit reason in build 20261120.00. */
+  vV?: () => string;
 }
 
 /** Host container managing manual and agent prompt boxes. */
 export interface PromptBoxHost {
-  /** Toggles between manual and agent composer modes. */
-  Tx: () => void;
-  /** Returns true while agent mode is active. */
-  Sk: () => boolean;
-  /** Returns the active manual base prompt box instance. */
+  /** Toggles between manual and agent composer modes in earlier builds. */
+  Tx?: () => void;
+  /** Toggles between manual and agent composer modes in build 20261120.00. */
+  Xu?: () => void;
+  /** Returns true while agent mode is active in earlier builds. */
+  Sk?: () => boolean;
+  /** Returns true while agent mode is active in build 20261120.00. */
+  Nl?: () => boolean;
+  /** Returns the active manual base prompt box instance in earlier builds. */
   mt?: () => BasePromptBoxInstance | null | undefined;
+  /** Returns the active manual base prompt box instance in build 20261120.00. */
+  zr?: () => BasePromptBoxInstance | null | undefined;
 }
 
 /** Angular project page component instance. */
 export interface ProjectPageInstance {
-  /** Attaches a tile reference directly into composer state. */
-  Ph: (tile: FlowTile) => void;
+  /** Attaches a tile reference directly into composer state on legacy builds. */
+  Ph?: (tile: FlowTile) => void;
   /** Prompt state and attached item signal container. */
-  Qa: PromptStateController & { kc?: { all?: () => Array<Record<string, unknown>> } };
-  /** Store/mode mutation signal container. */
-  ub: { mutate: (value: unknown) => unknown };
+  Qa?: PromptStateController;
+  /** Store or mode mutation signal container. */
+  ub?: { mutate?: (value: unknown) => unknown };
+  /** Store mutation dispatcher on the project page. */
+  he?: { mutate?: (value: unknown) => unknown };
+  /** Optional attached item signal container alias. */
+  oc?: { all?: () => Array<Record<string, unknown>> };
   /** Secondary agent state signal container. */
   Ta?: { mutate?: (value: unknown) => void };
-  /** Returns the prompt box host component. */
+  /** Returns the prompt box host component in earlier builds. */
   jQ?: () => PromptBoxHost | null | undefined;
+  /** Returns the prompt box host component in build 20261120.00. */
+  NF?: () => PromptBoxHost | null | undefined;
 }
 
 /** ProseMirror editor transaction builder subset. */
@@ -382,18 +430,24 @@ export interface ProseMirrorState {
   doc: { content: { size: number } };
   /** Default transaction builder. */
   tr?: ProseMirrorTransaction;
-  /** Minified transaction builder alias. */
+  /** Minified transaction builder alias in earlier builds. */
   Fi?: ProseMirrorTransaction;
+  /** Minified transaction builder alias in build 20261120.00. */
+  uj?: ProseMirrorTransaction;
 }
 
 /** ProseMirror editor view subset. */
 export interface ProseMirrorView {
   /** Current editor state. */
   state: ProseMirrorState;
+  /** Root DOM element of the editor view. */
+  dom?: Element;
   /** Standard transaction dispatch function. */
   dispatch?: (tr: ProseMirrorTransaction) => void;
-  /** Minified transaction dispatch alias. */
+  /** Minified transaction dispatch alias in earlier builds. */
   Qd?: (tr: ProseMirrorTransaction) => void;
+  /** Minified transaction dispatch alias in build 20261120.00. */
+  Td?: (tr: ProseMirrorTransaction) => void;
 }
 
 /** Options accepted by `writePromptBox`. */
@@ -430,14 +484,22 @@ export interface CachedMediaInfo {
   download_url: string;
   /** Ordered list of candidate download URLs. */
   candidates: string[];
+  /** Media kind from the wire response when known. */
+  media_kind?: "video" | "image" | "audio";
 }
 
 /** Result returned by `checkAuth`. */
 export interface AuthCheckResult {
-  /** True when Flow displays an authenticated app shell. */
+  /** True when Flow confirms an active workspace session. */
   signed_in: boolean;
-  /** True when a landing page or sign-in link explicitly indicates signed-out state. */
+  /** True when route, Wiz flags, or backend errors reject the session. */
   explicit_signed_out: boolean;
+  /** True when the session token expired and the workspace page must reload. */
+  token_expired: boolean;
+  /** HTTP status code of the backend probe, or 0 when skipped. */
+  status: number;
+  /** Short code that describes the verification outcome. */
+  reason: string;
   /** Current document title. */
   title: string;
   /** Lowercase active location pathname. */
@@ -450,6 +512,8 @@ export interface DiscoverStoreResult {
   bound: boolean;
   /** True when this call discovered a fresh store handle. */
   newlyDiscovered: boolean;
+  /** Optional compatibility or discovery error code. */
+  error?: string;
 }
 
 /** Asset entry normalized for `readStoreSnapshot`. */
@@ -458,7 +522,7 @@ export interface SnapshotAssetItem {
   id: string;
   /** Display name. */
   name: string;
-  /** Asset kind (`image`, `video`, `scene`, or `character`). */
+  /** Asset kind (`image`, `video`, `audio`, `scene`, or `character`). */
   kind: string;
   /** Generation prompt text. */
   prompt: string | null;
@@ -545,7 +609,13 @@ export interface FetchedMediaPayload {
 /** Result returned by `resolveVideoUrl`. */
 export type ResolvedMediaResult =
   | { ok: false; error: string }
-  | { ok: true; url: string; download_url: string; candidates: string[] };
+  | {
+      ok: true;
+      url: string;
+      download_url: string;
+      candidates: string[];
+      media_kind?: "video" | "image" | "audio";
+    };
 
 /** Configuration payload shared by `setupGeneration` and `attachIngredients`. */
 export interface GenerationConfig {
@@ -703,13 +773,13 @@ export interface StoreProbeCheck {
   detail: string;
 }
 
-/** Result of the non-mutating project store probe. */
+/** Result of the non-mutating front-end build and project store probe. */
 export interface StoreProbeResult {
   /** Front-end build label, or null when the page publishes none. */
   build: string | null;
-  /** True when every check passed. */
+  /** True when the build is verified and all checks and operations pass. */
   ok: boolean;
-  /** Individual checks in run order. */
+  /** Build and store checks in run order. */
   checks: StoreProbeCheck[];
   /** Compatibility of each managed internal operation. */
   operations: Record<string, { ok: boolean; failed_checks: StoreProbeCheck[] }>;
@@ -735,8 +805,8 @@ export interface FlowMcpRuntime {
   agentStatus: typeof import("./agent_chat").agentStatus;
   /** Binds the Agent services of the project page. */
   bindAgent: typeof import("./agent_chat").bindAgent;
-  /** Probes Google Flow authentication shell status. */
-  checkAuth: () => AuthCheckResult;
+  /** Verifies Google Flow workspace authentication on the active page. */
+  checkAuth: () => Promise<AuthCheckResult>;
   /** Discovers Angular Ivy store services and binds module state. */
   discoverStore: () => Promise<DiscoverStoreResult>;
   /** Reads normalized assets, collections, title, and credits from bound store. */
@@ -764,7 +834,11 @@ export interface FlowMcpRuntime {
   /** Fetches a media URL with page credentials and returns Base64 payload metadata. */
   fetchMedia: (u: string, expectedKind: string) => Promise<FetchedMediaPayload>;
   /** Resolves stream and download URLs for a primary media identifier via `as29s`. */
-  resolveVideoUrl: (primaryMediaId: string) => Promise<ResolvedMediaResult>;
+  resolveVideoUrl: (
+    primaryMediaId: string,
+    timeoutMs?: number | null,
+    bypassCache?: boolean,
+  ) => Promise<ResolvedMediaResult>;
   /** Configures generation mode, video type, aspect ratio, count, duration, resolution, and model. */
   setupGeneration: (cfg: GenerationConfig) => Promise<{ ok: boolean; error?: string }>;
   /** Attaches ingredient assets or characters and writes the generation prompt. */
@@ -795,6 +869,8 @@ export interface FlowMcpRuntime {
   characterExtraOp: (req: CharacterExtraOpRequest) => Promise<unknown>;
   /** Returns the front-end build label of the page, or null. */
   buildLabel: () => string | null;
+  /** Checks front-end build compatibility outside an open project. */
+  probeBuild: () => StoreProbeResult;
   /** Checks the bound project store shape without calling a mutation. */
   probeStore: () => StoreProbeResult;
   /** Returns the click point of a visible control by accessible name, or null. */

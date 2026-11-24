@@ -3,6 +3,8 @@
 
 //! Browser session for direct project store operations.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use tokio::sync::MutexGuard;
@@ -33,7 +35,26 @@ impl<'a> ProjectStoreSession<'a> {
             .and_then(|url| project_id_from_url(url.path()))
             .context("Open a Google Flow project before you use this tool")?;
         let guard = engine.lock_project_store().await;
-        let session = checked_runtime_result(bind_current_store(engine, &project_id).await?)?
+        let mut dom_probed = false;
+        let mut status = bind_current_store(engine, &project_id).await?;
+        for _ in 0..25 {
+            let err = status.get("error").and_then(Value::as_str);
+            if err == Some("collection_store_not_bound") && !dom_probed {
+                dom_probed = true;
+                let _ = engine.call_flow_async("discoverStore", json!([])).await;
+                status = engine
+                    .call_flow_js("projectStoreStatus", json!([project_id]))
+                    .await?;
+                continue;
+            }
+            if err == Some("store_loading") {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                status = bind_current_store(engine, &project_id).await?;
+                continue;
+            }
+            break;
+        }
+        let session = checked_runtime_result(status)?
             .get("session")
             .and_then(Value::as_str)
             .context("The browser did not return the project store session")?
@@ -82,8 +103,8 @@ pub(crate) async fn prepare_project_store_status(engine: &ChromeEngine, project_
     }
 }
 
-/// Reads or binds the direct store for the requested project.
-async fn bind_current_store(engine: &ChromeEngine, project_id: &str) -> Result<Value> {
+/// Reads or binds the verified store for the requested project.
+pub(crate) async fn bind_current_store(engine: &ChromeEngine, project_id: &str) -> Result<Value> {
     let status = engine
         .call_flow_js("projectStoreStatus", json!([project_id]))
         .await?;

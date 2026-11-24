@@ -25,6 +25,7 @@ mod mcp;
 mod media_files;
 mod platform;
 mod project;
+mod project_route;
 mod project_store;
 mod queue;
 mod scenes;
@@ -33,8 +34,8 @@ mod tile_menu;
 mod upload;
 mod voices;
 
-use anyhow::Result;
 use clap::Parser;
+use std::process::ExitCode;
 use std::time::Duration;
 
 /// Time that blocking tasks, such as SQLite writes, get to finish after the subcommand ends.
@@ -44,12 +45,25 @@ use std::time::Duration;
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Parses the command line, runs the selected subcommand, and stops the runtime within a time limit.
-fn main() -> Result<()> {
+fn main() -> ExitCode {
     let cli = cli::Cli::parse();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?;
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("Error: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
     let result = runtime.block_on(cli::run(cli));
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
-    result
+    match result {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("Error: {err:#}");
+            ExitCode::FAILURE
+        }
+    }
 }

@@ -24,7 +24,13 @@ export function uploadUiAction(action: string): boolean {
     return false;
   }
 
-  const els = Array.from(document.querySelectorAll('button, [role="button"]'));
+  const promptBox = document.querySelector("flow-prompt-box");
+  const els = [
+    ...Array.from(
+      promptBox?.querySelectorAll('button, [role="button"]') ?? [],
+    ),
+    ...Array.from(document.querySelectorAll('button, [role="button"]')),
+  ];
   const trigger = els.find((el): el is HTMLElement => {
     if (!isVisibleEnabled(el)) return false;
     const label = (
@@ -33,7 +39,7 @@ export function uploadUiAction(action: string): boolean {
       el.getAttribute("title") ||
       ""
     ).trim();
-    return /add ingredients to the prompt box|add frame|first frame|upload|attach|reference|add_photo_alternate|add_a_photo/i.test(
+    return /^(?:start|end)$|add ingredients to the prompt box|add frame|first frame|upload|attach|reference|add_photo_alternate|add_a_photo/i.test(
       label,
     );
   });

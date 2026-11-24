@@ -11,14 +11,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Duration, Instant};
 
 use crate::collections::{FlowCollection, find_collection};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
-use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
+use crate::project::{ensure_flow_store, read_snapshot};
 use crate::project_store::ProjectStoreSession;
 use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu};
 
@@ -35,7 +34,7 @@ pub(crate) struct FlowAsset {
     pub(crate) id: String,
     /// Asset display name (`displayName` in the tile store).
     pub(crate) name: String,
-    /// Asset kind (`"video"`, `"image"`, `"scene"`, or `"character"`).
+    /// Asset kind (`"video"`, `"image"`, `"audio"`, `"scene"`, or `"character"`).
     pub(crate) kind: String,
     /// Generation prompt for the asset.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,7 +124,7 @@ pub(crate) struct AssetsParams {
     pub(crate) files: Option<Vec<String>>,
     /// Case-insensitive substring that matches asset ID, name, or prompt.
     pub(crate) query: Option<String>,
-    /// Asset kind filter: "image", "video", "scene", "character", or "all" (default).
+    /// Asset kind filter: "image", "video", "audio", "scene", "character", or "all" (default).
     pub(crate) kind: Option<String>,
     /// Collection filter: collection ID, name substring, "all", "none", or "uncollected".
     pub(crate) collection: Option<String>,
@@ -159,7 +158,7 @@ pub(crate) struct TrashParams {
     pub(crate) r#match: String,
 }
 
-/// Resolves missing direct media URLs on finished image or video tiles through `as29s` RPCs.
+/// Resolves missing direct media URLs on finished media and character tiles through `as29s` RPCs.
 async fn populate_missing_media_urls(
     engine: &ChromeEngine,
     assets: &mut [FlowAsset],
@@ -167,8 +166,10 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
-        if !matches!(asset.kind.as_str(), "video" | "image")
-            || asset.url.is_some()
+        if !matches!(
+            asset.kind.as_str(),
+            "video" | "image" | "character" | "audio"
+        ) || asset.url.is_some()
             || asset.media_error.is_some()
             || matches!(
                 asset.media_status.as_deref(),
@@ -194,32 +195,49 @@ async fn populate_missing_media_urls(
             let timeout_ms = deadline.and_then(|at| {
                 u64::try_from(at.saturating_duration_since(Instant::now()).as_millis()).ok()
             });
-            let resolved = eval_resolve_media_url(engine, &media_id, timeout_ms)
+            let (resolved, media_kind) = eval_resolve_media_url(engine, &media_id, timeout_ms)
                 .await
-                .and_then(|val| {
-                    val.get("url")
+                .map(|val| {
+                    let url = val
+                        .get("url")
                         .and_then(|v| v.as_str())
                         .map(str::trim)
                         .filter(|u| u.starts_with("http"))
-                        .map(str::to_string)
-                });
-            (indices, resolved)
+                        .map(str::to_string);
+                    let kind = val
+                        .get("media_kind")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    (url, kind)
+                })
+                .unwrap_or((None, None));
+            (indices, resolved, media_kind)
         })
         .buffer_unordered(MEDIA_URL_LOOKUPS);
     futures_util::pin_mut!(lookups);
-    while let Some((indices, url)) = lookups.next().await {
+    while let Some((indices, url, media_kind)) = lookups.next().await {
         for index in indices {
-            assets[index].url = url.clone();
+            if let Some(ref resolved_url) = url {
+                assets[index].url = Some(resolved_url.clone());
+            }
+            if assets[index].kind == "image" && media_kind.as_deref() == Some("audio") {
+                assets[index].kind = "audio".to_string();
+            }
         }
     }
 }
 
-/// Reads the active project's metadata and full asset list in one snapshot call.
+/// Reads the active project's metadata and full asset list within the URL lookup time limit.
 pub(crate) async fn list_assets_with_project(
     engine: &ChromeEngine,
 ) -> Result<ProjectAssetsSnapshot> {
     let mut snapshot = read_project_assets(engine).await?;
-    populate_missing_media_urls(engine, &mut snapshot.assets, None).await;
+    let deadline = Instant::now() + ASSET_LIST_URL_BUDGET;
+    let _ = tokio::time::timeout_at(
+        deadline,
+        populate_missing_media_urls(engine, &mut snapshot.assets, Some(deadline)),
+    )
+    .await;
     Ok(snapshot)
 }
 
@@ -295,7 +313,7 @@ pub(crate) async fn resolve_asset(
     include_prompt: bool,
     context_label: &str,
 ) -> Result<(FlowAsset, Option<String>, Option<String>)> {
-    let snap = list_assets_with_project(engine).await?;
+    let snap = read_project_assets(engine).await?;
     let target = match_asset(&snap.assets, match_str, include_prompt)
         .cloned()
         .with_context(|| {
@@ -321,6 +339,8 @@ pub(crate) async fn list_assets(
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
     let k_filter = request.kind.as_deref().unwrap_or("all");
+    let resolve_urls = request.resolve_urls.unwrap_or(true);
+    let classify_media = resolve_urls && matches!(k_filter, "image" | "audio");
     let col_filter = request
         .collection
         .as_deref()
@@ -329,7 +349,9 @@ pub(crate) async fn list_assets(
     let mut filtered: Vec<FlowAsset> = all
         .into_iter()
         .filter(|a| {
-            if k_filter != "all" && a.kind != k_filter {
+            let possible_audio =
+                classify_media && k_filter == "audio" && a.kind == "image" && a.url.is_none();
+            if k_filter != "all" && a.kind != k_filter && !possible_audio {
                 return false;
             }
             if let Some(q) = &q_lower {
@@ -357,16 +379,22 @@ pub(crate) async fn list_assets(
         })
         .collect();
 
-    if let Some(lim) = request.limit {
+    if !classify_media && let Some(lim) = request.limit {
         filtered.truncate(lim);
     }
-    if request.resolve_urls.unwrap_or(true) {
+    if resolve_urls {
         let deadline = Instant::now() + ASSET_LIST_URL_BUDGET;
         let _ = tokio::time::timeout_at(
             deadline,
             populate_missing_media_urls(engine, &mut filtered, Some(deadline)),
         )
         .await;
+    }
+    if classify_media {
+        filtered.retain(|a| a.kind == k_filter);
+        if let Some(lim) = request.limit {
+            filtered.truncate(lim);
+        }
     }
     Ok(filtered)
 }
@@ -381,6 +409,26 @@ fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
                     && item.get("name").and_then(Value::as_str) == Some(name)
             })
         })
+}
+
+/// Polls project snapshots after a settle delay to confirm that `id` holds `name`.
+async fn confirm_renamed_asset(engine: &ChromeEngine, id: &str, name: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    while Instant::now() < deadline {
+        if let Ok(snap) = read_snapshot(engine).await
+            && snapshot_has_renamed(&snap, id, name)
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Ok(settled) = read_snapshot(engine).await
+                && snapshot_has_renamed(&settled, id, name)
+            {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
 }
 
 /// Renames collections through the collection store and other tiles through the page or store.
@@ -427,8 +475,6 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
         }
         let mut ok = false;
         for attempt in 0..2 {
-            // Subscribe before calling rename so the listener catches store RPC responses.
-            let mut rx = engine.subscribe_network().await?;
             let res = engine
                 .call_flow_async(
                     "assetOps",
@@ -443,43 +489,7 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
                 failed.push(json!({ "id": entry.id, "name": entry.name, "error": e }));
                 continue 'items;
             }
-
-            let mut confirmed = read_snapshot(engine)
-                .await
-                .is_ok_and(|snap| snapshot_has_renamed(&snap, &entry.id, &entry.name));
-
-            if !confirmed {
-                let deadline = Instant::now() + Duration::from_secs(6);
-                loop {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        break;
-                    }
-                    let slice = remaining.min(Duration::from_millis(500));
-                    match tokio::time::timeout(slice, rx.recv()).await {
-                        Ok(Ok(ev)) => {
-                            if is_flow_mutation_rpc_ok(&ev) {
-                                confirmed = true;
-                                break;
-                            }
-                        }
-                        Ok(Err(RecvError::Lagged(_))) => continue,
-                        Ok(Err(RecvError::Closed)) => break,
-                        Err(_) => {
-                            if let Ok(snap) = read_snapshot(engine).await
-                                && snapshot_has_renamed(&snap, &entry.id, &entry.name)
-                            {
-                                confirmed = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if !confirmed && let Ok(snap) = read_snapshot(engine).await {
-                confirmed = snapshot_has_renamed(&snap, &entry.id, &entry.name);
-            }
-            if confirmed {
+            if confirm_renamed_asset(engine, &entry.id, &entry.name).await {
                 ok = true;
                 break;
             }

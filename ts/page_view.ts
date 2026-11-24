@@ -3,7 +3,7 @@
 
 // Switch the project page between the main grid and a collection page, and use the text controls of the page.
 
-import { findRouter } from "./angular";
+import { findRouter, navigateSpa } from "./angular";
 import { delay } from "./dom";
 import { clearStore } from "./state";
 
@@ -43,7 +43,7 @@ export async function openView(collection: string): Promise<Record<string, unkno
   const commands = want
     ? ["/project", view.projectId, "collection", want]
     : ["/project", view.projectId];
-  await router.navigate(commands, { queryParams: { hl: "en" } });
+  await navigateSpa(router, commands);
   for (let i = 0; i < 50; i++) {
     await delay(100);
     const now = currentView();

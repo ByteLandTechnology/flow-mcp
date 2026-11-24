@@ -3,9 +3,46 @@
 
 // Locate the enabled Flow generation submit button and compute its viewport click point.
 
-import { readOwn } from "./angular";
+import { readAngularTooltip, readOwn, resolveLView } from "./angular";
+import { findComposerWarning } from "./composer";
 import { delay, elText, isVisibleEnabled } from "./dom";
 import { runtimeState } from "./state";
+import type { NgLView } from "./types";
+
+/** Extracts a disabled submit validator message from a component or controller candidate. */
+function readCandidateValidatorReason(cand: unknown): string {
+  if (!cand || typeof cand !== "object" || cand instanceof Node) return "";
+  try {
+    const vVFn = readOwn(cand, "vV");
+    if (typeof vVFn === "function") {
+      const msg = String(vVFn.call(cand) || "").trim();
+      if (msg) return msg;
+    }
+    const sLFn = readOwn(cand, "sL");
+    if (typeof sLFn === "function") {
+      const msg = String(sLFn.call(cand) || "").trim();
+      if (msg) return msg;
+    }
+    const qa = readOwn(cand, "Qa");
+    const qaFf = readOwn(qa, "Ff") as { N7a?: () => string } | undefined;
+    const qaLf = readOwn(qa, "lf") as { jYa?: () => string } | undefined;
+    const qaMsg = String(qaFf?.N7a?.() || qaLf?.jYa?.() || "").trim();
+    if (qaMsg) return qaMsg;
+
+    const applyFn = readOwn(cand, "Gp") ?? readOwn(cand, "Wn");
+    if (typeof applyFn === "function") {
+      const directFf = readOwn(cand, "Ff") as { N7a?: () => string } | undefined;
+      const directLf = readOwn(cand, "lf") as { jYa?: () => string } | undefined;
+      const directMsg = String(
+        directFf?.N7a?.() || directLf?.jYa?.() || "",
+      ).trim();
+      if (directMsg) return directMsg;
+    }
+  } catch {
+    // Ignore unreachable validator methods.
+  }
+  return "";
+}
 
 /** Finds the enabled Start generation button, uncovers it if needed, and returns its viewport point. */
 export async function submitGeneration(): Promise<unknown> {
@@ -66,6 +103,8 @@ export async function submitGeneration(): Promise<unknown> {
   }
 
   const onEditPage = /\/edit\//.test(location.pathname || "");
+  const agentSelector =
+    "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
   const scopedSelectors = onEditPage
     ? [
         'flow-edit-video-prompt-box button[aria-label="Start generation"]',
@@ -77,17 +116,37 @@ export async function submitGeneration(): Promise<unknown> {
         'flow-prompt-box flow-base-prompt-box button[aria-label="Start generation"]',
         'flow-prompt-box button[aria-label="Start generation"]',
       ];
+  const warningRoots = (): ParentNode[] => {
+    const roots: ParentNode[] = (
+      onEditPage
+        ? [
+            document.querySelector("flow-edit-video-prompt-box"),
+            document.querySelector("flow-editor-page"),
+            document.querySelector("flow-scene-builder"),
+          ]
+        : [
+            document.querySelector("flow-prompt-box flow-base-prompt-box"),
+            document.querySelector("flow-prompt-box"),
+          ]
+    ).filter((el): el is Element => Boolean(el));
+    roots.push(document);
+    return roots;
+  };
+  const checkWarning = (): { ok: false; error: string; detail: string } | null => {
+    const w = findComposerWarning(warningRoots(), !onEditPage);
+    if (!w) return null;
+    return {
+      ok: false,
+      error: w.kind === "credit" ? "credit_quota_exceeded" : "high_demand_warning",
+      detail: w.detail,
+    };
+  };
   const findStartButton = (): HTMLElement | null => {
     for (const sel of scopedSelectors) {
       const match = Array.from(document.querySelectorAll(sel)).find(
         (b): b is HTMLElement => {
           if (!isVisible(b)) return false;
-          if (
-            !onEditPage &&
-            b.closest(
-              "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box",
-            )
-          ) {
+          if (!onEditPage && b.closest(agentSelector)) {
             return false;
           }
           return true;
@@ -99,12 +158,7 @@ export async function submitGeneration(): Promise<unknown> {
       document.querySelectorAll('button[aria-label="Start generation"]'),
     ).find((b): b is HTMLElement => {
       if (!isVisible(b)) return false;
-      if (
-        !onEditPage &&
-        b.closest(
-          "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box",
-        )
-      ) {
+      if (!onEditPage && b.closest(agentSelector)) {
         return false;
       }
       return true;
@@ -117,6 +171,8 @@ export async function submitGeneration(): Promise<unknown> {
     if (isVisibleEnabled(exact)) {
       return await prepareTarget(exact, "aria_start_generation");
     }
+    const warning = checkWarning();
+    if (warning) return warning;
     if (exact && isVisible(exact)) {
       await delay(100);
     } else {
@@ -124,40 +180,58 @@ export async function submitGeneration(): Promise<unknown> {
     }
   }
 
+  const warningAfter = checkWarning();
+  if (warningAfter) return warningAfter;
+
   const exactAfter = findStartButton();
   if (exactAfter && isVisible(exactAfter) && !isVisibleEnabled(exactAfter)) {
-    let reason = runtimeState.promptState?.lf?.jYa?.() || "";
-    if (!reason && runtimeState.ngLViewMap instanceof Map) {
-      for (const lv of runtimeState.ngLViewMap.values()) {
-        if (!Array.isArray(lv)) continue;
-        if (lv[0] instanceof Node && !lv[0].isConnected) continue;
-        for (const cand of lv) {
-          try {
-            const sLFn = readOwn(cand, "sL");
-            const qaLf = readOwn(readOwn(cand, "Qa"), "lf") as
-              | { jYa?: () => string }
-              | undefined;
-            const wnFn = readOwn(cand, "Wn");
-            const directLf = readOwn(cand, "lf") as
-              | { jYa?: () => string }
-              | undefined;
-            const msg =
-              (typeof sLFn === "function" ? String(sLFn.call(cand) || "") : "") ||
-              qaLf?.jYa?.() ||
-              (typeof wnFn === "function" ? directLf?.jYa?.() || "" : "");
+    let reason =
+      runtimeState.promptState?.Ff?.N7a?.() ||
+      runtimeState.promptState?.lf?.jYa?.() ||
+      "";
+    if (!reason) {
+      let cur: Element | null = exactAfter;
+      for (let depth = 0; depth < 6 && cur && !reason; depth += 1) {
+        let lv: NgLView | null = resolveLView(cur);
+        for (let pDepth = 0; pDepth < 6 && Array.isArray(lv) && !reason; pDepth += 1) {
+          for (const cand of lv) {
+            const msg = readCandidateValidatorReason(cand);
             if (msg) {
               reason = msg;
               break;
             }
-          } catch {
-            // Ignore unreachable validator methods.
+          }
+          lv = Array.isArray(lv[3]) ? lv[3] : Array.isArray(lv[15]) ? lv[15] : null;
+        }
+        cur = cur.parentElement;
+      }
+    }
+    if (!reason && runtimeState.ngLViewMap instanceof Map) {
+      for (const lv of runtimeState.ngLViewMap.values()) {
+        if (!Array.isArray(lv)) continue;
+        if (lv[0] instanceof Node && !lv[0].isConnected) continue;
+        if (
+          !onEditPage &&
+          lv[0] instanceof Element &&
+          lv[0].closest(agentSelector)
+        ) {
+          continue;
+        }
+        for (const cand of lv) {
+          const msg = readCandidateValidatorReason(cand);
+          if (msg) {
+            reason = msg;
+            break;
           }
         }
         if (reason) break;
       }
     }
+    if (!reason) {
+      reason = readAngularTooltip(exactAfter);
+    }
     const visiblePm = Array.from(document.querySelectorAll(".ProseMirror")).find(
-      (el) => el.getClientRects().length > 0,
+      (el) => el.getClientRects().length > 0 && (!onEditPage ? !el.closest(agentSelector) : true),
     );
     const detail = [
       reason,
@@ -174,12 +248,12 @@ export async function submitGeneration(): Promise<unknown> {
   const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
   const createBtn = btns.find((b): b is HTMLElement => {
     if (b.tagName === "A" || !isVisibleEnabled(b)) return false;
-    if (!onEditPage && b.closest("flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box")) {
+    if (!onEditPage && b.closest(agentSelector)) {
       return false;
     }
     if (
       b.closest(
-        '.cdk-overlay-pane, [role="menu"], [role="listbox"], nav, aside',
+        'flow-credit-warning-button, flow-high-demand-warning-button, .cdk-overlay-pane, [role="menu"], [role="listbox"], nav, aside',
       )
     ) {
       return false;

@@ -3,7 +3,7 @@
 
 // Composer host, prompt textbox, and settings overlay helpers.
 
-import { isLiveLView, resolveLView, withLViewMapCapture } from "./angular";
+import { isLiveLView, readAngularTooltip, readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
 import { runtimeState } from "./state";
 import type {
@@ -19,6 +19,14 @@ const TEXTBOX_SELECTOR =
 
 /** Containers that belong to the Agent composer. */
 const AGENT_COMPOSER = "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+
+/** Detected quota or high-demand warning button inside a Flow composer. */
+export interface ComposerWarning {
+  /** Warning category (`"credit"` or `"high_demand"`). */
+  kind: "credit" | "high_demand";
+  /** Human-readable warning message extracted from DOM or Angular tooltips. */
+  detail: string;
+}
 
 /** Finds a visible textbox in a composer root. */
 function composerTextbox(root: ParentNode | null, edit: boolean): HTMLElement | null {
@@ -73,7 +81,16 @@ export async function ensureManualComposer(): Promise<HTMLElement | null> {
       if (host && !hosts.has(host)) {
         hosts.add(host);
         try {
-          if (host.Sk()) host.Tx();
+          const inAgent =
+            typeof host.Nl === "function"
+              ? host.Nl()
+              : typeof host.Sk === "function"
+                ? host.Sk()
+                : false;
+          if (inAgent) {
+            if (typeof host.Xu === "function") host.Xu();
+            else if (typeof host.Tx === "function") host.Tx();
+          }
         } catch {
           // Wait for the prompt box if its required inputs are still loading.
         }
@@ -86,13 +103,18 @@ export async function ensureManualComposer(): Promise<HTMLElement | null> {
 
 /** Finds the live `flow-project-page` Angular component instance. */
 export function findProjectPageInstance(): ProjectPageInstance | null {
+  const pageCtor = readOwn(
+    readOwn(window, "default_AiSandboxAngularFrontend"),
+    "uu",
+  );
   const isProjPage = (cand: unknown): cand is ProjectPageInstance => {
     if (!cand || typeof cand !== "object" || cand instanceof Node) return false;
+    if (typeof pageCtor === "function" && cand instanceof pageCtor) return true;
     const obj = cand as Partial<ProjectPageInstance>;
     return (
-      typeof obj.Ph === "function" &&
-      Boolean(obj.Qa) &&
-      typeof obj.ub?.mutate === "function"
+      (Boolean(obj.Qa) &&
+        (typeof obj.he?.mutate === "function" || typeof obj.ub?.mutate === "function")) ||
+      typeof obj.NF === "function" || typeof obj.jQ === "function"
     );
   };
   const scanLv = (lv: unknown): ProjectPageInstance | null =>
@@ -121,17 +143,28 @@ export function findProjectPageInstance(): ProjectPageInstance | null {
 function isPromptBoxHost(cand: unknown): cand is PromptBoxHost {
   if (!cand || typeof cand !== "object" || cand instanceof Node) return false;
   const obj = cand as Partial<PromptBoxHost>;
-  return typeof obj.Tx === "function" && typeof obj.Sk === "function";
+  return (
+    (typeof obj.Xu === "function" && typeof obj.Nl === "function") ||
+    (typeof obj.Tx === "function" && typeof obj.Sk === "function")
+  );
 }
 
 /** Finds the live `flow-prompt-box` host component instance. */
 export function findPromptBoxHost(projPage: ProjectPageInstance | null): PromptBoxHost | null {
-  if (projPage && typeof projPage.jQ === "function") {
-    try {
-      const host = projPage.jQ();
-      if (isPromptBoxHost(host)) return host;
-    } catch {
-      // Fall through to LView scanning.
+  if (projPage) {
+    const getHost =
+      typeof projPage.NF === "function"
+        ? projPage.NF
+        : typeof projPage.jQ === "function"
+          ? projPage.jQ
+          : null;
+    if (getHost) {
+      try {
+        const host = getHost.call(projPage);
+        if (isPromptBoxHost(host)) return host;
+      } catch {
+        // Fall through to LView scanning.
+      }
     }
   }
   const scanLvForHost = (lv: unknown): PromptBoxHost | null => {
@@ -179,7 +212,17 @@ export function findPromptBoxHost(projPage: ProjectPageInstance | null): PromptB
 function isBasePromptBoxInst(cand: unknown): cand is BasePromptBoxInstance {
   if (!cand || typeof cand !== "object" || cand instanceof Node) return false;
   const obj = cand as Partial<BasePromptBoxInstance>;
-  return Boolean(obj.Qa && typeof obj.Wn === "function" && typeof obj.qf === "function");
+  const hasSubmit = typeof obj.Gp === "function" || typeof obj.Wn === "function";
+  const hasCanSubmit = typeof obj.wf === "function" || typeof obj.qf === "function";
+  const hasEditor = typeof obj.IU === "function" || typeof obj.CQ === "function";
+  const hasOverlay =
+    typeof obj.rN?.set === "function" || typeof obj.VJ?.set === "function";
+  return Boolean(
+    obj.Qa &&
+      ((hasSubmit && hasCanSubmit) ||
+        (hasCanSubmit && (hasEditor || hasOverlay)) ||
+        (hasEditor && hasSubmit)),
+  );
 }
 
 /** Walks up parent elements and LViews from `startEl` to find a `BasePromptBoxInstance`. */
@@ -205,11 +248,21 @@ export function findLiveBasePromptBox(
   promptBoxHost: PromptBoxHost | null,
 ): BasePromptBoxInstance | null {
   if (!editFlag) {
-    try {
-      const direct = promptBoxHost?.mt?.();
-      if (isBasePromptBoxInst(direct)) return direct;
-    } catch {
-      // Fall through to DOM scan.
+    if (promptBoxHost) {
+      const getManualBox =
+        typeof promptBoxHost.zr === "function"
+          ? promptBoxHost.zr
+          : typeof promptBoxHost.mt === "function"
+            ? promptBoxHost.mt
+            : null;
+      if (getManualBox) {
+        try {
+          const direct = getManualBox.call(promptBoxHost);
+          if (isBasePromptBoxInst(direct)) return direct;
+        } catch {
+          // Fall through to DOM scan.
+        }
+      }
     }
     return scanElementForBasePromptBox(
       document.querySelector("flow-prompt-box flow-base-prompt-box"),
@@ -220,6 +273,68 @@ export function findLiveBasePromptBox(
       "flow-edit-video-prompt-box flow-base-prompt-box, flow-edit-video-prompt-box",
     ),
   );
+}
+
+/** Returns true when a custom warning element or one of its children is visible on screen. */
+function isWarningElementVisible(el: Element, excludeAgent: boolean): boolean {
+  if (!(el instanceof HTMLElement) || !el.isConnected) return false;
+  if (el.closest('[hidden], [aria-hidden="true"]')) return false;
+  if (excludeAgent && el.closest(AGENT_COMPOSER)) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  if (el.getClientRects().length > 0) return true;
+  for (const child of el.querySelectorAll("*")) {
+    if (!(child instanceof HTMLElement)) continue;
+    const childStyle = window.getComputedStyle(child);
+    if (
+      childStyle.display !== "none" &&
+      childStyle.visibility !== "hidden" &&
+      child.getClientRects().length > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Finds a visible quota or high-demand warning button in `roots`, ignoring hidden Agent panels. */
+export function findComposerWarning(
+  roots: ParentNode[],
+  excludeAgent = true,
+): ComposerWarning | null {
+  for (const root of roots) {
+    const warnings = Array.from(
+      root.querySelectorAll(
+        "flow-credit-warning-button, flow-high-demand-warning-button",
+      ),
+    );
+    const hit = warnings.find((el) => isWarningElementVisible(el, excludeAgent));
+    if (!hit) continue;
+    const tag = hit.tagName.toLowerCase();
+    const kind: "credit" | "high_demand" =
+      tag === "flow-credit-warning-button" ? "credit" : "high_demand";
+    const innerBtn = hit.querySelector('button, [role="button"]');
+    const tooltip = readAngularTooltip(hit) || readAngularTooltip(innerBtn);
+    const aria = (
+      hit.getAttribute("aria-label") ||
+      innerBtn?.getAttribute("aria-label") ||
+      ""
+    ).trim();
+    const text = elText(hit)
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s && !/^(?:warning|error|bolt|info|spark|upgrade)$/i.test(s))
+      .join(" ");
+    const detail =
+      tooltip ||
+      aria ||
+      text ||
+      (kind === "credit"
+        ? "Insufficient Flow AI credits"
+        : "Google Flow model is under high demand");
+    return { kind, detail };
+  }
+  return null;
 }
 
 /** Returns true while the generation settings overlay or controls are visible. */
@@ -282,16 +397,26 @@ export async function closeSettingsAndMenus(): Promise<void> {
         cand &&
         typeof cand === "object" &&
         !(cand instanceof Node) &&
-        typeof (cand as BasePromptBoxInstance).VJ === "function" &&
-        typeof (cand as BasePromptBoxInstance).VJ?.set === "function"
+        (typeof (cand as BasePromptBoxInstance).rN?.set === "function" ||
+          typeof (cand as BasePromptBoxInstance).VJ?.set === "function")
       ) {
         return cand as BasePromptBoxInstance;
       }
     }
     return null;
   };
-  let baseInst: BasePromptBoxInstance | null = null;
-  if (baseEl) {
+  let baseInst: BasePromptBoxInstance | null = findLiveBasePromptBox(
+    false,
+    findPromptBoxHost(findProjectPageInstance()),
+  );
+  if (
+    baseInst &&
+    typeof baseInst.rN?.set !== "function" &&
+    typeof baseInst.VJ?.set !== "function"
+  ) {
+    baseInst = null;
+  }
+  if (!baseInst && baseEl) {
     let p: NgLView | null = resolveLView(baseEl);
     for (let d = 0; d < 6 && Array.isArray(p); d += 1) {
       baseInst = findBaseInst(p);
@@ -306,9 +431,15 @@ export async function closeSettingsAndMenus(): Promise<void> {
       if (baseInst) break;
     }
   }
-  if (baseInst?.VJ?.set) {
+  const overlaySignal =
+    typeof baseInst?.rN?.set === "function"
+      ? baseInst.rN
+      : typeof baseInst?.VJ?.set === "function"
+        ? baseInst.VJ
+        : null;
+  if (overlaySignal?.set) {
     try {
-      baseInst.VJ.set(false);
+      overlaySignal.set(false);
     } catch {
       // Ignore disposed signal writes and fall back to DOM toggle.
     }

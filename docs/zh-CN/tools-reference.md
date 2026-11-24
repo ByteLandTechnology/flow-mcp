@@ -18,11 +18,11 @@ flow-mcp [OPTIONS] <COMMAND>
 | `login [--timeout <SECS>] [--force] [--json]` | 打开可见 Chrome 窗口进行 Google 登录，并等待登录完成。`--timeout` 设置最长等待秒数（默认 `180`，范围 `15..=3600`）。`--force` 会先清除已保存的 Cookie 与会话。 |
 | `status [--json]` | 显示登录状态。若存在已保存的会话，此子命令会启动后台 Chrome。 |
 | `logout [--json]` | 删除 `<home>/chrome-profile` 与 `<home>/cookies.json`。 |
-| `doctor [--json]` | 检查 Chrome 二进制文件、`<home>` 与文件权限、单实例锁以及登录状态。 |
+| `doctor [--json]` | 检查 Chrome 二进制文件、`<home>` 与文件权限、单实例锁、线上 Google Flow 前端构建以及登录状态。 |
 
 `login`、`status` 与 `logout` 使用与 `flow_login` 相同的操作，并为每个结果字段输出一行 `key: value`。加上 `--json` 时，输出 `flow_login` 的结果对象。`doctor` 为每项检查输出一行，状态为 `ok`、`warn`、`fail` 或 `skip`。
 
-子命令正常执行完毕时退出状态码为 `0`，即使尚未登录或 `doctor` 有检查未通过也是如此。发生错误时（例如登录超时，或 Chrome 配置目录正被另一个运行中的 `flow-mcp` 使用）退出状态码为 `1`。参数值无效时退出状态码为 `2`。
+子命令正常执行完毕且没有 `doctor` 检查项为 `fail` 时退出状态码为 `0`（仅出现 `warn` 或 `skip`——例如尚未登录——时退出状态码仍为 `0`）。任意 `doctor` 检查项为 `fail` 或发生运行错误时（例如登录超时，或 Chrome 配置目录正被另一个运行中的 `flow-mcp` 使用）退出状态码为 `1`。参数值无效时退出状态码为 `2`。
 
 ### HTTP 传输
 
@@ -90,7 +90,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 返回 `{ flow: FlowStatus, queue: [...], downloads_count, home, db_path, downloads_dir, cookies_saved, profile_dir, ... }`。不会自动打开或创建项目。
 
-当活动页面是项目页时，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok` 和 `checks`。每个检查项含 `name`、`ok` 和 `detail`，用于显示运行时能否使用该前端构建的项目 store。检查不会修改项目。 `operations` 报告当前构建和 store 是否支持 `project_upload`、`collection_write`、`character_bio` 和 `asset_trash_store`，每项均包含 `ok` 和 `failed_checks`。
+在任意 Google Flow 页面上，`flow.frontend` 包含 `build`（Flow 前端构建标签，可能为 `null`）、`ok`、`checks` 和 `operations`。每个检查项含 `name`、`ok` 和 `detail`，检查不会修改页面或项目。`operations` 报告全部七项受管操作（`agent_chat`、`agent_attachments`、`agent_settings`、`project_upload`、`collection_write`、`character_bio` 和 `asset_trash_store`，每项均包含 `ok` 和 `failed_checks`）。在 `/project/<id>` 以外的 Flow 页面上，`flow.frontend` 检查当前线上构建是否已验证并覆盖全部七项操作；在 `/project/<id>` 项目页内，它还会检查运行时项目 store、媒体资产 URL 以及 Agent 与上传导出符号和页面服务。顶层 `ok` 仅在构建已验证、全部检查通过且七项操作均为 `ok: true` 时才为 `true`。
 
 ### `flow_login`
 
@@ -218,7 +218,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 管理 Google Flow 项目中的 Agent 设置和对话。每次调用都传入 `project_id`。操作已有会话时传入 `session_id`。Flow 接收首条消息时保存新会话。
 
-`create_session` 和 `send_message` 都支持附件。用 `asset_ids` 附加当前项目的图片、视频或角色。图片和视频接受资产 ID 或主媒体 ID，角色使用 `flow_characters` 返回的角色 ID。同一条消息可混合附加这三类资源。用 `files` 上传并附加本机图片或视频，上传的视频要先裁到 30 秒以内。文件保存到项目后，工具可返回 `uploaded_asset_ids`。轮次结果的 `user.attachment_media_ids` 和 `user.attachment_character_ids` 分别列出所附媒体和角色的 ID。
+`create_session` 和 `send_message` 都支持附件。用 `asset_ids` 附加当前项目的图片、视频或角色。图片和视频接受资产 ID、主媒体 ID、编辑历史中已就绪的媒体 ID 或已就绪的超分视频 ID，角色使用 `flow_characters` 返回的角色 ID。同一条消息可混合附加这三类资源。用 `files` 上传并附加本机图片或视频，上传的视频要先裁到 30 秒以内，视频上传会等待转码完成。文件保存到项目后，工具可返回 `uploaded_asset_ids`。轮次结果的 `user.attachment_media_ids` 和 `user.attachment_character_ids` 分别列出所附媒体和角色的 ID。
 
 上传超时时，错误结果会列出已确认保存的文件 ID。如果返回 `file_in_progress`，先在项目里确认该文件的状态再重试。附件准备超时后，工具不会发送该条消息。
 
@@ -252,7 +252,8 @@ flow-mcp [OPTIONS] <COMMAND>
 - 状态为 `action_required` 时，从 `pending_actions` 取出 `action_id`，再调用 `respond`。
   - 权限请求的 `decision` 可设为 `approve`、`approve_and_remember` 或 `deny`。
   - 计划的 `decision` 可设为 `run_full_plan` 或 `previz`。
-  - 回答问题时，在 `answers` 中为每项提供 `question_id`、`option_ids` 和可选的 `text`。
+  - 回答问题时，在 `answers` 中为每项提供 `question_id`、`option_ids` 和可选的自定义文本 `text`，或传入空数组 `[]` 跳过问题卡片。
+- 权限或问题请求超时未答且后续没有新回复时，轮次状态会变为 `failed`。同一轮中出现后续回复块后，早先提出的计划会从 `pending_actions` 中移除。
 
 `persisted: false` 表示新会话暂未出现在 Flow 会话列表中。如果写入返回 `outcome_unknown`，请先查会话或轮次再重试。前端构建或运行时检查失败时，工具返回 `unsupported_front_end`。
 
@@ -337,12 +338,12 @@ flow-mcp [OPTIONS] <COMMAND>
 | `action` | `string` | 否 | `list`（默认）或 `upload`。 |
 | `files` | `string[]` | `upload` 时必填 | 服务端所在机器的本地图片或视频路径。 |
 | `query` | `string` | 否 | 匹配资产 ID、名称或提示词的忽略大小写子串。 |
-| `kind` | `string` | 否 | 按 `"image"`、`"video"`、`"scene"`、`"character"` 或 `"all"`（默认）筛选。 |
+| `kind` | `string` | 否 | 按 `"image"`、`"video"`、`"audio"`、`"scene"`、`"character"` 或 `"all"`（默认）筛选。 |
 | `collection` | `string` | 否 | 按集合 ID、名称子串、`"all"`、`"none"` 或 `"uncollected"` 筛选。 |
 | `limit` | `integer` | 否 | 返回的最大条目数（`>= 1`）。 |
-| `resolve_urls` | `boolean` | 否 | 应用筛选和条数限制后，补齐返回项缺失的媒体 URL。默认 `true`，最多等待 10 秒。 |
+| `resolve_urls` | `boolean` | 否 | 补齐缺失的媒体 URL。筛选图片或音频时，先查明媒体类型未知的资源，再应用条数限制。默认 `true`，最多等待 10 秒。 |
 
-上传前先打开目标项目的工作区。筛选参数用于 `list`。Flow 会检查文件类型和大小，视频需裁到 30 秒以内。Chrome 可能会切换到项目页签以读取视频元数据。
+上传前先打开目标项目的工作区。上传可直接用于项目主页或 `/collection/<id>` 视图；若当前位于场景、角色、编辑、对话或工具视图，工具会先返回项目主页。筛选参数用于 `list`。Flow 会检查文件类型和大小，视频需裁到 30 秒以内，视频上传会等待转码完成。Chrome 可能会切换到项目页签以读取视频元数据。
 
 ```json
 {
@@ -386,7 +387,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ### `flow_download`
 
-将匹配的项目图像或视频下载至 `<home>/downloads` 并索引到 `flow-mcp.db`。最多等待 `45` 秒（超时返回 `pending: true`），并返回 `{"file", "resource_uri", "record"}`。如果客户端支持 MCP `2025-06-18` 或更高版本，还会返回 `resource_link`。
+将匹配的项目媒体资产（图像、视频、音频或角色外观）下载至 `<home>/downloads` 并索引到 `flow-mcp.db`。最多等待 `45` 秒（超时返回 `pending: true`），并返回 `{"file", "resource_uri", "record"}`。如果客户端支持 MCP `2025-06-18` 或更高版本，还会返回 `resource_link`。
 
 | 参数 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -402,7 +403,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | `id` | `integer` | 否 | 用于 `"get"`、`"read_chunk"` 或 `"delete"` 的 SQLite 下载行 ID（`>= 1`）。 |
 | `asset_id` | `string` | 否 | 用于 `"get"`、`"read_chunk"` 或 `"delete"` 的 Flow 资产 ID。 |
 | `query` | `string` | 否 | 匹配 ID、名称、提示词、文件名或路径的忽略大小写子串（`"list"`）。 |
-| `kind` | `string` | 否 | `"list"` 筛选：`"image"`、`"video"`、`"scene"`、`"character"` 或 `"all"`（默认）。 |
+| `kind` | `string` | 否 | `"list"` 筛选：`"image"`、`"video"`、`"audio"`、`"scene"`、`"character"` 或 `"all"`（默认）。 |
 | `project_id` | `string` | 否 | `"list"` 按项目 ID 筛选。 |
 | `existing_only` | `boolean` | 否 | `"list"` 仅返回磁盘上存在文件的行。默认 `false`。 |
 | `limit` | `integer` | 否 | `"list"` 分页上限（`1..=500`，默认 `50`）。 |

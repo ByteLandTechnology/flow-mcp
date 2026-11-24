@@ -5,15 +5,27 @@
 
 import { createScene } from "./angular";
 import { delay } from "./dom";
-import { runtimeState } from "./state";
+import { activeProjectStoreFormat } from "./frontend_builds";
+import { clearStore, runtimeState } from "./state";
 import type { FlowTile, SceneOpRequest } from "./types";
 
 /** Creates a scene or adds workflow clips to an existing scene. */
 export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
+  if (!activeProjectStoreFormat()) {
+    clearStore();
+    return { ok: false, error: "unsupported_front_end" };
+  }
   const helper = runtimeState.store;
-  const getMap = (): Map<string, FlowTile> | null | undefined => helper?.getTileMap?.();
+  if (!helper || !helper.isCurrent()) {
+    if (helper) clearStore();
+    return { ok: false, error: "store_not_bound" };
+  }
+  if (!helper.isReady()) {
+    return { ok: false, error: "store_loading" };
+  }
+  const getMap = (): Map<string, FlowTile> | null | undefined => helper.getTileMap();
   const tileMap = getMap();
-  if (!(tileMap instanceof Map) || !helper?.mutate) {
+  if (!(tileMap instanceof Map) || !helper.mutate) {
     return { ok: false, error: "store_not_bound" };
   }
 
@@ -29,9 +41,16 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     if (!created?.ok || !created.id) {
       return created || { ok: false, error: "created_scene_id_not_found" };
     }
-    if (req?.name && helper?.rename) {
-      await helper.rename(created.id, String(req.name));
-      await delay(400);
+    if (req?.name && helper.rename) {
+      try {
+        await helper.rename(created.id, String(req.name));
+        await delay(400);
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err ?? "scene_rename_failed"),
+        };
+      }
     }
     return {
       ok: true,
@@ -48,25 +67,39 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     if (!sceneId || !assetIds.length) {
       return { ok: false, error: "scene_id_and_asset_ids_required" };
     }
-    let resolveDe: (v: unknown) => void = () => {};
-    let rejectDe: (e: unknown) => void = () => {};
-    const dePromise = new Promise<unknown>((res, rej) => {
-      resolveDe = res;
-      rejectDe = rej;
-    });
-    await helper.mutate({
-      type: "add_workflows_to_scene",
-      Lc: sceneId,
-      Ic: sceneId,
-      rg: resolveWfIds(assetIds),
-      YWa: resolveWfIds(assetIds),
-      position: typeof req.position === "number" ? req.position : undefined,
-      Mh: undefined,
-      Eh: undefined,
-      De: { resolve: resolveDe, reject: rejectDe },
-      ve: { resolve: resolveDe, reject: rejectDe },
-    });
-    await dePromise;
+    let callbackErr: unknown = null;
+    const completion = {
+      resolve: () => {},
+      reject: (err: unknown) => {
+        callbackErr ??= err;
+      },
+    };
+    const workflowIds = resolveWfIds(assetIds);
+    try {
+      await helper.mutate({
+        type: "add_workflows_to_scene",
+        Lc: sceneId,
+        Ic: sceneId,
+        rg: workflowIds,
+        YWa: workflowIds,
+        position: typeof req.position === "number" ? req.position : undefined,
+        Mh: undefined,
+        Eh: undefined,
+        De: completion,
+        ve: completion,
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err ?? "add_workflows_failed"),
+      };
+    }
+    if (callbackErr) {
+      return {
+        ok: false,
+        error: callbackErr instanceof Error ? callbackErr.message : String(callbackErr),
+      };
+    }
     await delay(400);
     return { ok: true, scene_id: sceneId, added: assetIds.length };
   }

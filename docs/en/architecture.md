@@ -26,15 +26,15 @@ Google authentication checks Device Bound Session Credentials (DBSC) and automat
 ![Login and session handoff](../assets/en/login-session-flow.svg)
 
 1. **`LoginChrome` (interactive mode only)**:
-   - Launches standard visible Chrome on `<home>/chrome-profile` (`0700` Unix permissions) **without** CDP flags and opens Google Sign-In (`?hl=en`).
-   - When `wait=true` (default, `timeout_secs=180`), `flow_login` checks the profile directory for Flow URLs and Google cookies without CDP probes.
+   - Launches standard visible Chrome on `<home>/chrome-profile` (`0700` Unix permissions) **without** CDP flags and opens Google Sign-In (`?hl=en`). It keeps the existing profile when `force` is `false` and deletes it first when `force` is `true`.
+   - When `wait=true` (default, `timeout_secs=180`), `flow_login` checks the profile directory for sign-in rejection entries and fresh Google cookies without CDP probes or raw session scraping.
    - After sign-in finishes, `ChromeEngine::promote_login_chrome` stops `LoginChrome`. Chromium then flushes cookies and DBSC keys to `<home>/chrome-profile`.
 2. **`ManagedChrome` (default background mode)**:
    - Starts Chrome with a visible window on `<home>/chrome-profile` (or headless Chrome with `--headless`) with a local WebSocket CDP connection (`--cdp-port`, `FLOW_MCP_CDP_PORT`, or port `0`).
-   - Evaluates the embedded `flow_runtime.js` IIFE bundle on page load. It writes normalized cookies atomically to `<home>/cookies.json` (`0600` permissions on Unix).
-3. **Cookie normalization and native profile priority**:
-   - Normalization keeps only `google.com`, `labs.google`, `googleusercontent.com`, and `gstatic.com` domains. It also keeps `__Host-` prefixes and `hostOnly` flags.
-   - If `<home>/chrome-profile` holds valid native Google cookies, `flow-mcp` keeps them unchanged. It does not overwrite them with older data from `<home>/cookies.json`.
+   - Evaluates the embedded `flow_runtime.js` IIFE bundle on page load and verifies workspace access with `WIZ_global_data` tokens and a read-only Flow backend probe.
+3. **Explicit cookie export and import**:
+   - Normal sign-in, status, and download operations use `<home>/chrome-profile` directly without reading or writing `<home>/cookies.json`.
+   - Explicit `save_cookies` and `sync_cookies` actions write normalized `google.com`, `labs.google`, `googleusercontent.com`, and `gstatic.com` cookies atomically to `<home>/cookies.json` (`0600` permissions on Unix) while preserving `__Host-` prefixes and host-only scope for undotted domains.
 4. **Single-instance lock and orphaned Chrome**:
    - Before Chrome starts, `flow-mcp` takes an exclusive lock on `<home>/flow-mcp.lock` (`0600` on Unix) and keeps it until the process stops. The operating system releases the lock when the process stops, also after a crash.
    - If another process holds the lock, the Chrome start, `login`, `status`, `logout`, and `flow_login` with `logout` fail with an error. `doctor` shows a warning.
@@ -60,15 +60,15 @@ Running parallel edits on one Google Flow Angular tab causes UI race conditions,
 | Path under `<home>` | Unix mode | Role |
 | :--- | :--- | :--- |
 | `chrome-profile/` | `0700` | Persistent Chrome profile, DBSC keys, and live session cookies |
-| `cookies.json` | `0600` | Normalized Google and Flow cookie array that `flow-mcp` writes atomically |
+| `cookies.json` | `0600` | Optional normalized Google and Flow cookie array for explicit `save_cookies` and `sync_cookies` |
 | `flow-mcp.lock` | `0600` | Single-instance lock that a process holds while it can start Chrome |
 | `flow-mcp.db` | `0600` | SQLite database in `WAL` mode for `downloads`, `character_looks`, and `characters` |
 | `downloads/` | Private dir | Fixed folder for all downloaded media; `flow-mcp` rejects external output paths |
 
 ### Media download pipeline (`flow_download` and job downloads)
 
-1. **URL resolution**: `flow-mcp` reads `fifeUrl`, `videoUrl`, or `imageUrl` from the project snapshot. If missing, it calls Flow `as29s` RPCs to get signed URLs.
-2. **Primary HTTP stream (`reqwest`)**: `reqwest` streams bytes to a temporary file. For signed CDN URLs (`storage.googleapis.com` and `flow-content.google`), it omits cookie headers; for Google URLs, it sends `Referer: https://flow.google.com/` and Chrome cookies.
-3. **Browser `fetchMedia` fallback**: If the HTTP stream fails, `ChromeEngine` runs `fetchMedia` inside the Flow page and decodes the Base64 result.
+1. **URL resolution**: `flow-mcp` uses a signed URL from the project snapshot first. If the snapshot has no signed URL, it requests signed URLs from Flow by media ID before it tries an unsigned proxy.
+2. **Signed HTTP stream and authenticated `fetchMedia`**: For signed CDN URLs (`storage.googleapis.com`, `flow-content.google`, and `video-downloads.googleusercontent.com`), `reqwest` streams bytes directly to a temporary file without cookie headers and falls back to `fetchMedia` if needed.
+3. **Authenticated browser fetch and live CDP cookie fallback**: For unsigned Google and Flow URLs, `ChromeEngine` runs `fetchMedia` inside the Flow page first and falls back to `reqwest` with `Referer: https://flow.google.com/` and live Chrome CDP cookies.
 4. **Validation and natural naming**: `flow-mcp` rejects zero-byte files and checks `Content-Type` plus magic bytes. It selects the file name from `Content-Disposition`, the URL path, or `<asset_id>.<ext>`, resolves duplicate names, and updates SQLite (`downloads`).
 5. **MCP resource serving**: `flow-mcp` registers each download as `flow://downloads/{id}` and `flow://downloads/asset/{asset_id}`. `resources/list` returns `100` items per page. `resources/read` serves files up to `64 MiB` as Base64, while `flow_downloads` (`action="read_chunk"`) reads larger files in slices.

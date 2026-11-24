@@ -4,21 +4,22 @@
 //! Google Flow project navigation, session checks, and Angular store discovery.
 //!
 //! Drives the Google Flow Angular SPA inside [`ChromeEngine`] to check session state,
-//! open or create a project workspace, locate the `lService` store, and read asset and
+//! open or create a project workspace, bind the verified project store, and read asset and
 //! collection snapshots.
 
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::broadcast::Receiver;
-use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{Duration, Instant};
 
-use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
+use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
-use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
-use crate::project_store::prepare_project_store_status;
+use crate::engine::{ChromeEngine, ENGINE_NAME};
+pub(crate) use crate::project_route::{
+    project_id_from_url, project_subroute_url, project_workspace_url,
+};
+use crate::project_store::{bind_current_store, prepare_project_store_status};
 
 /// Angular error code for a required input that has no value yet.
 const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
@@ -85,112 +86,62 @@ pub(crate) struct FlowStatus {
     pub(crate) error: Option<String>,
 }
 
-/// Returns `true` when an HTTP response marks a successful Flow store mutation RPC.
-pub(crate) fn is_flow_mutation_rpc_ok(ev: &NetworkResponseEvent) -> bool {
-    (ev.url.contains("aisandbox-pa.googleapis.com") || ev.url.contains("batchexecute"))
-        && (200..300).contains(&ev.status)
-}
-
-/// Drains buffered network events and waits up to `wait` for a Flow RPC response.
-pub(crate) async fn wait_flow_mutation_rpc(
-    rx: &mut Receiver<NetworkResponseEvent>,
-    wait: Duration,
-) -> bool {
-    loop {
-        match rx.try_recv() {
-            Ok(ev) => {
-                if is_flow_mutation_rpc_ok(&ev) {
-                    return true;
-                }
-            }
-            Err(TryRecvError::Lagged(_)) => continue,
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Closed) => return false,
-        }
-    }
-    let deadline = Instant::now() + wait;
-    loop {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(ev)) => {
-                if is_flow_mutation_rpc_ok(&ev) {
-                    return true;
-                }
-            }
-            Ok(Err(RecvError::Lagged(_))) => continue,
-            Ok(Err(RecvError::Closed)) | Err(_) => return false,
-        }
-    }
-}
-
-/// Extracts the `/project/<id>` segment from a Flow project URL.
-pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
-    if let Some(pos) = url.find("/project/") {
-        let rest = &url[pos + "/project/".len()..];
-        let seg = rest.split(['/', '?', '#']).next().unwrap_or("").trim();
-        if !seg.is_empty() {
-            return Some(seg.to_string());
-        }
-    }
-    None
-}
-
-/// Builds a Google Flow `/project/<id>` or sub-route URL preserving `/fx/tools/flow` when active.
-pub(crate) fn project_subroute_url(
-    reference_url: &str,
-    project_id: &str,
-    subroute: &str,
-) -> String {
-    let prefix = if reference_url.contains("/fx/tools/flow") {
-        "https://flow.google.com/fx/tools/flow"
-    } else {
-        "https://flow.google.com"
-    };
-    let clean_sub = subroute.trim_start_matches('/');
-    if clean_sub.is_empty() {
-        format!("{}/project/{}?hl=en", prefix, project_id)
-    } else {
-        format!("{}/project/{}/{}?hl=en", prefix, project_id, clean_sub)
-    }
-}
-
-/// Builds the Google Flow `/project/<id>` workspace URL preserving `/fx/tools/flow` when active.
-pub(crate) fn project_workspace_url(reference_url: &str, project_id: &str) -> String {
-    project_subroute_url(reference_url, project_id, "")
-}
-
-/// Navigates back to `/project/<id>` when Chrome is currently on a character, scene, edit, chat, or tools sub-route.
+/// Navigates back to `/project/<id>` when Chrome is on a non-grid project subroute.
 pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
     let is_subroute = |url: &str| {
         let path = url.split(['?', '#']).next().unwrap_or_default();
-        let section = path
-            .split_once("/project/")
-            .and_then(|(_, project)| project.split('/').nth(1));
-        matches!(
-            section,
-            Some("character" | "scene" | "edit" | "chat" | "tool" | "tools")
-        )
-    };
-    let cur = engine.current_url().await.unwrap_or_default();
-    if is_subroute(&cur) {
-        let _ = eval_project_nav(engine, "exit_subroute").await;
-        let after = engine.current_url().await.unwrap_or_default();
-        if is_subroute(&after)
-            && let Some(pid) = project_id_from_url(&after).or_else(|| project_id_from_url(&cur))
-        {
-            engine
-                .navigate(&project_workspace_url(&after, &pid))
-                .await?;
-            tokio::time::sleep(Duration::from_millis(900)).await;
+        let Some((_, project)) = path.split_once("/project/") else {
+            return false;
+        };
+        let mut segs = project.trim_end_matches('/').split('/');
+        if segs.next().is_none_or(str::is_empty) {
+            return false;
         }
+        match (segs.next(), segs.next(), segs.next()) {
+            (
+                Some(
+                    "character" | "scene" | "edit" | "chat" | "tool" | "tools" | "create-tool"
+                    | "trash",
+                ),
+                _,
+                _,
+            ) => true,
+            (Some("collection"), Some(cid), Some("character")) => !cid.is_empty(),
+            _ => false,
+        }
+    };
+    let current = engine.current_url().await?;
+    if !is_subroute(&current) {
+        return Ok(());
     }
-    Ok(())
+    let project_id = project_id_from_url(&current)
+        .ok_or_else(|| anyhow::anyhow!("Cannot identify the active Flow project"))?;
+    let workspace = project_workspace_url(&current, &project_id);
+    let returned = |url: &str| {
+        is_flow_host_url(url)
+            && !is_subroute(url)
+            && project_id_from_url(url).as_deref() == Some(project_id.as_str())
+            && project_workspace_url(url, &project_id) == workspace
+    };
+    let _ = eval_project_nav(engine, "exit_subroute").await;
+    if returned(&engine.current_url().await.unwrap_or_default()) {
+        return Ok(());
+    }
+    engine.navigate(&workspace).await?;
+    for _ in 0..10 {
+        if returned(&engine.current_url().await.unwrap_or_default()) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("Cannot return to the active Flow project workspace")
 }
 
-/// Ensures Chrome is on a signed-in Google Flow page and persists fresh cookies.
+/// Opens a Flow page and verifies access with the active Chrome profile.
 async fn ensure_signed_in_flow_page(engine: &ChromeEngine) -> Result<String> {
     engine.ensure_page().await?;
     let mut url = engine.current_url().await?;
-    if !url.contains("labs.google") && !url.contains("flow.google.com") {
+    if !is_flow_host_url(&url) {
         engine.navigate(FLOW_URL).await?;
         tokio::time::sleep(Duration::from_millis(600)).await;
         url = engine.current_url().await?;
@@ -210,7 +161,6 @@ async fn ensure_signed_in_flow_page(engine: &ChromeEngine) -> Result<String> {
         );
     }
     url = engine.current_url().await.unwrap_or(url);
-    let _ = engine.save_cookies().await;
     Ok(url)
 }
 
@@ -220,7 +170,7 @@ async fn eval_project_nav(engine: &ChromeEngine, action: &str) -> Result<Value> 
 }
 
 /// Reads Google Flow session state without navigation when `probe` is `true`,
-/// or opens Flow and binds the project store when `probe` is `false`.
+/// or opens Flow when `probe` is `false`. Reads the store without changing project routes.
 pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowStatus {
     if !probe && !engine.has_page().await && !has_persisted_session() {
         return FlowStatus {
@@ -280,32 +230,16 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
         let _ = redirect_sso_if_about(engine, &mut url).await;
     }
+    let auth_check = check_page_auth(engine, false).await;
+    if !probe {
+        url = engine.current_url().await.unwrap_or(url);
+    }
     let project_id = project_id_from_url(&url);
     let in_project = project_id.is_some();
-
-    let auth_check = if is_signed_in_flow_url(&url) {
-        engine
-            .call_flow_js("checkAuth", json!([]))
-            .await
-            .unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
-
-    let signed_in = if auth_check
+    let signed_in = auth_check
         .get("signed_in")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        true
-    } else if !probe {
-        check_page_signed_in(engine).await
-    } else {
-        false
-    };
-    if signed_in && !probe {
-        let _ = engine.save_cookies().await;
-    }
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let mut project = auth_check
         .get("title")
@@ -316,20 +250,15 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     let mut assets_count = None;
     let mut collections_count = None;
 
+    if let Some(project_id) = &project_id {
+        prepare_project_store_status(engine, project_id).await;
+    }
+
     if in_project {
-        let mut snap = engine
+        let snap = engine
             .call_flow_js("readStoreSnapshot", json!([]))
             .await
             .unwrap_or(Value::Null);
-        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true)
-            && !probe
-            && ensure_flow_store(engine).await.is_ok()
-        {
-            snap = engine
-                .call_flow_js("readStoreSnapshot", json!([]))
-                .await
-                .unwrap_or(Value::Null);
-        }
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             if let Some(t) = snap.get("projectTitle").and_then(|v| v.as_str())
                 && !t.is_empty()
@@ -348,9 +277,10 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
     }
 
-    let frontend = if let Some(project_id) = &project_id {
-        prepare_project_store_status(engine, project_id).await;
+    let frontend = if in_project {
         engine.call_flow_js("probeStore", json!([])).await.ok()
+    } else if is_flow_host_url(&url) {
+        engine.call_flow_js("probeBuild", json!([])).await.ok()
     } else {
         None
     };
@@ -371,10 +301,21 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     }
 }
 
-/// Signs in if needed, opens a `/project/<id>` route, and binds `lService` in runtime state.
+/// Signs in if needed, opens a `/project/<id>` route, and binds the verified project store.
 pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
-    let url = ensure_signed_in_flow_page(engine).await?;
-    let mut navigated = false;
+    let Some(_store_guard) = engine.try_lock_project_store() else {
+        let url = engine.current_url().await?;
+        if let Some(project_id) = project_id_from_url(&url) {
+            let status = engine
+                .call_flow_js("projectStoreStatus", json!([project_id]))
+                .await?;
+            if status["ok"].as_bool() == Some(true) {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("The Flow project store is busy");
+    };
+    let mut url = ensure_signed_in_flow_page(engine).await?;
 
     if project_id_from_url(&url).is_none() {
         let entered = eval_project_nav(engine, "enter_existing")
@@ -398,8 +339,8 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
                 );
             }
             if project_id_from_url(&cur).is_some() {
+                url = cur;
                 entered_project = true;
-                navigated = true;
                 let has_workspace = eval_project_nav(engine, "has_workspace")
                     .await
                     .ok()
@@ -418,25 +359,52 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         }
     }
 
+    let Some(project_id) = project_id_from_url(&url) else {
+        anyhow::bail!(
+            "No Google Flow project is open. Call flow_new_project or flow_projects to open or create one first."
+        );
+    };
+
+    let workspace = project_workspace_url(&url, &project_id);
     let mut input_pending = false;
     for attempt in 0..10 {
+        let active_url = engine.current_url().await?;
+        anyhow::ensure!(
+            is_flow_host_url(&active_url)
+                && project_id_from_url(&active_url).as_deref() == Some(project_id.as_str())
+                && project_workspace_url(&active_url, &project_id) == workspace,
+            "The active Flow project changed during store setup"
+        );
+        let status = store_loading_result(bind_current_store(engine, &project_id).await)?;
+        let status_err = status.get("error").and_then(Value::as_str);
+        if status_err == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
+        if status["ok"].as_bool() == Some(true) {
+            return Ok(());
+        }
+        if status_err == Some("store_loading") {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        input_pending = status_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
+
         let discovery =
             store_loading_result(engine.call_flow_async("discoverStore", json!([])).await)?;
-        input_pending =
-            discovery.get("error").and_then(Value::as_str) == Some(ANGULAR_REQUIRED_INPUT_ERROR);
-        let bound = discovery
-            .get("bound")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if bound {
-            let newly_discovered = discovery
-                .get("newlyDiscovered")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if navigated || newly_discovered {
-                let _ = engine.save_cookies().await;
-            }
-            return Ok(());
+        let discovery_err = discovery.get("error").and_then(Value::as_str);
+        if discovery_err == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
+        input_pending |= discovery_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
+        if discovery["bound"].as_bool() == Some(true) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
         }
         if attempt == 2 && !input_pending {
             let pos = eval_project_nav(engine, "first_tile_center")
@@ -458,7 +426,7 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         );
     }
     anyhow::bail!(
-        "Failed to find the Flow project store (lService). Open a Flow project first.{}",
+        "Failed to bind the Flow project store. Open a Flow project first.{}",
         build_suffix(engine).await
     )
 }
@@ -494,9 +462,16 @@ async fn build_suffix(engine: &ChromeEngine) -> String {
 pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
     if engine.has_page().await
         && let Ok(snap) = engine.call_flow_js("readStoreSnapshot", json!([])).await
-        && snap.get("ok").and_then(|v| v.as_bool()) == Some(true)
     {
-        return Ok(snap);
+        if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(snap);
+        }
+        if snap.get("error").and_then(Value::as_str) == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
     }
     let mut last_err = "store_not_bound".to_string();
     for _ in 0..25 {
@@ -510,6 +485,12 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
+        if last_err == "unsupported_front_end" {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
         let delay_ms = if matches!(
             last_err.as_str(),
             "store_loading" | ANGULAR_REQUIRED_INPUT_ERROR
@@ -590,25 +571,23 @@ pub(crate) async fn create_project(engine: &ChromeEngine, title: Option<&str>) -
     if project_id.is_some() {
         let _ = ensure_flow_store(engine).await;
         if let Some(desired_title) = final_title.as_deref() {
-            let mut net_rx = engine.subscribe_network().await.ok();
-            if let Ok(res) = run_projects_op(
+            let res = run_projects_op(
                 engine,
                 json!({
                     "action": "set_title",
                     "title": desired_title,
                 }),
             )
-            .await
-            {
-                if let Some(rx) = net_rx.as_mut() {
-                    let _ = wait_flow_mutation_rpc(rx, Duration::from_millis(1200)).await;
-                }
-                if res.get("ok").and_then(|v| v.as_bool()) == Some(true)
-                    && let Some(t) = res.get("title").and_then(|v| v.as_str())
-                {
-                    final_title = Some(t.to_string());
-                }
+            .await?;
+            if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                anyhow::bail!(
+                    "Failed to set project title: {}",
+                    res.get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                );
             }
+            final_title = Some(confirm_project_title(engine, desired_title).await?);
         }
     }
     Ok(json!({
@@ -703,6 +682,95 @@ async fn open_project(
     }))
 }
 
+/// Polls project snapshots until `projectTitle` holds `desired` after a short settle delay.
+async fn confirm_project_title(engine: &ChromeEngine, desired: &str) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    while Instant::now() < deadline {
+        if let Ok(snap) = read_snapshot(engine).await
+            && snap
+                .get("projectTitle")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                == Some(desired)
+        {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if let Ok(settled) = read_snapshot(engine).await
+                && settled
+                    .get("projectTitle")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    == Some(desired)
+            {
+                return Ok(desired.to_string());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    anyhow::bail!(
+        "Failed to confirm project title '{desired}' in the Flow project store{}",
+        build_suffix(engine).await
+    )
+}
+
+/// Counts entries in a `projectsOp` list payload that match `id` or exact `title`.
+fn count_matching_project_entries(
+    entries: &[Value],
+    id: Option<&str>,
+    title: Option<&str>,
+) -> usize {
+    let want_id = id.map(str::trim).filter(|s| !s.is_empty());
+    let want_title = title.map(str::trim).filter(|s| !s.is_empty());
+    entries
+        .iter()
+        .filter(|entry| {
+            if let Some(wid) = want_id
+                && entry.get("id").and_then(Value::as_str) == Some(wid)
+            {
+                return true;
+            }
+            if let Some(wtitle) = want_title
+                && entry
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case(wtitle))
+            {
+                return true;
+            }
+            false
+        })
+        .count()
+}
+
+/// Polls home-view project entries until the deleted project is absent from the page.
+async fn confirm_project_deleted(
+    engine: &ChromeEngine,
+    deleted_id: Option<&str>,
+    title: Option<&str>,
+    before_matches: usize,
+) -> Result<()> {
+    let want_id = deleted_id.map(str::trim).filter(|s| !s.is_empty());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let listed = run_projects_op(engine, json!({ "action": "list" })).await?;
+        if listed.get("ok").and_then(Value::as_bool) == Some(true)
+            && let Some(projects) = listed.get("projects").and_then(Value::as_array)
+        {
+            let gone = match want_id {
+                Some(did) => !projects
+                    .iter()
+                    .any(|p| p.get("id").and_then(Value::as_str) == Some(did)),
+                None => count_matching_project_entries(projects, None, title) < before_matches,
+            };
+            if gone {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    anyhow::bail!("Failed to confirm project deletion on the Flow home page")
+}
+
 /// Renames the active project (or the project identified by `id`).
 async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) -> Result<Value> {
     let trimmed = title.trim();
@@ -717,7 +785,6 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
     } else {
         ensure_flow_store(engine).await?;
     }
-    let mut net_rx = engine.subscribe_network().await.ok();
     let res = run_projects_op(engine, json!({ "action": "set_title", "title": trimmed })).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
@@ -727,14 +794,12 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
                 .unwrap_or("unknown")
         );
     }
-    if let Some(rx) = net_rx.as_mut() {
-        let _ = wait_flow_mutation_rpc(rx, Duration::from_millis(1200)).await;
-    }
+    let confirmed_title = confirm_project_title(engine, trimmed).await?;
     let cur = engine.current_url().await.unwrap_or_default();
     Ok(json!({
         "ok": true,
         "project_id": project_id_from_url(&cur),
-        "title": res.get("title").and_then(|v| v.as_str()).unwrap_or(trimmed),
+        "title": confirmed_title,
     }))
 }
 
@@ -751,7 +816,14 @@ async fn delete_project(
     }
     open_signed_in_home_page(engine).await?;
 
-    let mut net_rx = engine.subscribe_network().await.ok();
+    let before_list = run_projects_op(engine, json!({ "action": "list" })).await?;
+    let before_matches = before_list
+        .get("projects")
+        .and_then(Value::as_array)
+        .map_or(1, |projects| {
+            count_matching_project_entries(projects, id, title)
+        });
+
     let res = run_projects_op(
         engine,
         json!({ "action": "delete", "project_id": id, "title": title }),
@@ -765,10 +837,8 @@ async fn delete_project(
                 .unwrap_or("unknown")
         );
     }
-    if let Some(rx) = net_rx.as_mut() {
-        let _ = wait_flow_mutation_rpc(rx, Duration::from_millis(1200)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let deleted_id = res.get("deleted_id").and_then(Value::as_str).or(id);
+    confirm_project_deleted(engine, deleted_id, title, before_matches).await?;
     Ok(res)
 }
 

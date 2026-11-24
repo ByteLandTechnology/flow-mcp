@@ -3,7 +3,8 @@
 
 // Rename assets through the bound store.
 
-import { runtimeState } from "./state";
+import { activeProjectStoreFormat } from "./frontend_builds";
+import { clearStore, runtimeState } from "./state";
 import type { AssetRenameExtra } from "./types";
 
 /** Renames one asset, character, or scene tile. */
@@ -13,8 +14,19 @@ export async function assetOps(
   extra: AssetRenameExtra | null,
 ): Promise<unknown> {
   if (action !== "rename") return { ok: false, err: "unknown_asset_action" };
+  if (!activeProjectStoreFormat()) {
+    clearStore();
+    return { ok: false, err: "unsupported_front_end" };
+  }
   const helper = runtimeState.store;
-  const tileMap = helper?.getTileMap?.();
+  if (!helper || !helper.isCurrent()) {
+    if (helper) clearStore();
+    return { ok: false, err: "store_not_bound" };
+  }
+  if (!helper.isReady()) {
+    return { ok: false, err: "store_loading" };
+  }
+  const tileMap = helper.getTileMap();
   if (!(tileMap instanceof Map)) {
     return { ok: false, err: "store_not_bound" };
   }
@@ -32,17 +44,24 @@ export async function assetOps(
       // Ignore immutable tile objects.
     }
   }
-  if (helper?.rename) {
-    await helper.rename(id, newName);
-  } else if (helper?.mutate) {
-    await helper.mutate({
-      type: "single_tile",
-      Xc: id,
-      Uc: id,
-      Ve: { type: "set_display_name", displayName: newName },
-    });
-  } else {
-    return { ok: false, err: "rename_method_missing" };
+  try {
+    if (helper.rename) {
+      await helper.rename(id, newName);
+    } else if (helper.mutate) {
+      await helper.mutate({
+        type: "single_tile",
+        Xc: id,
+        Uc: id,
+        Ve: { type: "set_display_name", displayName: newName },
+      });
+    } else {
+      return { ok: false, err: "rename_method_missing" };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      err: err instanceof Error ? err.message : String(err ?? "rename_failed"),
+    };
   }
   return { ok: true };
 }

@@ -11,12 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, MutexGuard, broadcast};
 
-use crate::auth::is_signed_in_flow_url;
 use crate::cdp::{CdpConnection, find_or_create_page_target, page_target_socket};
 use crate::chrome::{LoginChrome, ManagedChrome, inspect_login_profile};
 use crate::cookies::{
-    NormalizedCookie, cookie_header_from_normalized, has_google_auth_cookies, normalize_cookies,
-    read_cookies_file, write_cookies_file,
+    NormalizedCookie, cookie_header_from_normalized, normalize_cookies, write_cookies_file,
 };
 
 /// Browser engine identifier reported by status tools.
@@ -140,8 +138,6 @@ pub(crate) struct LoginPollStatus {
     pub(crate) exited: bool,
     /// Google Accounts rejection URL observed during sign-in, if any.
     pub(crate) rejected_url: Option<String>,
-    /// Signed-in Google Flow URL observed during sign-in, if any.
-    pub(crate) flow_url: Option<String>,
     /// True when Google authentication cookies exist in the login profile.
     pub(crate) has_google_auth_cookies: bool,
 }
@@ -195,7 +191,7 @@ impl ChromeEngine {
             mc.shutdown().await;
         }
         if let Some(a) = active {
-            flush_and_shutdown_active(a).await;
+            shutdown_active(a).await;
         }
         self.visible.store(false, Ordering::Release);
     }
@@ -205,8 +201,12 @@ impl ChromeEngine {
         self.login_chrome.lock().await.is_some()
     }
 
-    /// Launches a clean visible Chrome window without CDP flags for interactive Google Sign-In.
-    pub(crate) async fn launch_interactive_login(&self, start_url: &str) -> Result<()> {
+    /// Launches a visible Chrome window without CDP flags for interactive Google Sign-In, deleting the profile first when `clean` is `true`.
+    pub(crate) async fn launch_interactive_login(
+        &self,
+        start_url: &str,
+        clean: bool,
+    ) -> Result<()> {
         let _ensure = self.ensure_lock.lock().await;
         let prev_active = {
             let mut inner = self.inner.lock().await;
@@ -217,14 +217,14 @@ impl ChromeEngine {
             login.take()
         };
         if let Some(old) = prev_active {
-            flush_and_shutdown_active(old).await;
+            shutdown_active(old).await;
         }
         if let Some(old) = prev_login {
             old.shutdown().await;
         }
 
         self.visible.store(true, Ordering::Release);
-        let login = LoginChrome::launch(start_url).await?;
+        let login = LoginChrome::launch(start_url, clean).await?;
         let mut guard = self.login_chrome.lock().await;
         *guard = Some(login);
         Ok(())
@@ -244,7 +244,6 @@ impl ChromeEngine {
         Ok(Some(LoginPollStatus {
             exited,
             rejected_url: probe.rejected_url,
-            flow_url: probe.flow_url,
             has_google_auth_cookies: probe.has_google_auth_cookies,
         }))
     }
@@ -257,7 +256,7 @@ impl ChromeEngine {
             inner.take()
         };
         if let Some(old) = stale {
-            flush_and_shutdown_active(old).await;
+            shutdown_active(old).await;
         }
 
         let lc = {
@@ -320,7 +319,7 @@ impl ChromeEngine {
             .map(|a| a.managed.http_endpoint.clone())
     }
 
-    /// Ensures a live background Chrome CDP page exists and seeds cookies from `cookies.json` only when the profile lacks Google auth cookies.
+    /// Ensures a live background Chrome CDP page exists on `<home>/chrome-profile`.
     pub(crate) async fn ensure_page(&self) -> Result<()> {
         let _ensure = self.ensure_lock.lock().await;
         let stale = {
@@ -336,7 +335,7 @@ impl ChromeEngine {
             login_guard.take()
         };
         if let Some(old) = stale {
-            flush_and_shutdown_active(old).await;
+            shutdown_active(old).await;
         }
         if let Some(lc) = login {
             lc.shutdown().await;
@@ -345,16 +344,6 @@ impl ChromeEngine {
 
         let managed = ManagedChrome::launch("about:blank").await?;
         let active = self.connect_managed_chrome(managed).await?;
-
-        let existing_cookies = fetch_cdp_cookies(&active.cdp).await.unwrap_or_default();
-        if !has_google_auth_cookies(&existing_cookies) {
-            let saved_cookies = read_cookies_file().unwrap_or_default();
-            let cdp_cookies: Vec<Value> = saved_cookies
-                .iter()
-                .filter_map(NormalizedCookie::to_cdp_cookie_param)
-                .collect();
-            apply_cdp_cookies(&active.cdp, &cdp_cookies).await;
-        }
 
         let mut inner = self.inner.lock().await;
         *inner = Some(active);
@@ -672,28 +661,17 @@ impl ChromeEngine {
         DEFAULT_CHROME_UA.to_string()
     }
 
-    /// Builds a `Cookie` header matching `target_url` from Chrome cookies or `cookies.json`.
+    /// Builds a `Cookie` header matching `target_url` from live Chrome CDP cookies.
     pub(crate) async fn cookie_header_for_url(&self, target_url: &str) -> Option<String> {
-        let cookies = if self.has_page().await {
-            match self.all_normalized_cookies().await {
-                Ok(c) if !c.is_empty() => c,
-                _ => read_cookies_file().ok()?,
-            }
-        } else {
-            read_cookies_file().ok()?
-        };
+        let cookies = self.all_normalized_cookies().await.ok()?;
         cookie_header_from_normalized(&cookies, target_url)
             .ok()
             .filter(|s| !s.is_empty())
     }
 
-    /// Returns normalized cookies for Google and Flow domains from Chrome or `cookies.json`.
+    /// Returns normalized cookies for Google and Flow domains from live Chrome CDP.
     pub(crate) async fn flow_cookies(&self) -> Result<Vec<NormalizedCookie>> {
-        if self.has_page().await {
-            self.all_normalized_cookies().await
-        } else {
-            read_cookies_file()
-        }
+        self.all_normalized_cookies().await
     }
 
     /// Stops Chrome processes and deletes `<home>/chrome-profile`.
@@ -758,22 +736,8 @@ async fn apply_cdp_cookies(cdp: &CdpConnection, cookies: &[Value]) {
     }
 }
 
-/// Saves fresh cookies when shutting down a signed-in Chrome session and stops the child process.
-async fn flush_and_shutdown_active(a: ActiveChrome) {
-    if a.cdp.is_alive()
-        && let Ok(val) = eval_runtime(
-            &a.cdp,
-            "window.location.href",
-            false,
-            Duration::from_secs(3),
-        )
-        .await
-        && val.as_str().is_some_and(is_signed_in_flow_url)
-        && let Ok(persisted) = fetch_cdp_cookies(&a.cdp).await
-        && has_google_auth_cookies(&persisted)
-    {
-        let _ = write_cookies_file(&persisted);
-    }
+/// Closes the CDP connection and stops the active Chrome child process.
+async fn shutdown_active(a: ActiveChrome) {
     drop(a.cdp);
     a.managed.shutdown().await;
 }

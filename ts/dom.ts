@@ -3,7 +3,64 @@
 
 // Shared DOM, event, input, and FIFE URL helpers for Flow browser modules.
 
+import { snapshotFormat } from "./frontend_builds";
 import type { CharacterLookEntry, FifeEnv, FlowMediaPayload, FlowTile } from "./types";
+
+/** Reads an own data property from `o` without invoking prototype getters. */
+function readMediaField(o: unknown, key: string): unknown {
+  if (!o || typeof o !== "object") return undefined;
+  try {
+    return Reflect.get(o, key);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Returns `v` when it is an HTTP, HTTPS, blob, or data URL string. */
+export function asHttpOrDataUrl(v: unknown): string | null {
+  return typeof v === "string" && /^(?:https?:|blob:|data:)/i.test(v) ? v : null;
+}
+
+/** Reads the first direct media URL from a tile, media payload, clip, or picker item. */
+export function readMediaUrl(source: unknown, videoOnly = false): string | null {
+  if (!source || typeof source !== "object") return null;
+  if (videoOnly) {
+    return (
+      asHttpOrDataUrl(readMediaField(source, "Bd")) ||
+      asHttpOrDataUrl(readMediaField(source, "uA")) ||
+      asHttpOrDataUrl(readMediaField(source, "videoUrl")) ||
+      null
+    );
+  }
+  const mappedKey = snapshotFormat()?.media.url;
+  const mapped = mappedKey ? asHttpOrDataUrl(readMediaField(source, mappedKey)) : null;
+  if (mapped) return mapped;
+  const kc = asHttpOrDataUrl(readMediaField(source, "kc"));
+  if (kc) return kc;
+  return (
+    asHttpOrDataUrl(readMediaField(source, "Bd")) ||
+    asHttpOrDataUrl(readMediaField(source, "uA")) ||
+    asHttpOrDataUrl(readMediaField(source, "Wb")) ||
+    asHttpOrDataUrl(readMediaField(source, "fifeUrl")) ||
+    asHttpOrDataUrl(readMediaField(source, "imageUrl")) ||
+    asHttpOrDataUrl(readMediaField(source, "videoUrl")) ||
+    asHttpOrDataUrl(readMediaField(source, "mediaUrl")) ||
+    asHttpOrDataUrl(readMediaField(source, "url")) ||
+    null
+  );
+}
+
+/** Returns true when `type` names a non-asset tile excluded from asset lists and counts. */
+export function isNonAssetTileType(type: unknown): boolean {
+  if (typeof type !== "string" || !type) return false;
+  const upper = type.toUpperCase();
+  if (["FAILED_ASSET", "AUDIO", "MUSIC", "VOICE"].includes(upper)) return false;
+  if (upper === "TEXT_TILE" || upper === "CUSTOM") return true;
+  const tileTypes = snapshotFormat()?.tileTypes;
+  if (!tileTypes) return false;
+  if (tileTypes.ignored.includes(upper)) return true;
+  return upper !== tileTypes.collection && !tileTypes.assets.includes(upper);
+}
 
 /** Short edge in pixels for each video resolution code of the Flow front end (4 = 360p, 1 = 720p, 2 = 1080p, 3 = 4K). */
 const VIDEO_SHORT_EDGE: Readonly<Record<number, number>> = { 1: 720, 2: 1080, 3: 2160, 4: 360 };
@@ -56,56 +113,84 @@ function findStatus(m: object): string | undefined {
   return undefined;
 }
 
-/** Copies the media fields of a current Flow front end to the old names (`Zc` status, `tc` dimensions, `nf` error, `Lf` duration, `hc` date). It finds the status and the dimensions by shape, and calculates video dimensions when the page gives none. */
+/** Copies the media fields of a current Flow front end to the old names (`Zc` status, `tc` dimensions, `nf` error, `Lf` duration, `hc` date). It checks verified build descriptors first, then falls back to shape detection. */
 export function legacyMedia<T extends FlowMediaPayload | null | undefined>(m: T): T {
   if (!m || typeof m !== "object") return m;
   if (m.Zc !== undefined && m.tc !== undefined) return m;
   const raw = m as Record<string, unknown>;
-  const found = m.tc ?? m.xc ?? findDimensions(m);
+  const mediaFmt = snapshotFormat()?.media;
+  const mappedDims = mediaFmt
+    ? (readMediaField(m, mediaFmt.dimensions) as { width?: number; height?: number } | undefined)
+    : undefined;
+  const found = mappedDims ?? m.tc ?? m.xc ?? findDimensions(m);
   const dims = hasDimensions(found) ? found : (videoDimensions(m.resolution, m.aspectRatio) ?? found);
-  // `Cf` is the duration of a video on the 2026-11-16 front end. Read it only on a video payload.
+  const mappedDuration =
+    mediaFmt && m.resolution !== undefined ? readMediaField(m, mediaFmt.duration) : undefined;
   const duration =
-    typeof m.xf === "number"
-      ? m.xf
-      : m.resolution !== undefined && typeof raw.Cf === "number"
-        ? raw.Cf
-        : undefined;
-  const created = [m.hc, m.kc, raw.lc].find((v) => v instanceof Date) as Date | undefined;
+    typeof mappedDuration === "number"
+      ? mappedDuration
+      : typeof m.xf === "number"
+        ? m.xf
+        : m.resolution !== undefined && typeof raw.Cf === "number"
+          ? raw.Cf
+          : undefined;
+  const created = [
+    mediaFmt ? readMediaField(m, mediaFmt.date) : undefined,
+    m.hc,
+    m.kc,
+    raw.lc,
+  ].find((v) => v instanceof Date) as Date | undefined;
+  const mappedStatus = mediaFmt ? readMediaField(m, mediaFmt.status) : undefined;
+  const mappedError = mediaFmt ? readMediaField(m, mediaFmt.error) : undefined;
   return {
     ...m,
-    Zc: m.Zc ?? m.od ?? findStatus(m),
+    Zc: (typeof mappedStatus === "string" ? mappedStatus : undefined) ?? m.Zc ?? m.od ?? findStatus(m),
     tc: dims,
-    nf: m.nf ?? m.Bf,
+    nf: mappedError ?? m.nf ?? m.Bf,
     Lf: m.Lf ?? duration,
     hc: m.hc ?? created,
   };
 }
 
-/** Returns the field of tile `t` that holds its media payload: an object with a string `id` and a string `workflowId`. The key name changes with each front-end build. */
-function findMediaContainer(t: object): FlowMediaPayload | undefined {
-  for (const [, v] of ownEntries(t)) {
-    if (!v || typeof v !== "object" || Array.isArray(v) || v instanceof Map || v instanceof Date) continue;
-    const c = v as { id?: unknown; workflowId?: unknown };
-    if (typeof c.id === "string" && typeof c.workflowId === "string") return v as FlowMediaPayload;
+/** Returns true when `v` is a plain object candidate for a nested media container. */
+function isMediaObject(v: unknown): v is FlowMediaPayload {
+  return Boolean(v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Map) && !(v instanceof Date));
+}
+
+/** Returns the key and payload of the verified or structurally identified media field. */
+export function findMediaContainer(t: object): [string, FlowMediaPayload] | undefined {
+  const mappedKey = snapshotFormat()?.media.container;
+  const mapped = mappedKey ? readMediaField(t, mappedKey) : undefined;
+  if (mappedKey && isMediaObject(mapped)) return [mappedKey, mapped];
+  for (const key of ["Fb", "Eb"]) {
+    const value = readMediaField(t, key);
+    if (isMediaObject(value)) return [key, value];
+  }
+  for (const [key, v] of ownEntries(t)) {
+    if (!isMediaObject(v)) continue;
+    if (typeof readMediaField(v, "id") === "string" && typeof readMediaField(v, "workflowId") === "string") {
+      return [key, v];
+    }
   }
   return undefined;
 }
 
-/** Returns `t` with `Fb` set to its media payload under the old field names and `hc` set to its date. It finds the media payload by shape, because the key name changes with each front-end build. */
+/** Returns `t` with `Fb` set to its media payload under the old field names and `hc` set to its date. It checks verified build descriptors first, then finds the media payload by shape. */
 export function legacyTile<T extends FlowTile | null | undefined>(t: T): T {
   if (!t || typeof t !== "object") return t;
   const raw = t as Record<string, unknown>;
   const legacy: unknown = raw.Fb;
-  if (legacy && typeof legacy === "object" && (legacy as FlowMediaPayload).Zc !== undefined) return t;
-  const media =
-    legacy && typeof legacy === "object"
-      ? (legacy as FlowMediaPayload)
-      : raw.Eb && typeof raw.Eb === "object"
-        ? (raw.Eb as FlowMediaPayload)
-        : findMediaContainer(t);
+  if (isMediaObject(legacy) && legacy.Zc !== undefined) return t;
+  const mediaFmt = snapshotFormat()?.media;
+  const media = findMediaContainer(t)?.[1];
   // A tile without media and without the key `Fb` needs no change.
   if (!media && legacy === undefined) return t;
-  const created = [t.hc, t.kc, raw.lc].find((v) => v instanceof Date) as Date | undefined;
+  const created = [
+    mediaFmt ? readMediaField(t, mediaFmt.date) : undefined,
+    t.hc,
+    t.kc,
+    raw.lc,
+  ].find((v) => v instanceof Date) as Date | undefined;
   // A current front end can use the key `Fb` for a boolean. Do not let it pass as a media payload.
   return { ...t, Fb: legacyMedia(media), hc: t.hc ?? created };
 }
@@ -135,14 +220,17 @@ export function collectionIdOf(
 /** Returns true when the project store marks the tile as trashed. */
 export function isTrashedTile(t: FlowTile): boolean {
   return t.trashed === true || t.isTrashed === true || t.Cb === true ||
-    t.yb === true || t.Ab === true;
+    t.Bb === true || t.yb === true || t.Ab === true;
 }
 
-/** Returns the look map of character tile `t`, or null. It accepts the old `oi` field, or any other `Map` field whose entries hold a `primaryMediaId` or a `history`, because the key name changes with each front-end build. */
+/** Returns the look map of character tile `t`, or null. It checks the verified build descriptor first, then falls back to `oi` or a `Map` with `primaryMediaId` or `history` entries. */
 export function characterLooksOf(
   t: FlowTile | null | undefined,
 ): Map<unknown, CharacterLookEntry> | null {
   if (!t || typeof t !== "object") return null;
+  const looksKey = snapshotFormat()?.character.looks;
+  const mapped = looksKey ? readMediaField(t, looksKey) : undefined;
+  if (mapped instanceof Map) return mapped as Map<unknown, CharacterLookEntry>;
   if (t.oi instanceof Map) return t.oi;
   for (const [, v] of ownEntries(t)) {
     if (!(v instanceof Map) || v.size === 0) continue;
@@ -152,6 +240,56 @@ export function characterLooksOf(
     }
   }
   return null;
+}
+
+/** Extracts the preferred look image URL and primary media ID from character tile `t`. */
+export function characterLookMedia(
+  t: FlowTile | null | undefined,
+): { url: string | null; primaryMediaId: string | null } {
+  if (!t || typeof t !== "object") return { url: null, primaryMediaId: null };
+  const charFmt = snapshotFormat()?.character;
+  const previewRaw = (charFmt ? readMediaField(t, charFmt.previewMediaId) : undefined) ?? t.Kd;
+  const directPreviewUrl = asHttpOrDataUrl(previewRaw);
+  const preferredId =
+    !directPreviewUrl && typeof previewRaw === "string" && previewRaw.trim()
+      ? previewRaw.trim()
+      : null;
+  let firstPrimaryId: string | null = null;
+  let preferredUrl: string | null = null;
+  let fallbackUrl: string | null = directPreviewUrl || asHttpOrDataUrl(t.ue);
+  const looks = characterLooksOf(t);
+  if (looks) {
+    for (const entry of looks.values()) {
+      if (!entry) continue;
+      const entryPrimary = entry.primaryMediaId != null ? String(entry.primaryMediaId) : null;
+      if (!firstPrimaryId && entryPrimary) firstPrimaryId = entryPrimary;
+      const history = Array.isArray(entry.history) ? entry.history : [];
+      if (preferredId && !preferredUrl) {
+        const match = history.find((h) => h && String(h.id ?? "") === preferredId);
+        preferredUrl = readMediaUrl(match) || readMediaUrl(match?.media);
+      }
+      if (!fallbackUrl) {
+        const primaryItem = entryPrimary
+          ? history.find((h) => h && String(h.id ?? "") === entryPrimary)
+          : undefined;
+        fallbackUrl =
+          readMediaUrl(primaryItem) ||
+          readMediaUrl(primaryItem?.media) ||
+          readMediaUrl(entry) ||
+          readMediaUrl(entry.media);
+        if (!fallbackUrl) {
+          for (const h of history) {
+            fallbackUrl = readMediaUrl(h) || readMediaUrl(h?.media);
+            if (fallbackUrl) break;
+          }
+        }
+      }
+    }
+  }
+  return {
+    url: preferredId ? preferredUrl : fallbackUrl,
+    primaryMediaId: preferredId || firstPrimaryId,
+  };
 }
 
 /** Waits for `ms` milliseconds before resolving. */
@@ -310,6 +448,18 @@ export async function dismissOverlay(): Promise<void> {
   }
 }
 
+/** Lowercase query parameter names that identify signed GCS or CDN media URLs. */
+const SIGNED_QUERY_KEYS = new Set([
+  "signature",
+  "googleaccessid",
+  "x-goog-signature",
+  "x-goog-algorithm",
+  "x-goog-credential",
+  "x-goog-date",
+  "x-goog-expires",
+  "x-goog-signedheaders",
+]);
+
 /** Extracts active FIFE host, `authuser`, and signed-CDN detection from `window.WIZ_global_data`. */
 export function fifeEnv(): FifeEnv {
   const wiz = window.WIZ_global_data || {};
@@ -331,17 +481,31 @@ export function fifeEnv(): FifeEnv {
         : null;
   const isSignedCdnHost = (parsed: URL): boolean => {
     const host = parsed.hostname.toLowerCase();
-    return (
+    if (
       host === "storage.googleapis.com" ||
+      host.endsWith(".storage.googleapis.com") ||
       host === "flow-content.google" ||
       host.endsWith(".flow-content.google") ||
+      host === "labs-flow.dev" ||
+      host.endsWith(".labs-flow.dev") ||
       host === "video-downloads.googleusercontent.com" ||
-      parsed.searchParams.has("Signature") ||
-      parsed.searchParams.has("X-Goog-Signature") ||
-      parsed.searchParams.has("GoogleAccessId")
-    );
+      host.endsWith(".video-downloads.googleusercontent.com")
+    ) {
+      return true;
+    }
+    for (const key of parsed.searchParams.keys()) {
+      if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) {
+        return true;
+      }
+    }
+    return false;
   };
   return { fifeHost, authuser, isSignedCdnHost };
+}
+
+/** Strips an optional `media/` prefix from a media identifier. */
+export function cleanMediaId(value: unknown): string {
+  return typeof value === "string" ? value.replace(/^media\//, "") : "";
 }
 
 /** Strips query parameters and FIFE size suffixes for base URL comparison. */
@@ -350,21 +514,93 @@ export function fifeBase(u: unknown): string {
   return s ? s.split("?")[0].split("=")[0] : "";
 }
 
-/** Selects the best available media URL from a project tile object. */
+/** Rewrites unsigned Google media URLs across `/fife/`, `/asb/`, and other paths to the active host and account. */
+export function normalizeFlowMediaUrl(
+  u: string,
+  kind = "image",
+  env: FifeEnv = fifeEnv(),
+): string {
+  if (typeof u !== "string" || !/^https?:\/\//i.test(u)) return u;
+  try {
+    const parsed = new URL(u);
+    const host = parsed.hostname.toLowerCase();
+    const fifeHost = env.fifeHost || "flow.google.com";
+    if (env.isSignedCdnHost(parsed) || parsed.pathname === "/" || parsed.pathname === "") {
+      return u;
+    }
+    if (
+      host.endsWith(".googleusercontent.com") ||
+      host.endsWith(".fife.usercontent.google.com") ||
+      host === "flow.google.com" ||
+      host === fifeHost.toLowerCase()
+    ) {
+      parsed.hostname = fifeHost;
+      if (kind === "video" && !/=[^/]+$/.test(parsed.pathname)) {
+        parsed.pathname = `${parsed.pathname}=mm,22,15`;
+      }
+      if (env.authuser) {
+        parsed.searchParams.set("authuser", env.authuser);
+      }
+      return parsed.toString();
+    }
+    return u;
+  } catch {
+    return u;
+  }
+}
+
+/** Selects the best available media URL from a project tile object and rewrites unsigned media paths. */
 export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
   const t = legacyTile(tile);
-  return (
-    t?.Fb?.Wb ||
-    t?.Fb?.fifeUrl ||
-    t?.Fb?.imageUrl ||
-    t?.Fb?.videoUrl ||
-    t?.Fb?.url ||
-    t?.Wb ||
-    t?.fifeUrl ||
-    t?.imageUrl ||
-    t?.videoUrl ||
-    t?.url ||
-    t?.ue ||
-    null
-  );
+  if (!t) return null;
+  const kind = String(t.type ?? "").toUpperCase() === "VIDEO" ? "video" : "image";
+  const videoUrl = kind === "video"
+    ? readMediaUrl(t.Fb, true) || readMediaUrl(t, true) || readMediaUrl(t.fb, true)
+    : null;
+  const raw =
+    videoUrl || readMediaUrl(t.Fb) ||
+    readMediaUrl(t) ||
+    readMediaUrl(t.fb) ||
+    characterLookMedia(t).url ||
+    asHttpOrDataUrl(t.ue) ||
+    null;
+  return raw ? normalizeFlowMediaUrl(raw, kind) : null;
+}
+
+/** Reads non-destructive start and end trim bounds in seconds from a project tile. */
+export function videoTrimBounds(
+  rawTile: FlowTile | null | undefined,
+): { start: number | null; end: number | null } {
+  const t = legacyTile(rawTile);
+  if (!t) return { start: null, end: null };
+  const isVideo = String(t.type ?? "VIDEO").toUpperCase() === "VIDEO";
+  const start =
+    isVideo && typeof t.Fb?.Jc === "number"
+      ? t.Fb.Jc
+      : typeof t.trimStartSeconds === "number"
+        ? t.trimStartSeconds
+        : typeof t.Fb?.Ac === "number"
+          ? t.Fb.Ac
+          : typeof t.Ac === "number"
+            ? t.Ac
+            : typeof t.Cg === "number"
+              ? t.Cg
+              : typeof t.Fb?.Cg === "number"
+                ? t.Fb.Cg
+                : null;
+  const end =
+    isVideo && typeof t.Fb?.Pc === "number"
+      ? t.Fb.Pc
+      : typeof t.trimEndSeconds === "number"
+        ? t.trimEndSeconds
+        : typeof t.Fb?.Ic === "number"
+          ? t.Fb.Ic
+          : typeof t.Ic === "number"
+            ? t.Ic
+            : typeof t.Rf === "number"
+              ? t.Rf
+              : typeof t.Fb?.Rf === "number"
+                ? t.Fb.Rf
+                : null;
+  return { start, end };
 }
