@@ -3,7 +3,7 @@
 
 // Navigate Google Flow home, project tiles, and sub-routes.
 
-import { findRouter } from "./angular";
+import { findRouter, navigateSpa } from "./angular";
 import { delay, elText, isVisibleEnabled } from "./dom";
 import { clearStore } from "./state";
 
@@ -90,18 +90,22 @@ export async function projectNav(action: string): Promise<unknown> {
 
   if (action === "exit_subroute") {
     const isSubRoute = (): boolean =>
-      /\/project\/[^/]+\/(?:character|scene|edit|chat|tools?)(?:\/|$)/.test(
+      /\/project\/[^/?#]+\/(?:character|scene|edit|chat|tools?|create-tool|trash|collection\/[^/?#]+\/character)(?:\/|$)/.test(
         location.pathname || "",
       );
     if (!isSubRoute()) {
       return { ok: true, exited: true, method: "already_root" };
     }
-    const direct = document.querySelector(
-      'button[aria-label="Done editing scene"], button[aria-label="Done editing"], flow-character-edit-header .back-button, button[aria-label="Go back"]',
-    );
+    const direct = Array.from(
+      document.querySelectorAll(
+        'button[aria-label="Done editing scene"], button[aria-label="Done editing"], flow-character-edit-header .back-button, flow-applet-view-header button[aria-label="Back"], button[aria-label="Back button to go to previous page"], flow-navigation-header .back-button:not([aria-label="Home"]), button[aria-label="Go back"]',
+      ),
+    ).find(isVisibleEnabled);
     let clicked = false;
-    if (isVisibleEnabled(direct)) {
-      direct.click();
+    if (direct) {
+      const inner =
+        direct.tagName === "BUTTON" ? null : direct.querySelector("button");
+      (isVisibleEnabled(inner) ? inner : direct).click();
       clicked = true;
     } else {
       const hit = Array.from(
@@ -111,8 +115,9 @@ export async function projectNav(action: string): Promise<unknown> {
         const aria = (el.getAttribute("aria-label") || "").trim();
         const txt = elText(el);
         return (
-          /^(?:done(?: editing(?: scene)?)?|go back)$/i.test(aria) ||
-          /^(?:done(?: editing(?: scene)?)?)$/i.test(txt)
+          /^(?:done(?: editing(?: scene)?)?|go back|back button to go to previous page)$/i.test(
+            aria,
+          ) || /^(?:done(?: editing(?: scene)?)?)$/i.test(txt)
         );
       });
       if (hit) {
@@ -133,7 +138,7 @@ export async function projectNav(action: string): Promise<unknown> {
     const pid = m ? m[1] : null;
     const router = pid ? findRouter() : null;
     if (router && pid) {
-      await router.navigate(["/project", pid], { queryParams: { hl: "en" } });
+      await navigateSpa(router, ["/project", pid]);
       for (let i = 0; i < 25; i++) {
         await delay(100);
         if (!isSubRoute()) {

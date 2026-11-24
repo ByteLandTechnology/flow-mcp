@@ -3,7 +3,7 @@
 
 // Trim Flow videos and drive the scene builder extend workflow.
 
-import { createScene, findRouter } from "./angular";
+import { buildProjectUrl, createScene, findRouter, navigateSpa } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
 import { writePromptBox } from "./prompt_writer";
 import { clearStore, runtimeState } from "./state";
@@ -73,16 +73,12 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         }
         sceneId = created.id;
       }
-      const pm = /(\/(?:fx\/tools\/flow\/)?project\/([^/?#]+))/.exec(
-        location.pathname || "",
-      );
-      const pid = pm ? pm[2] : null;
+      const pm = /\/project\/([^/?#]+)/.exec(location.pathname || "");
+      const pid = pm ? pm[1] : helper?.projectId || null;
       const router = pid ? findRouter() : null;
       let navigatedSpa = false;
       if (router && pid) {
-        await router.navigate(["/project", pid, "scene", sceneId], {
-          queryParams: { hl: "en" },
-        });
+        await navigateSpa(router, ["/project", pid, "scene", sceneId]);
         for (let i = 0; i < 60; i++) {
           const onScene = (location.pathname || "").includes(
             `/scene/${sceneId}`,
@@ -98,11 +94,16 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       if (navigatedSpa) {
         clearStore();
         await delay(250);
-      } else {
-        const projPath = pm ? pm[1] : "";
+      } else if (pid) {
         return {
           ok: false,
-          need_navigate: `${location.origin}${projPath}/scene/${encodeURIComponent(sceneId)}?hl=en`,
+          need_navigate: buildProjectUrl(pid, ["scene", sceneId]),
+          scene_id: sceneId,
+        };
+      } else {
+        return {
+          ok: false,
+          error: "not_in_project_route",
           scene_id: sceneId,
         };
       }
@@ -365,7 +366,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       const pid = pm ? pm[1] : null;
       const router = pid ? findRouter() : null;
       if (router && pid) {
-        await router.navigate(["/project", pid], { queryParams: { hl: "en" } });
+        await navigateSpa(router, ["/project", pid]);
         for (let i = 0; i < 25; i++) {
           await delay(100);
           if (!location.pathname.includes("/scene/")) break;

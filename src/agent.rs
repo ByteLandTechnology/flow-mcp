@@ -15,7 +15,6 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::{Duration, sleep};
 
 use crate::agent_settings::{AgentSettingsPatch, has_text};
-use crate::config::FLOW_URL;
 use crate::engine::{BackgroundPage, ChromeEngine, checked_runtime_result};
 use crate::project::project_workspace_url;
 use crate::queue::JobQueue;
@@ -291,8 +290,9 @@ impl AgentChat {
                 project_id: String::new(),
             });
         }
+        let reference_url = engine.current_url().await.unwrap_or_default();
         let agent = state.as_mut().context("Agent page unavailable")?;
-        agent.open(&request.project_id).await?;
+        agent.open(&reference_url, &request.project_id).await?;
         let mut args = serde_json::to_value(&request)?;
         if let Some(fields) = args.as_object_mut() {
             fields.remove("files");
@@ -362,7 +362,7 @@ impl AgentChat {
 
 impl AgentPage {
     /// Loads the project and binds its Agent service.
-    async fn open(&mut self, project_id: &str) -> Result<()> {
+    async fn open(&mut self, reference_url: &str, project_id: &str) -> Result<()> {
         if self.project_id == project_id
             && self.page.call("agentBound", json!([project_id])).await? == Value::Bool(true)
         {
@@ -375,7 +375,7 @@ impl AgentPage {
                 self.project_id
             );
         }
-        let route = project_workspace_url(FLOW_URL, project_id);
+        let route = project_workspace_url(reference_url, project_id);
         self.page.navigate(&route).await?;
         self.project_id.clear();
         let mut last = Value::Null;

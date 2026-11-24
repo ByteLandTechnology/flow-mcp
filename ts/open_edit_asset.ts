@@ -3,7 +3,13 @@
 
 // Open the Google Flow asset editor via Angular Router or tile controls.
 
-import { findRouter, readOwn, type NgContextCarrier } from "./angular";
+import {
+  buildProjectUrl,
+  findRouter,
+  navigateSpa,
+  readOwn,
+  type NgContextCarrier,
+} from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
 import { clearStore } from "./state";
 
@@ -31,17 +37,13 @@ export async function openEditAsset(
     );
   }
 
-  const pm = /(\/(?:fx\/tools\/flow\/)?project\/([^/?#]+))/.exec(
-    location.pathname || "",
-  );
-  const pid = pm ? pm[2] : null;
+  const pm = /\/project\/([^/?#]+)/.exec(location.pathname || "");
+  const pid = pm ? pm[1] : null;
   const router = pid && candidateIds.length > 0 ? findRouter() : null;
   if (router && pid && candidateIds.length > 0) {
     let viewKind: string | null = null;
     for (const candId of candidateIds) {
-      await router.navigate(["/project", pid, "edit", candId], {
-        queryParams: { hl: "en" },
-      });
+      await navigateSpa(router, ["/project", pid, "edit", candId]);
       for (let i = 0; i < 60; i += 1) {
         const onRoute = (location.pathname || "").includes("/edit/");
         const edPage = document.querySelector("flow-editor-page");
@@ -182,11 +184,10 @@ export async function openEditAsset(
     }
   }
 
-  if (pm && idStr) {
-    const editPath = `${pm[1]}/edit/${encodeURIComponent(idStr)}?hl=en`;
+  if (pid && idStr) {
     return {
       opened: false,
-      edit_url: `${location.origin}${editPath}`,
+      edit_url: buildProjectUrl(pid, ["edit", idStr]),
       method: "route_fallback_needed",
     };
   }

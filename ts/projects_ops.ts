@@ -3,7 +3,12 @@
 
 // List, rename, and delete Google Flow projects from the Flow UI.
 
-import { readOwn, resolveLView, type NgContextCarrier } from "./angular";
+import {
+  buildProjectUrl,
+  readOwn,
+  resolveLView,
+  type NgContextCarrier,
+} from "./angular";
 import { delay, elText, setNativeValue } from "./dom";
 import type { ProjectsOpRequest } from "./types";
 
@@ -168,14 +173,11 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         .map((s) => s.trim())
         .find((s) => s.length > 0 && !/^(?:more_vert|delete)$/i.test(s));
       const key = pid || `card:${rawText || byId.size}`;
-      const projBase = location.pathname.includes("/fx/tools/flow")
-        ? "/fx/tools/flow/project"
-        : "/project";
       if (!byId.has(key)) {
         byId.set(key, {
           id: pid,
           title: rawText || null,
-          url: pid ? `${location.origin}${projBase}/${pid}?hl=en` : null,
+          url: pid ? buildProjectUrl(pid) : null,
           _card: card,
         });
       }

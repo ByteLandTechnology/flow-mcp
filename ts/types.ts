@@ -21,7 +21,7 @@ export interface WizGlobalData {
 /** Angular Router subset used for in-app navigation. */
 export interface AngularRouter {
   /** Navigate to an Angular route command array with optional extras. */
-  navigate: (commands: unknown[], extras?: { queryParams?: Record<string, string> }) => Promise<boolean>;
+  navigate: (commands: unknown[], extras?: Record<string, unknown>) => Promise<boolean>;
   /** Router location reference. */
   location: unknown;
   /** Router configuration options. */

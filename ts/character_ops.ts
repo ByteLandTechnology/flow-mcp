@@ -3,7 +3,7 @@
 
 // Open, finish, create, and update profile fields for Google Flow characters.
 
-import { findRouter } from "./angular";
+import { buildProjectUrl, findRouter, navigateSpa } from "./angular";
 import { clickButtonByRegex, delay, isVisibleEnabled, setNativeValue } from "./dom";
 import { clearStore, runtimeState } from "./state";
 import type { CharacterOpRequest } from "./types";
@@ -26,7 +26,7 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       if (!router) {
         return { ok: false, error: "angular_router_not_found" };
       }
-      await router.navigate(["/project", pid, "character", cid]);
+      await navigateSpa(router, ["/project", pid, "character", cid]);
     }
     let ready = false;
     for (let i = 0; i < 60; i += 1) {
@@ -91,10 +91,8 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
   }
 
   const tileMap = getMap();
-  const projectMatch = /(\/(?:fx\/tools\/flow\/)?project\/[^/?#]+)/.exec(
-    location.pathname || "",
-  );
-  const projectBasePath = projectMatch ? projectMatch[1] : null;
+  const projectMatch = /\/project\/([^/?#]+)/.exec(location.pathname || "");
+  const currentPid = projectMatch ? projectMatch[1] : null;
   let charId = req?.character_id ? String(req.character_id).trim() : null;
 
   if (action === "create") {
@@ -226,10 +224,10 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
   if (action === "update") {
     if (!charId) return { ok: false, error: "missing_character_id" };
     if (!location.pathname.includes(`/character/${charId}`)) {
-      if (projectBasePath) {
+      if (currentPid) {
         return {
           ok: false,
-          need_navigate: `${location.origin}${projectBasePath}/character/${encodeURIComponent(charId)}?hl=en`,
+          need_navigate: buildProjectUrl(currentPid, ["character", charId]),
         };
       }
       return { ok: false, error: "not_in_project_route" };

@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{Duration, Instant};
+use url::Url;
 
 use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
@@ -134,41 +135,124 @@ pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
     None
 }
 
-/// Builds a Google Flow `/project/<id>` or sub-route URL preserving `/fx/tools/flow` when active.
+/// Returns `true` when `host` is a Google Flow host (`flow.google.com` or `labs.google`).
+fn is_flow_origin_host(host: Option<&str>) -> bool {
+    let Some(h) = host else {
+        return false;
+    };
+    h.eq_ignore_ascii_case("flow.google.com")
+        || h.eq_ignore_ascii_case("labs.google")
+        || h.to_ascii_lowercase().ends_with(".labs.google")
+}
+
+/// Extracts the active route prefix before `/project/` from a Flow URL path.
+fn flow_route_prefix(path: &str) -> String {
+    if let Some((before, _)) = path.split_once("/project/") {
+        return before.trim_end_matches('/').to_string();
+    }
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let mut prefix = Vec::new();
+    let mut i = 0;
+    while i < segs.len() {
+        if segs[i..].starts_with(&["fx", "tools", "flow"]) {
+            prefix.extend_from_slice(&["fx", "tools", "flow"]);
+            i += 3;
+        } else if i + 1 < segs.len()
+            && segs[i] == "u"
+            && !segs[i + 1].is_empty()
+            && segs[i + 1].bytes().all(|b| b.is_ascii_digit())
+        {
+            prefix.extend_from_slice(&["u", segs[i + 1]]);
+            i += 2;
+        } else if i + 1 < segs.len()
+            && segs[i + 1] == "global"
+            && !matches!(
+                segs[i],
+                "project" | "projects" | "about" | "shared" | "flow" | "tools" | "fx" | "u"
+            )
+        {
+            prefix.extend_from_slice(&[segs[i], "global"]);
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("/{}", prefix.join("/"))
+    }
+}
+
+/// Builds a Google Flow `/project/<id>` or subroute URL with active prefixes, `hl=en`, and `authuser`.
 pub(crate) fn project_subroute_url(
     reference_url: &str,
     project_id: &str,
     subroute: &str,
 ) -> String {
-    let prefix = if reference_url.contains("/fx/tools/flow") {
-        "https://flow.google.com/fx/tools/flow"
-    } else {
-        "https://flow.google.com"
-    };
+    let parsed = Url::parse(reference_url)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "https" | "http") && is_flow_origin_host(u.host_str()));
+    let prefix = parsed
+        .as_ref()
+        .map(|u| flow_route_prefix(u.path()))
+        .unwrap_or_default();
+    let authuser = parsed.as_ref().and_then(|u| {
+        u.query_pairs()
+            .find(|(k, _)| k == "authuser")
+            .map(|(_, v)| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    });
     let clean_sub = subroute.trim_start_matches('/');
-    if clean_sub.is_empty() {
-        format!("{}/project/{}?hl=en", prefix, project_id)
+    let route_path = if clean_sub.is_empty() {
+        format!("{prefix}/project/{project_id}")
     } else {
-        format!("{}/project/{}/{}?hl=en", prefix, project_id, clean_sub)
+        format!("{prefix}/project/{project_id}/{clean_sub}")
+    };
+    if let Some(mut base) = parsed.or_else(|| Url::parse(FLOW_URL).ok()) {
+        base.set_path(&route_path);
+        base.set_fragment(None);
+        {
+            let mut qp = base.query_pairs_mut();
+            qp.clear();
+            qp.append_pair("hl", "en");
+            if let Some(au) = authuser.as_deref() {
+                qp.append_pair("authuser", au);
+            }
+        }
+        return base.into();
     }
+    format!("https://flow.google.com{route_path}?hl=en")
 }
 
-/// Builds the Google Flow `/project/<id>` workspace URL preserving `/fx/tools/flow` when active.
+/// Builds the Google Flow `/project/<id>` workspace URL with active prefixes, `hl=en`, and `authuser`.
 pub(crate) fn project_workspace_url(reference_url: &str, project_id: &str) -> String {
     project_subroute_url(reference_url, project_id, "")
 }
 
-/// Navigates back to `/project/<id>` when Chrome is currently on a character, scene, edit, chat, or tools sub-route.
+/// Navigates back to `/project/<id>` when Chrome is on a non-grid project subroute.
 pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
     let is_subroute = |url: &str| {
         let path = url.split(['?', '#']).next().unwrap_or_default();
-        let section = path
-            .split_once("/project/")
-            .and_then(|(_, project)| project.split('/').nth(1));
-        matches!(
-            section,
-            Some("character" | "scene" | "edit" | "chat" | "tool" | "tools")
-        )
+        let Some((_, project)) = path.split_once("/project/") else {
+            return false;
+        };
+        let mut segs = project.trim_end_matches('/').split('/');
+        if segs.next().is_none_or(str::is_empty) {
+            return false;
+        }
+        match (segs.next(), segs.next(), segs.next()) {
+            (
+                Some(
+                    "character" | "scene" | "edit" | "chat" | "tool" | "tools" | "create-tool"
+                    | "trash",
+                ),
+                _,
+                _,
+            ) => true,
+            (Some("collection"), Some(cid), Some("character")) => !cid.is_empty(),
+            _ => false,
+        }
     };
     let cur = engine.current_url().await.unwrap_or_default();
     if is_subroute(&cur) {
