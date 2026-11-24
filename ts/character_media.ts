@@ -21,6 +21,7 @@ import {
   hoverProbe,
   isVisibleEnabled,
   legacyMedia,
+  legacyTile,
   pickTileUrl,
   setNativeValue,
 } from "./dom";
@@ -412,7 +413,7 @@ export async function characterMediaOp(
 
   if (Array.isArray(req?.asset_ids) && req.asset_ids.length > 0) {
     for (const aid of req.asset_ids) {
-      const targetTile = getMap()?.get(String(aid));
+      const targetTile = legacyTile(getMap()?.get(String(aid)));
       const hasDisplayName = Boolean(targetTile?.displayName && String(targetTile.displayName).trim());
       const targetName = hasDisplayName && targetTile?.displayName ? String(targetTile.displayName).trim() : "";
       const targetPrimaryMediaId = targetTile?.primaryMediaId || targetTile?.Fb?.id || targetTile?.Fb?.mediaId || null;

@@ -22,12 +22,13 @@ import {
   settingsOpen,
 } from "./composer";
 import {
-  characterLooksOf,
+  characterLookMedia,
   delay,
   elText,
   fifeBase,
   hoverProbe,
   isVisibleEnabled,
+  legacyTile,
   pickTileUrl,
   setNativeValue,
 } from "./dom";
@@ -60,7 +61,8 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
 
   if (Array.isArray(cfg.asset_ids)) {
     for (const id of cfg.asset_ids) {
-      const t = tileMap?.get(String(id));
+      const rawTile = tileMap?.get(String(id));
+      const t = legacyTile(rawTile);
       const hasDisplayName = Boolean(t?.displayName && String(t.displayName).trim());
       ingredientTargets.push({
         id: String(id),
@@ -68,7 +70,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         hasDisplayName,
         name: hasDisplayName && t?.displayName ? String(t.displayName).trim() : String(id),
         url: pickTileUrl(t),
-        tile: t || null,
+        tile: rawTile || null,
       });
     }
   }
@@ -76,62 +78,27 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   if (Array.isArray(cfg.characters)) {
     for (const c of cfg.characters) {
       const key = String(c);
-      let matched: FlowTile | null = tileMap?.get(key) || null;
-      if (!matched && tileMap instanceof Map) {
+      let rawMatched: FlowTile | null = tileMap?.get(key) || null;
+      if (!rawMatched && tileMap instanceof Map) {
         const low = key.toLowerCase();
         for (const t of tileMap.values()) {
           if (String(t?.type || "").toUpperCase() !== "CHARACTER") continue;
           const nm = String(t?.displayName || "").toLowerCase();
           if (nm === low || nm.includes(low)) {
-            matched = t;
+            rawMatched = t;
             break;
           }
         }
       }
-      let charUrl = pickTileUrl(matched);
-      let charPrimaryMediaId: string | number | null =
+      const matched = legacyTile(rawMatched);
+      const lookInfo = characterLookMedia(matched);
+      const charUrl = pickTileUrl(matched) || lookInfo.url;
+      const charPrimaryMediaId: string | number | null =
         matched?.primaryMediaId ||
         matched?.Fb?.id ||
         matched?.Fb?.mediaId ||
+        lookInfo.primaryMediaId ||
         null;
-      const looks = characterLooksOf(matched);
-      if (looks) {
-        for (const entry of looks.values()) {
-          if (!entry) continue;
-          if (!charPrimaryMediaId && entry.primaryMediaId) {
-            charPrimaryMediaId = entry.primaryMediaId;
-          }
-          if (!charUrl) {
-            charUrl =
-              entry.Wb ||
-              entry.fifeUrl ||
-              entry.imageUrl ||
-              entry.url ||
-              entry.media?.Wb ||
-              entry.media?.fifeUrl ||
-              entry.media?.url ||
-              null;
-          }
-          if (!charUrl && Array.isArray(entry.history)) {
-            for (const h of entry.history) {
-              const candidateUrl =
-                h?.Wb ||
-                h?.fifeUrl ||
-                h?.imageUrl ||
-                h?.url ||
-                h?.media?.Wb ||
-                h?.media?.fifeUrl ||
-                h?.media?.url ||
-                null;
-              if (candidateUrl) {
-                charUrl = candidateUrl;
-                break;
-              }
-            }
-          }
-          if (charUrl && charPrimaryMediaId) break;
-        }
-      }
       const hasDisplayName = Boolean(
         matched?.displayName ? String(matched.displayName).trim() : key.trim(),
       );
@@ -141,7 +108,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         hasDisplayName,
         name: matched?.displayName ? String(matched.displayName).trim() : key,
         url: charUrl,
-        tile: matched || null,
+        tile: rawMatched || null,
       });
     }
   }

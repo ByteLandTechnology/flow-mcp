@@ -21,30 +21,126 @@ export type CharacterBioRequest =
   | { action: "list" | "check" }
   | { action: "set"; id: string; bio: string };
 
-/** Reads a field from a dense or sparse serialized protobuf message. */
+/** Returns true when `value` is a plain object that maps protobuf field keys to values. */
+function isSparseFieldMap(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    !(value instanceof Date) &&
+    !(value instanceof Map) &&
+    !(value instanceof Set)
+  );
+}
+
+/** Reads a 1-based field from a dense or sparse serialized protobuf message. */
 function entityField(message: unknown, field: number): unknown {
-  if (!Array.isArray(message)) return undefined;
-  const sparse = message.at(-1);
-  return Array.isArray(sparse)
-    ? message[field - 1]
-    : readOwn(sparse, String(field)) ?? message[field - 1];
+  if (Array.isArray(message)) {
+    const sparse = message.at(-1);
+    if (isSparseFieldMap(sparse)) {
+      const denseEnd = message.length - 1;
+      return (
+        readOwn(sparse, String(field)) ??
+        (field >= 1 && field - 1 < denseEnd ? message[field - 1] : undefined)
+      );
+    }
+    return field >= 1 ? message[field - 1] : undefined;
+  }
+  if (isSparseFieldMap(message)) {
+    return readOwn(message, String(field));
+  }
+  return undefined;
+}
+
+/** Extracts `character_info` (field 3 of `entity_info` at field 4) from a serialized entity. */
+function extractCharacterInfo(serialized: unknown): unknown {
+  const info = entityField(entityField(serialized, 4), 3);
+  return Array.isArray(info) || isSparseFieldMap(info) ? info : null;
+}
+
+/** Reads `character_info` from `tile.Rc` or any protobuf-serializable entity on `tile`. */
+function readCharacterInfo(tile: FlowTile): unknown {
+  const decodeEntity = (entity: unknown): unknown => {
+    if (Array.isArray(entity)) return extractCharacterInfo(entity);
+    const serialize = readOwn(entity, "toJSON");
+    if (typeof serialize !== "function") return null;
+    try {
+      return extractCharacterInfo(serialize.call(entity));
+    } catch {
+      return null;
+    }
+  };
+  const direct = decodeEntity(readOwn(tile, "Rc"));
+  if (direct !== null) return direct;
+  for (const [key, value] of Object.entries(tile as Record<string, unknown>)) {
+    if (key === "Rc" || !value || typeof value !== "object") continue;
+    const found = decodeEntity(value);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** Extracts the first voice identifier string from a dense or sparse `audio_references` value. */
+function decodeProtoVoice(value: unknown, depth = 0): string | null {
+  if (depth > 6 || value == null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed || /^(?:https?:\/\/|blob:|data:)/i.test(trimmed)) return null;
+    return trimmed;
+  }
+  if (Array.isArray(value)) {
+    const tail = value.at(-1);
+    const numericTail =
+      isSparseFieldMap(tail) &&
+      Object.keys(tail).every((k) => /^\d+$/.test(k));
+    const denseEnd = numericTail ? value.length - 1 : value.length;
+    const entries: Array<[number, unknown]> = [];
+    for (let i = 0; i < denseEnd; i += 1) {
+      if (value[i] != null) entries.push([i + 1, value[i]]);
+    }
+    if (numericTail) {
+      for (const key of Object.keys(tail)) {
+        const sparseVal = readOwn(tail, key);
+        if (sparseVal != null) entries.push([Number(key), sparseVal]);
+      }
+      entries.sort((a, b) => a[0] - b[0]);
+    }
+    for (const [, entryVal] of entries) {
+      const hit = decodeProtoVoice(entryVal, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (isSparseFieldMap(value)) {
+    for (const namedKey of ["voiceName", "voiceId", "title", "name", "id"]) {
+      const named = decodeProtoVoice(readOwn(value, namedKey), depth + 1);
+      if (named) return named;
+    }
+    const numericKeys = Object.keys(value)
+      .filter((k) => /^\d+$/.test(k))
+      .sort((a, b) => Number(a) - Number(b));
+    for (const key of numericKeys) {
+      const hit = decodeProtoVoice(readOwn(value, key), depth + 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** Reads the assigned voice identifier from field 2 (`audio_references`) of `character_info`. */
+export function characterVoice(tile: FlowTile): string | null {
+  const info = readCharacterInfo(tile);
+  if (!info) return null;
+  return decodeProtoVoice(entityField(info, 2));
 }
 
 /** Reads the notes from the character entity. Returns null when the entity cannot be read. */
 export function characterPersonalityNotes(tile: FlowTile): string | null {
-  const entity = readOwn(tile, "Rc");
-  const serialize = readOwn(entity, "toJSON");
-  if (typeof serialize !== "function") return null;
-  try {
-    // The nested fields are entity_info (4), character_info (3), and personality_notes (3).
-    const info = entityField(entityField(serialize.call(entity), 4), 3);
-    if (!Array.isArray(info)) return null;
-    const notes = entityField(info, 3);
-    if (notes == null) return "";
-    return typeof notes === "string" ? notes : null;
-  } catch {
-    return null;
-  }
+  const info = readCharacterInfo(tile);
+  if (!info) return null;
+  const notes = entityField(info, 3);
+  if (notes == null) return "";
+  return typeof notes === "string" ? notes : null;
 }
 
 /** Returns true for a character that can receive new notes. */

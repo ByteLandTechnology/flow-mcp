@@ -3,17 +3,20 @@
 
 // Read all project tiles, scene clips, and collections from the bound store map.
 
-import { characterPersonalityNotes } from "./character_bio";
-import { sceneContents } from "./scene_tiles";
-
+import { characterPersonalityNotes, characterVoice } from "./character_bio";
+import { readAccountCredits } from "./credits";
 import {
-  characterLooksOf,
+  asMediaUrl,
+  ASSET_TILE_TYPES,
+  characterLookMedia,
   collectionIdOf,
   fifeEnv as getFifeEnv,
   isTrashedTile,
   legacyMedia,
   legacyTile,
+  mediaUrlOf,
 } from "./dom";
+import { sceneContents } from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
 import type {
   FlowMediaPayload,
@@ -45,7 +48,7 @@ function normalizeVoiceVal(v: unknown): string | null {
   return String(v);
 }
 
-/** Reads project tiles, scenes, characters, and collections from bound runtime state. */
+/** Reads the current project snapshot from the bound store. */
 export function readStoreSnapshot(): StoreSnapshotResult {
   const match = /\/project\/([^/?#]+)/.exec(location.pathname || "");
   const projectId = match ? match[1] : null;
@@ -88,19 +91,7 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     .replace(/\s*[-–|]\s*(?:Google\s*)?Flow\s*$/i, "")
     .trim();
   const projectTitle = rawTitle || docTitle || null;
-
-  let credits: number | null = null;
-  const creditNodes = document.querySelectorAll(
-    'header, nav, [class*="credit"], [aria-label*="credit" i]',
-  );
-  for (const node of creditNodes) {
-    const txt = node.textContent || "";
-    const credMatch = txt.match(/(\d[\d,]*)\s*(?:credits|AI credits)/i);
-    if (credMatch) {
-      credits = parseInt(credMatch[1].replace(/,/g, ""), 10);
-      break;
-    }
-  }
+  const credits = readAccountCredits();
 
   return { ok: true, projectId, projectTitle, credits, assets, collections };
 }
@@ -115,8 +106,6 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
   const topLevelIds = new Set<string>();
   const sceneTiles: FlowTile[] = [];
   const rawList: Omit<SnapshotAssetItem, "collection_name">[] = [];
-  const asHttpOrDataUrl = (v: unknown): string | null =>
-    typeof v === "string" && /^(?:https?:|blob:|data:)/i.test(v) ? v : null;
   const env = getFifeEnv();
   const fifeHost = env.fifeHost || "flow.google.com";
   const authuser = env.authuser || null;
@@ -125,11 +114,10 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     if (typeof u !== "string" || !/^https?:\/\//i.test(u)) return u;
     try {
       const parsed = new URL(u);
-      const host = parsed.hostname.toLowerCase();
-      const signed = env.isSignedCdnHost(parsed);
-      if (signed || !parsed.pathname.startsWith("/asb/")) {
+      if (env.isSignedCdnHost(parsed)) {
         return u;
       }
+      const host = parsed.hostname.toLowerCase();
       if (
         host.endsWith(".googleusercontent.com") ||
         host.endsWith(".fife.usercontent.google.com") ||
@@ -137,7 +125,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       ) {
         parsed.hostname = fifeHost;
         if (kind === "video" && !/=[^/]+$/.test(parsed.pathname)) {
-          parsed.pathname = `${parsed.pathname}=mm,22,15`;
+          parsed.pathname = `${parsed.pathname.replace(/=$/, "")}=mm,22,15`;
         }
         if (authuser) {
           parsed.searchParams.set("authuser", authuser);
@@ -179,7 +167,8 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     }
     const tid = String(t.id ?? id);
     const tname = String(t.displayName ?? "");
-    const ttype = String(t.type ?? "IMAGE").toUpperCase();
+    const rawType = t.type == null || t.type === "" ? "IMAGE" : String(t.type);
+    const ttype = rawType.toUpperCase();
     if (t.isPending === true && (ttype === "COLLECTION" || ttype === "SCENE")) {
       continue;
     }
@@ -188,6 +177,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     if (ttype === "COLLECTION") {
       cols.set(tid, tname);
       if (!counts.has(tid)) counts.set(tid, 0);
+      continue;
+    }
+    if (!ASSET_TILE_TYPES.has(ttype)) {
       continue;
     }
 
@@ -208,57 +200,25 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       sceneTiles.push(t);
     }
 
-    let charFallbackUrl: string | null = null;
-    let charLookPrimaryMediaId: string | number | null = null;
-    if (kind === "character") {
-      charFallbackUrl = asHttpOrDataUrl(t.ue);
-      const looks = characterLooksOf(t);
-      if (looks) {
-        for (const entry of looks.values()) {
-          if (!entry) continue;
-          if (!charLookPrimaryMediaId && entry.primaryMediaId) {
-            charLookPrimaryMediaId = entry.primaryMediaId;
-          }
-          if (!charFallbackUrl) {
-            charFallbackUrl =
-              asHttpOrDataUrl(entry.Wb) ||
-              asHttpOrDataUrl(entry.fifeUrl) ||
-              asHttpOrDataUrl(entry.imageUrl) ||
-              asHttpOrDataUrl(entry.url) ||
-              asHttpOrDataUrl(entry.media?.Wb) ||
-              asHttpOrDataUrl(entry.media?.fifeUrl) ||
-              asHttpOrDataUrl(entry.media?.url);
-          }
-          if (!charFallbackUrl && Array.isArray(entry.history)) {
-            for (const h of entry.history) {
-              charFallbackUrl =
-                asHttpOrDataUrl(h?.Wb) ||
-                asHttpOrDataUrl(h?.fifeUrl) ||
-                asHttpOrDataUrl(h?.imageUrl) ||
-                asHttpOrDataUrl(h?.url) ||
-                asHttpOrDataUrl(h?.media?.Wb) ||
-                asHttpOrDataUrl(h?.media?.fifeUrl) ||
-                asHttpOrDataUrl(h?.media?.url);
-              if (charFallbackUrl) break;
-            }
-          }
-          if (charFallbackUrl && charLookPrimaryMediaId) break;
-        }
-      }
-    }
+    const lookInfo =
+      kind === "character"
+        ? characterLookMedia(t)
+        : { url: null, primaryMediaId: null };
+    const charFallbackUrl = lookInfo.url;
+    const charLookPrimaryMediaId = lookInfo.primaryMediaId;
 
-    const videoMediaUrl =
-      kind === "video"
-        ? asHttpOrDataUrl(t.Fb?.Bd) ||
-          asHttpOrDataUrl(t.Fb?.uA) ||
-          asHttpOrDataUrl(t.Fb?.videoUrl) ||
-          asHttpOrDataUrl(t.Bd) ||
-          asHttpOrDataUrl(t.uA) ||
-          asHttpOrDataUrl(t.videoUrl) ||
-          asHttpOrDataUrl(t.fb?.Bd) ||
-          asHttpOrDataUrl(t.fb?.uA) ||
-          asHttpOrDataUrl(t.fb?.videoUrl)
-        : null;
+    const isVideo = kind === "video";
+    const videoMediaUrl = isVideo
+      ? asMediaUrl(t.Fb?.Bd) ||
+        asMediaUrl(t.Fb?.uA) ||
+        asMediaUrl(t.Fb?.videoUrl) ||
+        asMediaUrl(t.Bd) ||
+        asMediaUrl(t.uA) ||
+        asMediaUrl(t.videoUrl) ||
+        asMediaUrl(t.fb?.Bd) ||
+        asMediaUrl(t.fb?.uA) ||
+        asMediaUrl(t.fb?.videoUrl)
+      : null;
 
     const mediaStatus = String(t.Fb?.Zc ?? t.fb?.Zc ?? t.Zc ?? "").toLowerCase();
     const mediaError = formatMediaError(t.Fb?.nf ?? t.fb?.nf ?? t.nf);
@@ -279,31 +239,17 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       null;
 
     const cachedVideoUrl =
-      kind === "video" && primaryMediaId
-        ? asHttpOrDataUrl(
+      isVideo && primaryMediaId
+        ? asMediaUrl(
             runtimeState.mediaInfoCache.get(String(primaryMediaId))?.url,
           )
         : null;
 
     const rawMediaUrl =
       videoMediaUrl ||
-      t.Fb?.Wb ||
-      t.Fb?.fifeUrl ||
-      t.Fb?.videoUrl ||
-      t.Fb?.imageUrl ||
-      t.Fb?.mediaUrl ||
-      t.Fb?.url ||
-      t.Wb ||
-      t.fifeUrl ||
-      t.videoUrl ||
-      t.imageUrl ||
-      t.mediaUrl ||
-      t.url ||
-      t.fb?.Wb ||
-      t.fb?.fifeUrl ||
-      t.fb?.videoUrl ||
-      t.fb?.imageUrl ||
-      t.fb?.mediaUrl ||
+      mediaUrlOf(t.Fb, isVideo) ||
+      mediaUrlOf(t, isVideo) ||
+      mediaUrlOf(t.fb, isVideo) ||
       charFallbackUrl ||
       cachedVideoUrl ||
       null;
@@ -321,6 +267,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       null;
 
     const voiceRaw =
+      (ttype === "CHARACTER" ? characterVoice(t) : null) ??
       normalizeVoiceVal(t.voiceName) ??
       normalizeVoiceVal(t.voiceId) ??
       normalizeVoiceVal(t.voice) ??
@@ -465,23 +412,13 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
           ? String(mObj.id)
           : null;
       const cachedClipVideoUrl = clipPrimaryMediaId
-        ? asHttpOrDataUrl(
+        ? asMediaUrl(
             runtimeState.mediaInfoCache.get(clipPrimaryMediaId)?.url,
           )
         : null;
       const rawClipUrl =
-        asHttpOrDataUrl(mObj?.Bd) ||
-        asHttpOrDataUrl(mObj?.uA) ||
-        asHttpOrDataUrl(mObj?.videoUrl) ||
-        asHttpOrDataUrl(mObj?.Wb) ||
-        asHttpOrDataUrl(mObj?.fifeUrl) ||
-        asHttpOrDataUrl(mObj?.mediaUrl) ||
-        asHttpOrDataUrl(mObj?.url) ||
-        asHttpOrDataUrl(clip?.Bd) ||
-        asHttpOrDataUrl(clip?.uA) ||
-        asHttpOrDataUrl(clip?.videoUrl) ||
-        asHttpOrDataUrl(clip?.Wb) ||
-        asHttpOrDataUrl(clip?.fifeUrl) ||
+        mediaUrlOf(mObj, true) ||
+        mediaUrlOf(clip, true) ||
         cachedClipVideoUrl ||
         null;
       const clipUrl = mNotReady ? null : rawClipUrl;

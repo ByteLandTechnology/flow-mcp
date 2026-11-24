@@ -3,7 +3,7 @@
 
 // Shared Angular Ivy LView traversal, router lookup, and scene creation helpers.
 
-import { delay, elText, fifeBase } from "./dom";
+import { delay, elText, fifeBase, mediaUrlsOf } from "./dom";
 import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
@@ -278,6 +278,37 @@ export interface PickerMatchTarget {
   fife?: string;
 }
 
+/** Extracts the unsigned FIFE path without resize suffix when `base` targets a FIFE host. */
+function unsignedFifePath(base: string): string | null {
+  if (!/^https?:\/\//i.test(base)) return null;
+  try {
+    const parsed = new URL(base);
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === "video-downloads.googleusercontent.com" ||
+      !(
+        host === "flow.google.com" ||
+        host.endsWith(".googleusercontent.com") ||
+        host.endsWith(".fife.usercontent.google.com")
+      )
+    ) {
+      return null;
+    }
+    return parsed.pathname || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns true when two normalized FIFE base strings refer to the same media object. */
+function fifeBasesMatch(left: string, right: string): boolean {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const leftPath = unsignedFifePath(left);
+  const rightPath = unsignedFifePath(right);
+  return Boolean(leftPath && leftPath === rightPath);
+}
+
 /** Returns true when a picker item model or Angular payload matches `target`. */
 export function pickerAssetMatches(
   a: unknown,
@@ -297,13 +328,9 @@ export function pickerAssetMatches(
   if (target.primaryMediaId && aids.includes(String(target.primaryMediaId))) {
     return true;
   }
-  const aFife = fifeBase(
-    readOwn(a, "Wb") ||
-      readOwn(a, "fifeUrl") ||
-      readOwn(a, "imageUrl") ||
-      readOwn(a, "url"),
-  );
-  return Boolean(target.fife && aFife && target.fife === aFife);
+  const wantFife = target.fife || fifeBase(target.url);
+  if (!wantFife) return false;
+  return mediaUrlsOf(a).some((u) => fifeBasesMatch(fifeBase(u), wantFife));
 }
 
 /** Returns true when a visible picker DOM node matches `target` via Ivy data, title, or media URL. */
@@ -340,7 +367,7 @@ export function pickerElementMatches(
       if (!s) continue;
       if (
         (target.url && (s === target.url || target.url.includes(s))) ||
-        (target.fife && fifeBase(s) === target.fife)
+        (target.fife && fifeBasesMatch(fifeBase(s), target.fife))
       ) {
         return true;
       }
