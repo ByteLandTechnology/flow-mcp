@@ -24,7 +24,11 @@ import {
   pickTileUrl,
   setNativeValue,
 } from "./dom";
-import { frontendBuild, readBuildLabel, type CharacterPreviewFormat } from "./frontend_builds";
+import {
+  characterPreviewFormat,
+  frontendBuild,
+  readBuildLabel,
+} from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
 import { runtimeState } from "./state";
 import type {
@@ -50,11 +54,6 @@ interface CharacterPreview {
   /** Reads the loading state of the active slot. */
   busy: () => unknown;
 }
-
-/** Native methods used by the earlier preview panel. */
-const LEGACY_PREVIEW: CharacterPreviewFormat = {
-  lifecycle: "Ca", upload: "JR", marker: "Si", portrait: "ka", body: "ma", source: "psa", busy: "zy",
-};
 
 /** Snapshot of character preview slot state read from component signals and DOM. */
 interface PreviewSlotState {
@@ -92,7 +91,7 @@ function callPanel(panel: object, name: string): unknown {
 
 /** Finds the preview panel in a live Angular view and binds its methods. */
 function getCharacterPreviewInstance(): CharacterPreview | null {
-  const format = frontendBuild(readBuildLabel())?.characterPreview ?? LEGACY_PREVIEW;
+  const format = characterPreviewFormat();
   const roots = document.querySelectorAll(
     "flow-character-preview-panel, flow-character-image-preview",
   );
@@ -108,13 +107,14 @@ function getCharacterPreviewInstance(): CharacterPreview | null {
       if (!Array.isArray(lv) || seen.has(lv)) continue;
       seen.add(lv);
       for (const slot of lv) {
+        const lc = readOwn(slot, format.lifecycle);
         if (
           slot &&
           typeof slot === "object" &&
           !(slot instanceof Node) &&
           !Array.isArray(slot) &&
           !(slot instanceof Map) &&
-          !readOwn(readOwn(slot, format.lifecycle), "Va") &&
+          !(lc && typeof lc === "object" && readOwn(lc, "Va")) &&
           typeof readOwn(slot, format.upload) === "function" &&
           typeof readOwn(slot, format.marker) === "function"
         ) {
@@ -420,17 +420,11 @@ export async function characterMediaOp(
     const footerEl = document.querySelector("flow-edit-character-footer");
     const footerLv = footerEl ? resolveLView(footerEl) : null;
     if (Array.isArray(footerLv)) {
+      const { footerBusy: footerBusyKey } = characterPreviewFormat();
       for (const cand of footerLv) {
         try {
-          const zhFn = readOwn(cand, "Zh");
-          const thFn = readOwn(cand, "Th");
-          const busyFn =
-            typeof zhFn === "function"
-              ? zhFn
-              : typeof thFn === "function"
-                ? thFn
-                : null;
-          if (busyFn && Boolean(busyFn.call(cand))) {
+          const busyFn = readOwn(cand, footerBusyKey);
+          if (typeof busyFn === "function" && Boolean(busyFn.call(cand))) {
             footerBusy = true;
             break;
           }
@@ -453,9 +447,41 @@ export async function characterMediaOp(
 
   const charId = req?.character_id ? String(req.character_id).trim() : null;
   const applied: string[] = [];
+  let completedAssets = 0;
+  const previewSelector =
+    "flow-character-preview-panel, flow-character-image-preview";
+  if (
+    !document.querySelector(previewSelector) &&
+    document.querySelector("flow-character-edit-page")
+  ) {
+    for (let i = 0; i < 20 && !document.querySelector(previewSelector); i++) {
+      await delay(100);
+    }
+  }
+  const requiresBoundPreview = (): boolean =>
+    Boolean(
+      frontendBuild(readBuildLabel())?.characterPreview &&
+        document.querySelector(previewSelector),
+    );
+  const ensurePreviewBound = async (): Promise<CharacterPreview | null> => {
+    let comp = getCharacterPreviewInstance();
+    if (!comp) {
+      await probePreviewControls();
+      comp = getCharacterPreviewInstance();
+    }
+    return comp;
+  };
+  let previewCompBefore = await ensurePreviewBound();
+  if (!previewCompBefore && requiresBoundPreview()) {
+    return {
+      ok: false,
+      error: "character_preview_not_bound",
+      completed_assets: 0,
+    };
+  }
 
   if (Array.isArray(req?.asset_ids) && req.asset_ids.length > 0) {
-    for (const aid of req.asset_ids) {
+    for (const [idx, aid] of req.asset_ids.entries()) {
       const targetTile = getMap()?.get(String(aid));
       const hasDisplayName = Boolean(targetTile?.displayName && String(targetTile.displayName).trim());
       const targetName = hasDisplayName && targetTile?.displayName ? String(targetTile.displayName).trim() : "";
@@ -463,16 +489,15 @@ export async function characterMediaOp(
       const targetUrl = pickTileUrl(targetTile);
       const targetFife = fifeBase(targetUrl);
 
-      let previewCompBefore = getCharacterPreviewInstance();
-      if (!previewCompBefore) {
-        await probePreviewControls();
-        previewCompBefore = getCharacterPreviewInstance();
-        if (
-          !previewCompBefore &&
-          !(runtimeState.ngLViewMap instanceof Map) &&
-          frontendBuild(readBuildLabel())?.characterPreview
-        ) {
-          return { ok: false, error: "character_preview_not_bound" };
+      if (idx > 0) {
+        previewCompBefore = await ensurePreviewBound();
+        if (!previewCompBefore && requiresBoundPreview()) {
+          return {
+            ok: false,
+            error: "character_preview_not_bound",
+            applied,
+            completed_assets: completedAssets,
+          };
         }
       }
       const hasSlotMedia = (slot: CharacterSlot): boolean => {
@@ -571,18 +596,21 @@ export async function characterMediaOp(
 
       let overlay: Element | null = null;
       for (let i = 0; i < 20; i++) {
-        overlay = document.querySelector(
-          'flow-media-picker-dialog, [role="dialog"], .cdk-overlay-pane, [role="listbox"]',
-        );
-        if (
-          overlay &&
-          !overlay.querySelector(".loading-container") &&
-          overlay.querySelector(
-            'flow-add-menu-asset-item, flow-grid-tile-container, [role="option"], img[src]',
-          )
-        ) {
-          break;
-        }
+        overlay =
+          Array.from(
+            document.querySelectorAll(
+              'flow-media-picker-dialog, [role="dialog"], .cdk-overlay-pane, [role="listbox"]',
+            ),
+          ).find(
+            (el) =>
+              !el.querySelector(".loading-container") &&
+              Boolean(
+                el.querySelector(
+                  'flow-add-menu-asset-item, flow-grid-tile-container, [role="option"], img[src]',
+                ),
+              ),
+          ) || null;
+        if (overlay) break;
         await delay(150);
       }
       const overlayRoot: ParentNode = overlay || document;
@@ -637,36 +665,31 @@ export async function characterMediaOp(
           document.querySelector("flow-add-menu-popover-content");
         const popLv = popEl ? resolveLView(popEl) : null;
         if (Array.isArray(popLv)) {
+          const { pickerAssets, pickerSelect } = characterPreviewFormat();
           for (const cand of popLv) {
-            for (const [listKey, pickKey] of [
-              ["xZ", "Qda"],
-              ["Hi", "Sla"],
-            ] as const) {
-              const listFn = readOwn(cand, listKey);
-              const pickFn = readOwn(cand, pickKey);
-              if (typeof listFn !== "function" || typeof pickFn !== "function") {
-                continue;
-              }
-              const list = listFn.call(cand) as unknown[];
-              const m = Array.isArray(list)
-                ? list.find((a) => pickerAssetMatches(a, matchTarget)) ||
-                  (lowName
-                    ? list.find((a) =>
-                        String(
-                          readOwn(a, "title") || readOwn(a, "displayName") || "",
-                        )
-                          .toLowerCase()
-                          .includes(lowName),
-                      )
-                    : null)
-                : null;
-              if (m) {
-                pickFn.call(cand, m, new MouseEvent("click"));
-                picked = true;
-                break;
-              }
+            const listFn = readOwn(cand, pickerAssets);
+            const pickFn = readOwn(cand, pickerSelect);
+            if (typeof listFn !== "function" || typeof pickFn !== "function") {
+              continue;
             }
-            if (picked) break;
+            const list = listFn.call(cand) as unknown[];
+            const m = Array.isArray(list)
+              ? list.find((a) => pickerAssetMatches(a, matchTarget)) ||
+                (lowName
+                  ? list.find((a) =>
+                      String(
+                        readOwn(a, "title") || readOwn(a, "displayName") || "",
+                      )
+                        .toLowerCase()
+                        .includes(lowName),
+                    )
+                  : null)
+              : null;
+            if (m) {
+              pickFn.call(cand, m, new MouseEvent("click"));
+              picked = true;
+              break;
+            }
           }
         }
       }
@@ -714,6 +737,7 @@ export async function characterMediaOp(
       }
       await dismissOverlay();
       applied.push(refAdded ? `ref:${aid}` : `ref_clicked:${aid}`);
+      completedAssets = idx + 1;
     }
   }
 
@@ -746,12 +770,13 @@ export async function characterMediaOp(
     if (!beforeLook.previewComp) {
       await probePreviewControls();
       beforeLook = readPreviewSlotState(lookSlot);
-      if (
-        !beforeLook.previewComp &&
-        !(runtimeState.ngLViewMap instanceof Map) &&
-        frontendBuild(readBuildLabel())?.characterPreview
-      ) {
-        return { ok: false, error: "character_preview_not_bound" };
+      if (!beforeLook.previewComp && requiresBoundPreview()) {
+        return {
+          ok: false,
+          error: "character_preview_not_bound",
+          applied,
+          completed_assets: completedAssets,
+        };
       }
     }
     const prevLookMediaId = beforeLook.slotMediaId;

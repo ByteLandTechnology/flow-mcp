@@ -3,7 +3,8 @@
 
 // List and assign Google Flow character voices inside the character editor.
 
-import type { NgContextCarrier } from "./angular";
+import { readOwn, type NgContextCarrier } from "./angular";
+import { VOICE_ICON_WORDS, voicePane } from "./character_extra";
 import {
   clickButtonByRegex,
   delay,
@@ -11,29 +12,11 @@ import {
   elText,
   isVisibleEnabled,
 } from "./dom";
+import { characterVoiceFormat } from "./frontend_builds";
 import type { AngularLifecycleHandle, CharacterVoiceOpRequest } from "./types";
 
 /** Minified Angular character form component hosting voice signals. */
-interface CharacterFormComponent extends AngularLifecycleHandle {
-  /** Voice map signal accessor in build 20261120.00. */
-  o_?: () => Map<unknown, RawVoiceEntry> | null | undefined;
-  /** Legacy voice map signal accessor. */
-  bW?: () => Map<unknown, RawVoiceEntry> | null | undefined;
-  /** Selected voice ID signal setter in build 20261120.00. */
-  A3?: (() => unknown) & { set?: (id: string) => void };
-  /** Legacy selected voice ID signal setter. */
-  zZ?: (() => unknown) & { set?: (id: string) => void };
-  /** Selected voice record signal setter in build 20261120.00. */
-  Pua?: { set?: (raw: RawVoiceEntry) => void };
-  /** Legacy selected voice record signal setter. */
-  Kna?: { set?: (raw: RawVoiceEntry) => void };
-  /** Voice change emitter in build 20261120.00. */
-  Pea?: { emit?: (id: string) => void };
-  /** Legacy voice change emitter. */
-  p$?: { emit?: (id: string) => void };
-  /** Busy signal accessor. */
-  yb?: () => boolean;
-}
+type CharacterFormComponent = AngularLifecycleHandle & Record<string, unknown>;
 
 /** Raw voice descriptor stored inside the Angular character form map. */
 interface RawVoiceEntry {
@@ -69,14 +52,20 @@ const probedForms = new WeakSet<Element>();
 export async function characterVoiceOp(
   req: CharacterVoiceOpRequest,
 ): Promise<unknown> {
+  const format = characterVoiceFormat();
+
+  function isFormBusy(comp: CharacterFormComponent | null): boolean {
+    const busyFn = readOwn(comp, format.busy);
+    return typeof busyFn === "function" && Boolean(busyFn.call(comp));
+  }
+
   function getCharacterFormInstance(): CharacterFormComponent | null {
     const form = document.querySelector("flow-character-form");
     if (!form) return null;
-    const isDisposed = (cand: AngularLifecycleHandle): boolean =>
-      Boolean(
-        (typeof cand.Ba === "object" && cand.Ba?.Va) ||
-          (typeof cand.Ca === "object" && cand.Ca?.Va),
-      );
+    const isDisposed = (cand: AngularLifecycleHandle): boolean => {
+      const lc = readOwn(cand, format.lifecycle);
+      return Boolean(lc && typeof lc === "object" && readOwn(lc, format.destroyed));
+    };
     const cached = formComponents.get(form);
     if (cached && !isDisposed(cached)) {
       return cached;
@@ -94,8 +83,8 @@ export async function characterVoiceOp(
           !isDisposed(cand as AngularLifecycleHandle),
       );
     const hasVoiceSignals = (cand: CharacterFormComponent): boolean =>
-      (typeof cand.o_ === "function" && typeof cand.A3 === "function") ||
-      (typeof cand.bW === "function" && typeof cand.zZ === "function");
+      typeof readOwn(cand, format.voiceMap) === "function" &&
+      typeof readOwn(cand, format.selectedVoice) === "function";
     const isExactComp = (cand: unknown): cand is CharacterFormComponent =>
       isBasicObj(cand) && hasVoiceSignals(cand);
     const isFormComp = (cand: unknown): cand is CharacterFormComponent => {
@@ -243,13 +232,8 @@ export async function characterVoiceOp(
   ): Map<unknown, RawVoiceEntry> | null {
     if (!comp) return null;
     try {
-      const mapFn =
-        typeof comp.o_ === "function"
-          ? comp.o_
-          : typeof comp.bW === "function"
-            ? comp.bW
-            : null;
-      const voiceMap = mapFn ? mapFn.call(comp) : null;
+      const mapFn = readOwn(comp, format.voiceMap);
+      const voiceMap = typeof mapFn === "function" ? mapFn.call(comp) : null;
       return voiceMap instanceof Map ? voiceMap : null;
     } catch {
       return null;
@@ -316,10 +300,11 @@ export async function characterVoiceOp(
         return { comp: lastComp, voices };
       }
       if (
+        format.emptyMap &&
         lastComp &&
         voiceMap &&
         voiceMap.size === 0 &&
-        !(typeof lastComp.yb === "function" && lastComp.yb())
+        !isFormBusy(lastComp)
       ) {
         return { comp: lastComp, voices: [] };
       }
@@ -328,7 +313,22 @@ export async function characterVoiceOp(
     return { comp: lastComp, voices: [] };
   }
 
+  function hasVoiceDialogItems(overlay: Element | null): boolean {
+    if (!overlay || overlay.querySelector(".loading-container")) {
+      return false;
+    }
+    return (
+      overlay.querySelectorAll(
+        "flow-add-menu-asset-item, .asset-title, .voice-card-name",
+      ).length > 0 ||
+      Array.from(overlay.querySelectorAll("button")).some((b) =>
+        /voice_selection/.test(elText(b)),
+      )
+    );
+  }
+
   async function openVoiceModal(): Promise<boolean> {
+    if (hasVoiceDialogItems(voicePane())) return true;
     await waitForVoiceHost(40);
     const findVoiceBtn = (): HTMLElement | null => {
       const host = document.querySelector("flow-character-voice-button");
@@ -363,17 +363,7 @@ export async function characterVoiceOp(
     hostBtn.click();
     for (let i = 0; i < 60; i++) {
       await delay(100);
-      const overlay = document.querySelector(
-        '.cdk-overlay-pane, [role="dialog"]',
-      );
-      if (!overlay || overlay.querySelector(".loading-container")) {
-        continue;
-      }
-      if (
-        overlay.querySelectorAll(
-          "flow-add-menu-asset-item, .asset-title, .voice-card-name",
-        ).length > 0
-      ) {
+      if (hasVoiceDialogItems(voicePane())) {
         return true;
       }
     }
@@ -391,7 +381,7 @@ export async function characterVoiceOp(
         items.push(v);
       }
     }
-    const overlay = document.querySelector('.cdk-overlay-pane, [role="dialog"]');
+    const overlay = voicePane();
     const root: ParentNode = overlay || document;
     const ctrlRe =
       /^(?:select a voice|add to character|close|cancel|done|search|clear search)$/i;
@@ -425,11 +415,17 @@ export async function characterVoiceOp(
         '[role="option"], [role="menuitem"], button, [class*="item"], [class*="tile"], [class*="card"]',
       );
       for (const row of rows) {
-        if (!isVisibleEnabled(row)) continue;
+        if (
+          !isVisibleEnabled(row) ||
+          row.closest("flow-add-menu-asset-item") ||
+          row.querySelector("flow-add-menu-asset-item, .voice-card-name")
+        ) {
+          continue;
+        }
         const lines = elText(row)
           .split(/\r?\n/)
           .map((s) => s.trim())
-          .filter(Boolean);
+          .filter((s) => Boolean(s) && !VOICE_ICON_WORDS.has(s));
         const name = lines[0] || "";
         if (!name || ctrlRe.test(name)) continue;
         const exists = items.some(
@@ -503,24 +499,15 @@ export async function characterVoiceOp(
       });
     const matchedComp =
       findVoice(compVoices, true) || findVoice(compVoices, false);
-    const recordSetter =
-      typeof comp?.Pua?.set === "function"
-        ? comp.Pua
-        : typeof comp?.Kna?.set === "function"
-          ? comp.Kna
-          : null;
-    const idSetter =
-      typeof comp?.A3?.set === "function"
-        ? comp.A3
-        : typeof comp?.zZ?.set === "function"
-          ? comp.zZ
-          : null;
-    const changeEmitter =
-      typeof comp?.Pea?.emit === "function"
-        ? comp.Pea
-        : typeof comp?.p$?.emit === "function"
-          ? comp.p$
-          : null;
+    const recordSetter = readOwn(comp, format.selectedRecord) as
+      | { set?: (raw: RawVoiceEntry) => void }
+      | undefined;
+    const idSetter = readOwn(comp, format.selectedVoice) as
+      | { set?: (id: string) => void }
+      | undefined;
+    const changeEmitter = readOwn(comp, format.changeEmitter) as
+      | { emit?: (id: string) => void }
+      | undefined;
     if (
       comp &&
       matchedComp?._raw &&
@@ -529,7 +516,7 @@ export async function characterVoiceOp(
       typeof changeEmitter?.emit === "function"
     ) {
       for (let i = 0; i < 20; i++) {
-        if (typeof comp.yb !== "function" || !comp.yb()) break;
+        if (!isFormBusy(comp)) break;
         await delay(100);
       }
       recordSetter.set(matchedComp._raw);
@@ -543,10 +530,19 @@ export async function characterVoiceOp(
     if (!opened) {
       return { ok: false, error: "voice_picker_not_available", id: charId };
     }
-    const overlay =
-      document.querySelector('.cdk-overlay-pane, [role="dialog"]') || document;
+    const overlay: ParentNode = voicePane() || document;
     const ctrlRe =
       /^(?:select a voice|add to character|close|cancel|done|search|clear search)$/i;
+    const rowTitle = (el: Element): string =>
+      (
+        elText(el.querySelector(".asset-title")) ||
+        elText(el.querySelector(".voice-card-name")) ||
+        elText(el)
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .find((s) => Boolean(s) && !VOICE_ICON_WORDS.has(s)) ||
+        ""
+      ).trim();
     const assetItems = Array.from(
       overlay.querySelectorAll("flow-add-menu-asset-item"),
     );
@@ -566,23 +562,12 @@ export async function characterVoiceOp(
         ),
       ).filter((el) => {
         if (!isVisibleEnabled(el)) return false;
-        const firstLine =
-          elText(el)
-            .split(/\r?\n/)
-            .map((s) => s.trim())
-            .filter(Boolean)[0] || "";
+        const firstLine = rowTitle(el);
         return Boolean(firstLine) && !ctrlRe.test(firstLine);
       });
       const findOverlayCard = (exact: boolean): Element | undefined =>
         candidates.find((card) => {
-          const nm = (
-            elText(card.querySelector(".asset-title")) ||
-            elText(card.querySelector(".voice-card-name")) ||
-            elText(card).split(/\r?\n/)[0] ||
-            ""
-          )
-            .trim()
-            .toLowerCase();
+          const nm = rowTitle(card).toLowerCase();
           return exact ? nm === want : nm.includes(want);
         });
       matchedTarget = findOverlayCard(true) || findOverlayCard(false) || null;
@@ -598,7 +583,8 @@ export async function characterVoiceOp(
       };
     }
     const selectBtn =
-      matchedTarget.querySelector(".voice-card-start-btn") || matchedTarget;
+      matchedTarget.querySelector(".voice-card-start-btn, button") ||
+      matchedTarget;
     if (selectBtn instanceof HTMLElement) {
       selectBtn.click();
     }

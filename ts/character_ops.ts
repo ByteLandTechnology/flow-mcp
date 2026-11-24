@@ -3,8 +3,9 @@
 
 // Open, finish, create, and update profile fields for Google Flow characters.
 
-import { findRouter } from "./angular";
+import { findRouter, readOwn } from "./angular";
 import { clickButtonByRegex, delay, isVisibleEnabled, setNativeValue } from "./dom";
+import { characterCreateFormat } from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
 import type { CharacterOpRequest } from "./types";
 
@@ -49,13 +50,16 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
         path: location.pathname,
       };
     }
+    const format = characterCreateFormat();
+    const isServiceDisposed = (svc: unknown): boolean => {
+      const lc = readOwn(svc, format.lifecycle);
+      return Boolean(lc && typeof lc === "object" && readOwn(lc, format.destroyed));
+    };
     if (
       runtimeState.projectId === pid &&
       runtimeState.lService &&
-      !(typeof runtimeState.lService.Ba === "object" && runtimeState.lService.Ba?.Va) &&
-      !(typeof runtimeState.lService.Ca === "object" && runtimeState.lService.Ca?.Va) &&
-      !(typeof runtimeState.lService._ap?.Ba === "object" && runtimeState.lService._ap?.Ba?.Va) &&
-      !(typeof runtimeState.lService._ap?.Ca === "object" && runtimeState.lService._ap?.Ca?.Va)
+      !isServiceDisposed(runtimeState.lService) &&
+      !isServiceDisposed(runtimeState.lService._ap)
     ) {
       runtimeState.routePath = location.pathname;
     }
@@ -131,23 +135,25 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       },
     );
 
-    const mutatePromise = Promise.resolve(
-      helper.mutate({
-        type: "create_entity",
-        pM: 1,
-        A3: 1,
-        AW: 1,
-        displayName: charName,
-        tb: undefined,
-        ub: undefined,
-        De: { resolve: resolveDe, reject: rejectDe },
-        ve: { resolve: resolveDe, reject: rejectDe },
-      }),
-    ).then(
+    const format = characterCreateFormat();
+    const completion = { resolve: resolveDe, reject: rejectDe };
+    const payload: Record<string, unknown> = {
+      type: "create_entity",
+      displayName: charName,
+    };
+    for (const key of format.entityKinds) payload[key] = 1;
+    for (const key of format.collections) payload[key] = undefined;
+    for (const key of format.completions) payload[key] = completion;
+
+    const mutatePromise = Promise.resolve(helper.mutate(payload)).then(
       (v) => {
-        const resObj = v as { NH?: unknown; MF?: unknown; II?: unknown } | null;
-        const created = resObj?.NH ?? resObj?.MF ?? resObj?.II;
-        if (created && !resolvedTile) resolvedTile = created;
+        for (const key of format.created) {
+          const created = readOwn(v, key);
+          if (created) {
+            if (!resolvedTile) resolvedTile = created;
+            break;
+          }
+        }
       },
       (e) => {
         if (!mutateErr) {

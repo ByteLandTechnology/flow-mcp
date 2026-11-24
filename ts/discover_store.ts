@@ -10,6 +10,7 @@ import {
   withLViewMapCapture,
 } from "./angular";
 import { delay, hoverProbe } from "./dom";
+import { characterCreateFormat } from "./frontend_builds";
 import { withMutationAliases } from "./frontend_compatibility";
 import { clearStore, runtimeState } from "./state";
 import type {
@@ -316,7 +317,12 @@ function resolveMutatorFrom(
 /** Returns true when `svc` or its nested wrapper has been destroyed by Angular. */
 function isDestroyed(svc: FlowStoreService | null | undefined): boolean {
   if (!svc || typeof svc !== "object") return true;
-  return Boolean(svc.Ca?.Va || svc._ap?.Ca?.Va || svc.ha?.Ca?.Va);
+  const { lifecycle, destroyed } = characterCreateFormat();
+  const dead = (obj: unknown): boolean => {
+    const lc = readOwn(obj, lifecycle);
+    return Boolean(lc && typeof lc === "object" && readOwn(lc, destroyed));
+  };
+  return dead(svc) || dead(svc._ap) || dead(svc.ha);
 }
 
 /** Returns true while bound store queries are ready and not pending initial load. */

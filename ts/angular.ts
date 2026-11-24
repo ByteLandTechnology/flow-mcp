@@ -50,14 +50,18 @@ export function isNgLViewMap(m: unknown): m is Map<number, NgLView> {
 
 /** Binds the live Angular view registry that contains the selected host context. */
 export function bindAngularViews(maps: unknown[], selector: string): boolean {
-  const context = readOwn(document.querySelector(selector), "__ngContext__");
-  if (typeof context !== "number") return false;
-  const views = maps.find((map): map is Map<number, NgLView> =>
-    isNgLViewMap(map) && isLiveLView(map.get(context)),
-  );
-  if (!views) return false;
-  runtimeState.ngLViewMap = views;
-  return true;
+  for (const host of document.querySelectorAll(selector)) {
+    const context = readOwn(host, "__ngContext__");
+    if (typeof context !== "number") continue;
+    const views = maps.find((map): map is Map<number, NgLView> =>
+      isNgLViewMap(map) && isLiveLView(map.get(context)),
+    );
+    if (views) {
+      runtimeState.ngLViewMap = views;
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Resolves a DOM element, numeric slot index, or wrapper object to its Angular `NgLView`. */

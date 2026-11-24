@@ -537,11 +537,17 @@ interface FrontendBuild {
   operations: Partial<FrontendFormats>;
   /** Native fields used to confirm a character voice assignment. */
   voiceConfirmation?: VoiceConfirmationFormat;
-  /** Native fields of the character preview panel. */
+  /** Native fields of the character preview panel and controls. */
   characterPreview?: CharacterPreviewFormat;
+  /** Native fields of the character voice form. */
+  characterVoice?: CharacterVoiceFormat;
+  /** Native fields for character creation and store lifecycle checks. */
+  characterCreate?: CharacterCreateFormat;
+  /** Native fields of editable project titles. */
+  projectTitle?: ProjectTitleFormat;
 }
 
-/** Native methods of the character preview panel. */
+/** Native methods of the character preview panel and look controls. */
 export interface CharacterPreviewFormat {
   /** Lifecycle controller on the panel. */
   lifecycle: string;
@@ -557,6 +563,56 @@ export interface CharacterPreviewFormat {
   source: string;
   /** Signal that reports whether the preview is busy. */
   busy: string;
+  /** Footer signal that reports whether look generation is busy. */
+  footerBusy: string;
+  /** Popover method that lists project assets in the add menu. */
+  pickerAssets: string;
+  /** Popover method that selects a project asset in the add menu. */
+  pickerSelect: string;
+}
+
+/** Native signals and outputs of the character voice form. */
+export interface CharacterVoiceFormat {
+  /** Lifecycle controller on the form component. */
+  lifecycle: string;
+  /** Destroyed flag on the lifecycle controller. */
+  destroyed: string;
+  /** Signal with the loaded voice map. */
+  voiceMap: string;
+  /** Signal with the selected voice ID. */
+  selectedVoice: string;
+  /** Signal with the selected raw voice entry. */
+  selectedRecord: string;
+  /** Output emitter that commits a voice change. */
+  changeEmitter: string;
+  /** Signal that reports whether the form is busy. */
+  busy: string;
+  /** True when the build keeps the form voice map empty while idle. */
+  emptyMap: boolean;
+}
+
+/** Field names for character creation and store lifecycle checks. */
+export interface CharacterCreateFormat {
+  /** Lifecycle controller on the bound store service. */
+  lifecycle: string;
+  /** Destroyed flag on the lifecycle controller. */
+  destroyed: string;
+  /** Entity kind fields set to `1` in a `create_entity` request. */
+  entityKinds: readonly string[];
+  /** Collection fields set to `undefined` in a `create_entity` request. */
+  collections: readonly string[];
+  /** Completion callback fields in a `create_entity` request. */
+  completions: readonly string[];
+  /** Created tile fields in a `create_entity` response. */
+  created: readonly string[];
+}
+
+/** Native fields of `flow-editable-text` used to commit a project title. */
+export interface ProjectTitleFormat {
+  /** Output emitter that commits the edited title text. */
+  saveEmitter: string;
+  /** Signal that sets the component back to viewing mode. */
+  stateSignal: string;
 }
 
 /** Character editor and query fields used to read the saved voice. */
@@ -575,10 +631,32 @@ export interface VoiceConfirmationFormat {
   pickerSelection: string;
 }
 
+/** Character preview format of earlier builds. */
+const LEGACY_CHARACTER_PREVIEW: CharacterPreviewFormat = {
+  lifecycle: "Ca", upload: "JR", marker: "Si", portrait: "ka", body: "ma",
+  source: "psa", busy: "zy", footerBusy: "Th", pickerAssets: "Hi", pickerSelect: "Sla",
+};
+
+/** Character voice form format of earlier builds. */
+const LEGACY_CHARACTER_VOICE: CharacterVoiceFormat = {
+  lifecycle: "Ca", destroyed: "Va", voiceMap: "bW", selectedVoice: "zZ",
+  selectedRecord: "Kna", changeEmitter: "p$", busy: "yb", emptyMap: false,
+};
+
+/** Character creation format of earlier builds. */
+const LEGACY_CHARACTER_CREATE: CharacterCreateFormat = {
+  lifecycle: "Ca", destroyed: "Va", entityKinds: ["A3", "AW"],
+  collections: ["tb", "ub"], completions: ["De", "ve"], created: ["MF", "II"],
+};
+
+/** Editable project title format of earlier builds. */
+const LEGACY_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "tJa", stateSignal: "state" };
+
 /** Request formats by exact build label. Include only verified operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
     projectStore: NOVEMBER_17_STORE,
+    characterCreate: { ...LEGACY_CHARACTER_CREATE, lifecycle: "Ca", destroyed: "Wa" },
     operations: {
       collection_write: { tileId: "Uc", tileChange: "df", moveTarget: "Sj", moveTiles: "Bb" },
       asset_trash_store: {
@@ -594,6 +672,8 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
   ["boq_labs-ai-sandbox-frontend_20261118.14_p0", {
     projectStore: NOVEMBER_18_STORE,
+    characterCreate: { ...LEGACY_CHARACTER_CREATE, lifecycle: "Ba", destroyed: "Va" },
+    characterVoice: { ...LEGACY_CHARACTER_VOICE, lifecycle: "Ba", destroyed: "Va" },
     operations: {
       collection_write: { tileId: "Vc", tileChange: "jf", moveTarget: "Wj", moveTiles: "Ab" },
       character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
@@ -610,8 +690,18 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       previewSaved: "MK", pickerSelection: "Qn",
     },
     characterPreview: {
-      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma", source: "Gza", busy: "mB",
+      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma",
+      source: "Gza", busy: "mB", footerBusy: "Zh", pickerAssets: "xZ", pickerSelect: "Qda",
     },
+    characterVoice: {
+      lifecycle: "Ba", destroyed: "Va", voiceMap: "o_", selectedVoice: "A3",
+      selectedRecord: "Pua", changeEmitter: "Pea", busy: "yb", emptyMap: true,
+    },
+    characterCreate: {
+      lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM"],
+      collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
+    },
+    projectTitle: { saveEmitter: "HSa", stateSignal: "state" },
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
@@ -644,4 +734,24 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
 export function projectStoreFormats(): readonly ProjectStoreFormat[] {
   const format = frontendBuild(readBuildLabel())?.projectStore;
   return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE];
+}
+
+/** Returns the character preview field mapping for the active build. */
+export function characterPreviewFormat(): CharacterPreviewFormat {
+  return frontendBuild(readBuildLabel())?.characterPreview ?? LEGACY_CHARACTER_PREVIEW;
+}
+
+/** Returns the character voice form mapping for the active build. */
+export function characterVoiceFormat(): CharacterVoiceFormat {
+  return frontendBuild(readBuildLabel())?.characterVoice ?? LEGACY_CHARACTER_VOICE;
+}
+
+/** Returns the character creation and store lifecycle mapping for the active build. */
+export function characterCreateFormat(): CharacterCreateFormat {
+  return frontendBuild(readBuildLabel())?.characterCreate ?? LEGACY_CHARACTER_CREATE;
+}
+
+/** Returns the editable project title mapping for the active build. */
+export function projectTitleFormat(): ProjectTitleFormat {
+  return frontendBuild(readBuildLabel())?.projectTitle ?? LEGACY_PROJECT_TITLE;
 }

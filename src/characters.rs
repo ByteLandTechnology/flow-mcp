@@ -285,22 +285,12 @@ async fn click_look_submit_if_present(
     if let Some(pt) = op_res.get("look_submit_point")
         && engine.click_point(pt).await?
     {
-        let slot = op_res
-            .get("look_slot")
-            .and_then(|v| v.as_str())
-            .unwrap_or("portrait")
-            .to_string();
-        let prev_media_id = op_res
-            .get("prev_look_media_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let prev_src = op_res
-            .get("prev_look_src")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        return Ok(Some((slot, prev_media_id, prev_src)));
+        let read = |key: &str, default: &str| op_res[key].as_str().unwrap_or(default).to_string();
+        return Ok(Some((
+            read("look_slot", "portrait"),
+            read("prev_look_media_id", ""),
+            read("prev_look_src", ""),
+        )));
     }
     Ok(None)
 }
@@ -319,17 +309,29 @@ struct PageMediaRequest<'a> {
     replace_portrait: bool,
 }
 
-/// Runs a character media operation and binds the preview Angular views on demand.
+/// Binds the Angular views for the character preview controls.
+async fn bind_preview_views(engine: &ChromeEngine) -> bool {
+    engine
+        .bind_angular_views("flow-character-preview-panel, flow-character-image-preview")
+        .await
+        .unwrap_or(false)
+}
+
+/// Returns true when a character media operation has already applied at least one write.
+fn media_op_wrote(res: &Value) -> bool {
+    res["completed_assets"].as_u64().unwrap_or(0) > 0
+        || res["applied"].as_array().is_some_and(|a| !a.is_empty())
+}
+
+/// Runs a character media operation and retries once only when no write has occurred.
 async fn call_character_media_op(engine: &ChromeEngine, payload: Value) -> Result<Value> {
     let request = json!([payload]);
     let res = engine
         .call_flow_async("characterMediaOp", request.clone())
         .await?;
-    if res.get("error").and_then(Value::as_str) == Some("character_preview_not_bound")
-        && engine
-            .bind_angular_views("flow-character-preview-panel, flow-character-image-preview")
-            .await
-            .unwrap_or(false)
+    if !media_op_wrote(&res)
+        && res["error"].as_str() == Some("character_preview_not_bound")
+        && bind_preview_views(engine).await
     {
         return engine.call_flow_async("characterMediaOp", request).await;
     }
@@ -342,37 +344,51 @@ async fn apply_character_page_media(
     req: PageMediaRequest<'_>,
 ) -> Result<Option<(String, String, String)>> {
     let char_id = req.char_id;
-    let asset_ids = req.asset_ids;
     let look_prompt = req.look_prompt;
     if req.voice.is_set() {
         apply_voice_with_fallback(engine, char_id, req.voice).await?;
     }
-
-    if req.replace_portrait && asset_ids.is_some_and(|a| !a.is_empty()) {
+    if req.replace_portrait && req.asset_ids.is_some_and(|a| !a.is_empty()) {
         delete_portrait(engine).await?;
     }
-
-    let has_assets = asset_ids.is_some_and(|a| !a.is_empty());
-    if !has_assets && look_prompt.is_none() {
+    let mut remaining = req.asset_ids.unwrap_or(&[]);
+    if remaining.is_empty() && look_prompt.is_none() {
         return Ok(None);
     }
 
-    let m_res = call_character_media_op(
-        engine,
-        json!({
+    let _ = bind_preview_views(engine).await;
+    let mut retried_step = false;
+    let m_res = loop {
+        let payload = json!([{
             "action": "attach_and_look",
             "character_id": char_id,
-            "asset_ids": asset_ids,
+            "asset_ids": (!remaining.is_empty()).then_some(remaining),
             "look_prompt": look_prompt,
-        }),
-    )
-    .await?;
-    if m_res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        }]);
+        let res = engine.call_flow_async("characterMediaOp", payload).await?;
+        if res["error"].as_str() == Some("character_preview_not_bound") {
+            let done = res["completed_assets"].as_u64().unwrap_or(0) as usize;
+            if !media_op_wrote(&res) && !retried_step && bind_preview_views(engine).await {
+                retried_step = true;
+                continue;
+            }
+            if done > 0 && done <= remaining.len() {
+                remaining = &remaining[done..];
+                if (!remaining.is_empty() || look_prompt.is_some())
+                    && bind_preview_views(engine).await
+                {
+                    retried_step = true;
+                    continue;
+                }
+            }
+        }
+        break res;
+    };
+    if m_res["ok"].as_bool() != Some(true) {
         anyhow::bail!(
             "{}",
-            m_res
-                .get("error")
-                .and_then(|v| v.as_str())
+            m_res["error"]
+                .as_str()
                 .unwrap_or("character media update failed")
         );
     }

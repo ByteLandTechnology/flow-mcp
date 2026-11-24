@@ -5,6 +5,7 @@
 
 import { readOwn, resolveLView, type NgContextCarrier } from "./angular";
 import { delay, elText, setNativeValue } from "./dom";
+import { projectTitleFormat } from "./frontend_builds";
 import type { ProjectsOpRequest } from "./types";
 
 /** Internal card descriptor captured on the Flow projects grid. */
@@ -353,16 +354,14 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
           try {
             const lv = resolveLView(host);
             if (Array.isArray(lv)) {
+              const titleFormat = projectTitleFormat();
               for (const slot of lv) {
-                const hsa = readOwn(slot, "HSa") as { emit?: (v: string) => void } | undefined;
-                const tJa = readOwn(slot, "tJa") as { emit?: (v: string) => void } | undefined;
-                const emitter =
-                  typeof hsa?.emit === "function"
-                    ? hsa
-                    : typeof tJa?.emit === "function"
-                      ? tJa
-                      : undefined;
-                const state = readOwn(slot, "state") as { set?: (v: unknown) => void } | undefined;
+                const emitter = readOwn(slot, titleFormat.saveEmitter) as
+                  | { emit?: (v: string) => void }
+                  | undefined;
+                const state = readOwn(slot, titleFormat.stateSignal) as
+                  | { set?: (v: unknown) => void }
+                  | undefined;
                 if (
                   typeof emitter?.emit === "function" &&
                   typeof state?.set === "function"
