@@ -15,7 +15,7 @@
 | 浏览器运行时 | `ts/*.ts`（`build.rs`） | `esbuild` 将 26 个扁平 TypeScript 模块打包为 `OUT_DIR/flow_runtime.js`；`src/engine.rs` 单次嵌入并设置 `window.__flowMcp` |
 | 本地持久化 | `src/db.rs`、`src/cookies.rs`、`src/download.rs`、`src/platform.rs`、`src/instance.rs` | 管理 `flow-mcp.db`（`0600`）、`cookies.json`（`0600`）、`<home>/chrome-profile`（`0700`）与 `<home>/downloads` |
 
-在 Google Flow 页面内部，`ts/` 从 `lService` 状态存储读取实时 Angular 状态（`read_store_snapshot.ts` 与 `discover_store.ts`），而不使用静态模拟数据。执行变更操作时，Rust 同时监控存储更新以及匹配 `aisandbox-pa.googleapis.com` 与 `batchexecute` 的 CDP HTTP 响应（`is_flow_mutation_rpc_ok`）。
+在 Google Flow 页面内部，`ts/` 从 `lService` 状态存储读取实时 Angular 状态（`read_store_snapshot.ts` 与 `discover_store.ts`），而不使用静态模拟数据。写入操作通过读取存储或页面中的更新值来确认完成，同时 CDP 网络监控捕获来自 Google Flow 的失败 HTTP 写入响应。
 
 所有浏览器会话均将界面语言固定为英语（`hl=en` 与 `en-US`）。这让 Angular 控件、菜单标签与音色列表在任意宿主机语言环境下保持一致。
 

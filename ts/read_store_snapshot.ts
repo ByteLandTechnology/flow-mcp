@@ -13,6 +13,7 @@ import {
   isTrashedTile,
   legacyMedia,
   legacyTile,
+  videoTrimBounds,
 } from "./dom";
 import { clearStore, runtimeState } from "./state";
 import type {
@@ -112,7 +113,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
 } {
   const cols = new Map<string, string>();
   const counts = new Map<string, number>();
-  const topLevelIds = new Set<string>();
+  const byId = new Map<string, Omit<SnapshotAssetItem, "collection_name">>();
   const sceneTiles: FlowTile[] = [];
   const rawList: Omit<SnapshotAssetItem, "collection_name">[] = [];
   const asHttpOrDataUrl = (v: unknown): string | null =>
@@ -191,7 +192,6 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       continue;
     }
 
-    topLevelIds.add(tid);
     if (cid) {
       counts.set(cid, (counts.get(cid) ?? 0) + 1);
     }
@@ -330,34 +330,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       normalizeVoiceVal(t.audioReferences) ??
       null;
 
-    const trimStart =
-      kind === "video" && typeof t.Fb?.Jc === "number" ? t.Fb.Jc :
-      typeof t.trimStartSeconds === "number"
-        ? t.trimStartSeconds
-        : typeof t.Fb?.Ac === "number"
-          ? t.Fb.Ac
-          : typeof t.Ac === "number"
-            ? t.Ac
-            : typeof t.Cg === "number"
-              ? t.Cg
-              : typeof t.Fb?.Cg === "number"
-                ? t.Fb.Cg
-                : null;
-    const trimEnd =
-      kind === "video" && typeof t.Fb?.Pc === "number" ? t.Fb.Pc :
-      typeof t.trimEndSeconds === "number"
-        ? t.trimEndSeconds
-        : typeof t.Fb?.Ic === "number"
-          ? t.Fb.Ic
-          : typeof t.Ic === "number"
-            ? t.Ic
-            : typeof t.Rf === "number"
-              ? t.Rf
-              : typeof t.Fb?.Rf === "number"
-                ? t.Fb.Rf
-                : null;
+    const { start: trimStart, end: trimEnd } = videoTrimBounds(t);
 
-    rawList.push({
+    const topEntry: Omit<SnapshotAssetItem, "collection_name"> = {
       id: tid,
       name: tname,
       kind,
@@ -419,7 +394,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
             : t.createTime
               ? String(t.createTime)
               : null,
-    });
+    };
+    rawList.push(topEntry);
+    byId.set(tid, topEntry);
   }
 
   for (const st of sceneTiles) {
@@ -448,17 +425,34 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     }
 
     for (const [wfId, clip, rawMedia] of candidates) {
+      if (!wfId) continue;
       const mObj = legacyMedia(rawMedia);
-      if (!wfId || topLevelIds.has(wfId)) continue;
-      topLevelIds.add(wfId);
-      const mStatus = String(mObj?.Zc ?? clip?.Zc ?? "").toLowerCase();
-      const mError = formatMediaError(mObj?.nf ?? clip?.nf);
+      const cObj = legacyMedia(clip as FlowMediaPayload | null);
+      const mStatus = String(
+        mObj?.Zc ?? cObj?.Zc ?? clip?.Zc ?? "",
+      ).toLowerCase();
+      const mError = formatMediaError(mObj?.nf ?? cObj?.nf ?? clip?.nf);
+      const existing = byId.get(wfId);
+      if (existing) {
+        if (mStatus === "failed" || mStatus === "canceled" || mError) {
+          if (
+            existing.media_status !== "failed" &&
+            existing.media_status !== "canceled"
+          ) {
+            existing.media_status = mStatus || existing.media_status;
+          }
+          if (!existing.media_error && mError) {
+            existing.media_error = mError;
+          }
+        }
+        continue;
+      }
       const mNotReady =
         mStatus === "pending" ||
         mStatus === "scheduled" ||
         mStatus === "failed" ||
         mStatus === "canceled" ||
-        Boolean(mObj?.nf || clip?.nf);
+        Boolean(mObj?.nf || cObj?.nf || clip?.nf);
       const clipPrimaryMediaId = clip?.primaryMediaId
         ? String(clip.primaryMediaId)
         : mObj?.id
@@ -531,7 +525,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               : st.hc
                 ? String(st.hc)
                 : null;
-      rawList.push({
+      const sceneEntry: Omit<SnapshotAssetItem, "collection_name"> = {
         id: wfId,
         name: String((mObj as FlowTile | null)?.displayName || st.displayName || ""),
         kind: "video",
@@ -559,7 +553,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               : null,
         duration: durVal,
         created_at: clipCreated,
-      });
+      };
+      rawList.push(sceneEntry);
+      byId.set(wfId, sceneEntry);
     }
   }
 

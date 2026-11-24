@@ -374,18 +374,26 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       400,
       6000,
     );
-    for (let i = 0; i < 15; i++) {
-      if ((titleInput.value || "").trim() === desired) break;
-      await delay(100);
+    const isSettledTitle = (): boolean =>
+      !host?.querySelector(".editable-text-container.editing") &&
+      (titleInput.value || "").trim() === desired;
+    await delay(300);
+    for (let i = 0; i < 30; i++) {
+      if (isSettledTitle()) {
+        await delay(200);
+        if (isSettledTitle()) {
+          return { ok: true, confirmed: true, title: desired };
+        }
+      }
+      await delay(150);
     }
-    return { ok: true, title: (titleInput.value || desired).trim() };
+    return { ok: false, error: "project_title_not_confirmed" };
   }
 
   if (action === "delete") {
     const targetId = req?.project_id ? String(req.project_id).trim() : "";
     const targetTitle = req?.title ? String(req.title).trim() : "";
-    const items = await scanCards();
-    const hit = items.find((p) => {
+    const matchesTarget = (p: ScannedProjectCard): boolean => {
       if (targetId && p.id === targetId) return true;
       if (
         targetTitle &&
@@ -395,10 +403,14 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         return true;
       }
       return false;
-    });
+    };
+    const items = await scanCards();
+    const hit = items.find(matchesTarget);
     if (!hit || !hit._card) {
       return { ok: false, error: "project_card_not_found" };
     }
+    const beforeMatches = items.filter(matchesTarget).length;
+    const deletedId = hit.id;
     const card = hit._card;
     card.scrollIntoView({ block: "center" });
     await delay(100);
@@ -480,11 +492,26 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       if (!document.body.contains(card)) break;
       await delay(100);
     }
-    if (document.body.contains(card)) {
-      return { ok: false, error: "delete_card_still_present" };
-    }
+    const entryRemoved = (entries: ScannedProjectCard[]): boolean =>
+      deletedId
+        ? !entries.some((p) => p.id === deletedId)
+        : entries.filter(matchesTarget).length < beforeMatches;
     await delay(300);
-    return { ok: true, deleted_id: hit.id, deleted_title: hit.title };
+    for (let i = 0; i < 20; i++) {
+      if (entryRemoved(await scanCards())) {
+        await delay(250);
+        if (entryRemoved(await scanCards())) {
+          return {
+            ok: true,
+            confirmed: true,
+            deleted_id: hit.id,
+            deleted_title: hit.title,
+          };
+        }
+      }
+      await delay(250);
+    }
+    return { ok: false, error: "delete_card_still_present" };
   }
 
   return { ok: false, error: `unknown_project_action:${action}` };

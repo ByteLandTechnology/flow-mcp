@@ -402,9 +402,22 @@ fn handle_network_event(
     }
 }
 
-/// Returns `true` when `url` belongs to a Flow or Google auth host worth fetching on HTTP errors.
+/// Returns `true` when `url` belongs to a Google Flow or auth host worth fetching on HTTP errors.
 fn is_error_body_candidate(url: &str) -> bool {
-    url.contains("aisandbox-pa.googleapis.com")
+    if let Ok(parsed) = url::Url::parse(url)
+        && let Some(host) = parsed.host_str()
+    {
+        let host = host.to_ascii_lowercase();
+        if host == "flow.google.com"
+            || host == "labs.google"
+            || host.ends_with(".labs.google")
+            || host == "aisandbox-pa.googleapis.com"
+        {
+            return true;
+        }
+    }
+    url.contains("flow.google.com")
+        || url.contains("aisandbox-pa.googleapis.com")
         || url.contains("labs.google")
         || url.contains("recaptcha")
 }
@@ -432,9 +445,8 @@ async fn fetch_error_excerpt(transport: &CdpTransport, request_id: &str) -> Opti
     } else {
         raw_body.to_string()
     };
-    let excerpt = text.chars().take(500).collect::<String>();
-    let trimmed = excerpt.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.chars().take(500).collect())
 }
 
 /// Returns the shared HTTP client for local Chrome CDP endpoint discovery.

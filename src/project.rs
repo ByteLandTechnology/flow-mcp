@@ -11,13 +11,11 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::broadcast::Receiver;
-use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{Duration, Instant};
 
 use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
-use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
+use crate::engine::{ChromeEngine, ENGINE_NAME};
 use crate::project_store::prepare_project_store_status;
 
 /// Angular error code for a required input that has no value yet.
@@ -83,43 +81,6 @@ pub(crate) struct FlowStatus {
     /// Error message when page startup or probing fails.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
-}
-
-/// Returns `true` when an HTTP response marks a successful Flow store mutation RPC.
-pub(crate) fn is_flow_mutation_rpc_ok(ev: &NetworkResponseEvent) -> bool {
-    (ev.url.contains("aisandbox-pa.googleapis.com") || ev.url.contains("batchexecute"))
-        && (200..300).contains(&ev.status)
-}
-
-/// Drains buffered network events and waits up to `wait` for a Flow RPC response.
-pub(crate) async fn wait_flow_mutation_rpc(
-    rx: &mut Receiver<NetworkResponseEvent>,
-    wait: Duration,
-) -> bool {
-    loop {
-        match rx.try_recv() {
-            Ok(ev) => {
-                if is_flow_mutation_rpc_ok(&ev) {
-                    return true;
-                }
-            }
-            Err(TryRecvError::Lagged(_)) => continue,
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Closed) => return false,
-        }
-    }
-    let deadline = Instant::now() + wait;
-    loop {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(ev)) => {
-                if is_flow_mutation_rpc_ok(&ev) {
-                    return true;
-                }
-            }
-            Ok(Err(RecvError::Lagged(_))) => continue,
-            Ok(Err(RecvError::Closed)) | Err(_) => return false,
-        }
-    }
 }
 
 /// Extracts the `/project/<id>` segment from a Flow project URL.
@@ -590,25 +551,23 @@ pub(crate) async fn create_project(engine: &ChromeEngine, title: Option<&str>) -
     if project_id.is_some() {
         let _ = ensure_flow_store(engine).await;
         if let Some(desired_title) = final_title.as_deref() {
-            let mut net_rx = engine.subscribe_network().await.ok();
-            if let Ok(res) = run_projects_op(
+            let res = run_projects_op(
                 engine,
                 json!({
                     "action": "set_title",
                     "title": desired_title,
                 }),
             )
-            .await
-            {
-                if let Some(rx) = net_rx.as_mut() {
-                    let _ = wait_flow_mutation_rpc(rx, Duration::from_millis(1200)).await;
-                }
-                if res.get("ok").and_then(|v| v.as_bool()) == Some(true)
-                    && let Some(t) = res.get("title").and_then(|v| v.as_str())
-                {
-                    final_title = Some(t.to_string());
-                }
+            .await?;
+            if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                anyhow::bail!(
+                    "Failed to set project title: {}",
+                    res.get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                );
             }
+            final_title = Some(confirm_project_title(engine, desired_title).await?);
         }
     }
     Ok(json!({
@@ -703,6 +662,95 @@ async fn open_project(
     }))
 }
 
+/// Polls project snapshots until `projectTitle` holds `desired` after a short settle delay.
+async fn confirm_project_title(engine: &ChromeEngine, desired: &str) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    while Instant::now() < deadline {
+        if let Ok(snap) = read_snapshot(engine).await
+            && snap
+                .get("projectTitle")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                == Some(desired)
+        {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if let Ok(settled) = read_snapshot(engine).await
+                && settled
+                    .get("projectTitle")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    == Some(desired)
+            {
+                return Ok(desired.to_string());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    anyhow::bail!(
+        "Failed to confirm project title '{desired}' in the Flow project store{}",
+        build_suffix(engine).await
+    )
+}
+
+/// Counts entries in a `projectsOp` list payload that match `id` or exact `title`.
+fn count_matching_project_entries(
+    entries: &[Value],
+    id: Option<&str>,
+    title: Option<&str>,
+) -> usize {
+    let want_id = id.map(str::trim).filter(|s| !s.is_empty());
+    let want_title = title.map(str::trim).filter(|s| !s.is_empty());
+    entries
+        .iter()
+        .filter(|entry| {
+            if let Some(wid) = want_id
+                && entry.get("id").and_then(Value::as_str) == Some(wid)
+            {
+                return true;
+            }
+            if let Some(wtitle) = want_title
+                && entry
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case(wtitle))
+            {
+                return true;
+            }
+            false
+        })
+        .count()
+}
+
+/// Polls home-view project entries until the deleted project is absent from the page.
+async fn confirm_project_deleted(
+    engine: &ChromeEngine,
+    deleted_id: Option<&str>,
+    title: Option<&str>,
+    before_matches: usize,
+) -> Result<()> {
+    let want_id = deleted_id.map(str::trim).filter(|s| !s.is_empty());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let listed = run_projects_op(engine, json!({ "action": "list" })).await?;
+        if listed.get("ok").and_then(Value::as_bool) == Some(true)
+            && let Some(projects) = listed.get("projects").and_then(Value::as_array)
+        {
+            let gone = match want_id {
+                Some(did) => !projects
+                    .iter()
+                    .any(|p| p.get("id").and_then(Value::as_str) == Some(did)),
+                None => count_matching_project_entries(projects, None, title) < before_matches,
+            };
+            if gone {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    anyhow::bail!("Failed to confirm project deletion on the Flow home page")
+}
+
 /// Renames the active project (or the project identified by `id`).
 async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) -> Result<Value> {
     let trimmed = title.trim();
@@ -717,7 +765,6 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
     } else {
         ensure_flow_store(engine).await?;
     }
-    let mut net_rx = engine.subscribe_network().await.ok();
     let res = run_projects_op(engine, json!({ "action": "set_title", "title": trimmed })).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
@@ -727,14 +774,12 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
                 .unwrap_or("unknown")
         );
     }
-    if let Some(rx) = net_rx.as_mut() {
-        let _ = wait_flow_mutation_rpc(rx, Duration::from_millis(1200)).await;
-    }
+    let confirmed_title = confirm_project_title(engine, trimmed).await?;
     let cur = engine.current_url().await.unwrap_or_default();
     Ok(json!({
         "ok": true,
         "project_id": project_id_from_url(&cur),
-        "title": res.get("title").and_then(|v| v.as_str()).unwrap_or(trimmed),
+        "title": confirmed_title,
     }))
 }
 
@@ -751,7 +796,14 @@ async fn delete_project(
     }
     open_signed_in_home_page(engine).await?;
 
-    let mut net_rx = engine.subscribe_network().await.ok();
+    let before_list = run_projects_op(engine, json!({ "action": "list" })).await?;
+    let before_matches = before_list
+        .get("projects")
+        .and_then(Value::as_array)
+        .map_or(1, |projects| {
+            count_matching_project_entries(projects, id, title)
+        });
+
     let res = run_projects_op(
         engine,
         json!({ "action": "delete", "project_id": id, "title": title }),
@@ -765,10 +817,8 @@ async fn delete_project(
                 .unwrap_or("unknown")
         );
     }
-    if let Some(rx) = net_rx.as_mut() {
-        let _ = wait_flow_mutation_rpc(rx, Duration::from_millis(1200)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let deleted_id = res.get("deleted_id").and_then(Value::as_str).or(id);
+    confirm_project_deleted(engine, deleted_id, title, before_matches).await?;
     Ok(res)
 }
 

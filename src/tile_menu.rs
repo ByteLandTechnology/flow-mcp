@@ -276,7 +276,12 @@ async fn rename_in_view(engine: &ChromeEngine, id: &str, name: &str) -> Result<b
     if !type_rename(engine, name).await? {
         return Ok(false);
     }
-    let renamed = wait_tile_state(engine, id, 40, |s| s.name == name).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut renamed = wait_tile_state(engine, id, 40, |s| s.name == name).await;
+    if renamed {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        renamed = tile_state(engine, id).await.name == name;
+    }
     if !renamed {
         dismiss_overlay(engine).await;
     }

@@ -15,7 +15,7 @@
 | ブラウザランタイム | `ts/*.ts`（`build.rs`） | `esbuild` が 26 個のフラットな TypeScript モジュールを `OUT_DIR/flow_runtime.js` へバンドルし、`src/engine.rs` が単一埋め込みして `window.__flowMcp` を設定 |
 | ローカル永続化 | `src/db.rs`、`src/cookies.rs`、`src/download.rs`、`src/platform.rs`、`src/instance.rs` | `flow-mcp.db`（`0600`）、`cookies.json`（`0600`）、`<home>/chrome-profile`（`0700`）、および `<home>/downloads` を管理 |
 
-Google Flow ページ内部では、`ts/` は静的モックを使わず `lService` ストアからライブ Angular 状態（`read_store_snapshot.ts` と `discover_store.ts`）を読み取ります。変更処理の実行時、Rust はストア更新と、`aisandbox-pa.googleapis.com` および `batchexecute` 向けの CDP HTTP 応答（`is_flow_mutation_rpc_ok`）の両方を監視します。
+Google Flow ページ内部では、`ts/` は静的モックを使わず `lService` ストアからライブ Angular 状態（`read_store_snapshot.ts` と `discover_store.ts`）を読み取ります。書き込み操作はストアまたはページ状態の更新値を読み取って完了を確認し、CDP ネットワーク監視は Google Flow からの失敗した HTTP 書き込み応答を捕捉します。
 
 すべてのブラウザセッションはインターフェース言語を英語（`hl=en` と `en-US`）に固定します。これにより、どのホスト環境でも Angular コントロール、メニューラベル、ボイス一覧が一貫して動作します。
 

@@ -11,14 +11,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Duration, Instant};
 
 use crate::collections::{FlowCollection, find_collection};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
-use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
+use crate::project::{ensure_flow_store, read_snapshot};
 use crate::project_store::ProjectStoreSession;
 use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu};
 
@@ -383,6 +382,26 @@ fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
         })
 }
 
+/// Polls project snapshots after a settle delay to confirm that `id` holds `name`.
+async fn confirm_renamed_asset(engine: &ChromeEngine, id: &str, name: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    while Instant::now() < deadline {
+        if let Ok(snap) = read_snapshot(engine).await
+            && snapshot_has_renamed(&snap, id, name)
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Ok(settled) = read_snapshot(engine).await
+                && snapshot_has_renamed(&settled, id, name)
+            {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
+}
+
 /// Renames collections through the collection store and other tiles through the page or store.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
     let collections = ProjectStoreSession::open(engine).await?;
@@ -427,8 +446,6 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
         }
         let mut ok = false;
         for attempt in 0..2 {
-            // Subscribe before calling rename so the listener catches store RPC responses.
-            let mut rx = engine.subscribe_network().await?;
             let res = engine
                 .call_flow_async(
                     "assetOps",
@@ -443,43 +460,7 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
                 failed.push(json!({ "id": entry.id, "name": entry.name, "error": e }));
                 continue 'items;
             }
-
-            let mut confirmed = read_snapshot(engine)
-                .await
-                .is_ok_and(|snap| snapshot_has_renamed(&snap, &entry.id, &entry.name));
-
-            if !confirmed {
-                let deadline = Instant::now() + Duration::from_secs(6);
-                loop {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        break;
-                    }
-                    let slice = remaining.min(Duration::from_millis(500));
-                    match tokio::time::timeout(slice, rx.recv()).await {
-                        Ok(Ok(ev)) => {
-                            if is_flow_mutation_rpc_ok(&ev) {
-                                confirmed = true;
-                                break;
-                            }
-                        }
-                        Ok(Err(RecvError::Lagged(_))) => continue,
-                        Ok(Err(RecvError::Closed)) => break,
-                        Err(_) => {
-                            if let Ok(snap) = read_snapshot(engine).await
-                                && snapshot_has_renamed(&snap, &entry.id, &entry.name)
-                            {
-                                confirmed = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if !confirmed && let Ok(snap) = read_snapshot(engine).await {
-                confirmed = snapshot_has_renamed(&snap, &entry.id, &entry.name);
-            }
-            if confirmed {
+            if confirm_renamed_asset(engine, &entry.id, &entry.name).await {
                 ok = true;
                 break;
             }

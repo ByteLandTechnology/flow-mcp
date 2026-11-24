@@ -15,7 +15,7 @@
 | Browser Runtime | `ts/*.ts` (`build.rs`) | `esbuild` bundles 26 flat TypeScript modules into `OUT_DIR/flow_runtime.js`; `src/engine.rs` embeds it once and sets `window.__flowMcp` |
 | Local Persistence | `src/db.rs`, `src/cookies.rs`, `src/download.rs`, `src/platform.rs`, `src/instance.rs` | Manages `flow-mcp.db` (`0600`), `cookies.json` (`0600`), `<home>/chrome-profile` (`0700`), and `<home>/downloads` |
 
-Inside the Google Flow page, `ts/` reads live Angular state from the `lService` store (`read_store_snapshot.ts` and `discover_store.ts`) instead of static mocks. When mutations run, Rust monitors both store updates and CDP HTTP responses for `aisandbox-pa.googleapis.com` and `batchexecute` (`is_flow_mutation_rpc_ok`).
+Inside the Google Flow page, `ts/` reads live Angular state from the `lService` store (`read_store_snapshot.ts` and `discover_store.ts`) instead of static mocks. Write operations confirm completion from updated values in the store or page state. CDP network monitoring captures failed HTTP write responses from Google Flow.
 
 All browser sessions pin the interface language to English (`hl=en` and `en-US`). This keeps Angular controls, menu labels, and voice lists consistent across all host locales.
 

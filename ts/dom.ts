@@ -368,3 +368,41 @@ export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
     null
   );
 }
+
+/** Reads non-destructive start and end trim bounds in seconds from a project tile. */
+export function videoTrimBounds(
+  rawTile: FlowTile | null | undefined,
+): { start: number | null; end: number | null } {
+  const t = legacyTile(rawTile);
+  if (!t) return { start: null, end: null };
+  const isVideo = String(t.type ?? "VIDEO").toUpperCase() === "VIDEO";
+  const start =
+    isVideo && typeof t.Fb?.Jc === "number"
+      ? t.Fb.Jc
+      : typeof t.trimStartSeconds === "number"
+        ? t.trimStartSeconds
+        : typeof t.Fb?.Ac === "number"
+          ? t.Fb.Ac
+          : typeof t.Ac === "number"
+            ? t.Ac
+            : typeof t.Cg === "number"
+              ? t.Cg
+              : typeof t.Fb?.Cg === "number"
+                ? t.Fb.Cg
+                : null;
+  const end =
+    isVideo && typeof t.Fb?.Pc === "number"
+      ? t.Fb.Pc
+      : typeof t.trimEndSeconds === "number"
+        ? t.trimEndSeconds
+        : typeof t.Fb?.Ic === "number"
+          ? t.Fb.Ic
+          : typeof t.Ic === "number"
+            ? t.Ic
+            : typeof t.Rf === "number"
+              ? t.Rf
+              : typeof t.Fb?.Rf === "number"
+                ? t.Fb.Rf
+                : null;
+  return { start, end };
+}

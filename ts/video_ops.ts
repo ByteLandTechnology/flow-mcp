@@ -4,10 +4,48 @@
 // Trim Flow videos and drive the scene builder extend workflow.
 
 import { createScene, findRouter } from "./angular";
-import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import {
+  delay,
+  elText,
+  isDisabledProp,
+  isVisibleEnabled,
+  legacyTile,
+  videoTrimBounds,
+} from "./dom";
 import { writePromptBox } from "./prompt_writer";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, VideoOpRequest } from "./types";
+
+/** Checks whether an observed start trim bound matches the requested start time. */
+function startBoundMatches(
+  actual: number | null,
+  expected: number | null,
+): boolean {
+  if (expected === null || Math.abs(expected) <= 0.01) {
+    return actual === null || Math.abs(actual) <= 0.01;
+  }
+  return typeof actual === "number" && Math.abs(actual - expected) <= 0.01;
+}
+
+/** Checks whether an observed end trim bound matches the requested end time. */
+function endBoundMatches(
+  actual: number | null,
+  expected: number | null,
+  before: number | null,
+  duration: number | null,
+): boolean {
+  if (expected === null) {
+    if (actual === null) return true;
+    return (
+      typeof actual === "number" &&
+      typeof duration === "number" &&
+      duration > 0 &&
+      (before === null || Math.abs(before - duration) > 0.01) &&
+      Math.abs(actual - duration) <= 0.01
+    );
+  }
+  return typeof actual === "number" && Math.abs(actual - expected) <= 0.01;
+}
 
 /** Trims video clip timestamps or orchestrates scene-builder video extension. */
 export async function videoOp(req: VideoOpRequest): Promise<unknown> {
@@ -21,14 +59,16 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       return { ok: false, error: "store_not_bound" };
     }
     const id = String(req?.asset_id || "").trim();
-    const tile = tileMap.get(id);
-    if (!tile) return { ok: false, error: `video_asset_not_found:${id}` };
+    const rawTile = tileMap.get(id);
+    if (!rawTile) return { ok: false, error: `video_asset_not_found:${id}` };
+    const tile = legacyTile(rawTile);
+    const before = videoTrimBounds(tile);
     const mediaId = String(
-      tile.primaryMediaId ||
-        tile.Fb?.id ||
-        tile.Fb?.mediaId ||
-        tile.fb?.mediaId ||
-        tile.mediaId ||
+      tile?.primaryMediaId ||
+        tile?.Fb?.id ||
+        tile?.Fb?.mediaId ||
+        tile?.fb?.mediaId ||
+        tile?.mediaId ||
         id,
     );
     const startSec =
@@ -36,8 +76,8 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     const endSec = typeof req.end_seconds === "number" ? req.end_seconds : null;
     await helper.mutate({
       type: "single_tile",
-      Xc: String(tile.id ?? id),
-      Uc: String(tile.id ?? id),
+      Xc: String(tile?.id ?? id),
+      Uc: String(tile?.id ?? id),
       Ve: {
         type: "set_video_trim_seconds",
         mediaId,
@@ -47,14 +87,48 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         Wf: endSec,
       },
     });
-    await delay(500);
-    return {
-      ok: true,
-      asset_id: id,
-      media_id: mediaId,
-      start_seconds: startSec,
-      end_seconds: endSec,
-    };
+    const duration =
+      typeof tile?.durationSeconds === "number"
+        ? tile.durationSeconds
+        : typeof tile?.duration === "number"
+          ? tile.duration
+          : typeof tile?.Fb?.durationSeconds === "number"
+            ? tile.Fb.durationSeconds
+            : typeof tile?.Fb?.duration === "number"
+              ? tile.Fb.duration
+              : typeof tile?.Fb?.Lf === "number"
+                ? tile.Fb.Lf
+                : typeof tile?.Lf === "number"
+                  ? tile.Lf
+                  : null;
+    const matchesStore = (
+      cand: { start: number | null; end: number | null },
+    ): boolean =>
+      startBoundMatches(cand.start, startSec) &&
+      endBoundMatches(cand.end, endSec, before.end, duration);
+    await delay(300);
+    for (let i = 0; i < 30; i++) {
+      const current = getMap()?.get(id);
+      if (current) {
+        const bounds = videoTrimBounds(current);
+        if (matchesStore(bounds)) {
+          await delay(200);
+          const settled = videoTrimBounds(getMap()?.get(id));
+          if (matchesStore(settled)) {
+            return {
+              ok: true,
+              confirmed: true,
+              asset_id: id,
+              media_id: mediaId,
+              start_seconds: settled.start,
+              end_seconds: settled.end,
+            };
+          }
+        }
+      }
+      await delay(200);
+    }
+    return { ok: false, error: "trim_not_confirmed" };
   }
 
   if (action === "prepare_extend") {
@@ -330,15 +404,22 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
   }
 
   if (action === "poll_extend") {
-    const bodyText = elText(document.body);
-    const extending =
-      /\bExtending\b|Extending…/i.test(bodyText) ||
-      Boolean(
-        document.querySelector(
-          "flow-scene-timeline .is-extend-generating, flow-scene-timeline .pending-placeholder, flow-scene-timeline [aria-busy='true']",
-        ),
-      );
-    return { ok: true, extending };
+    const busyDom = Boolean(
+      document.querySelector(
+        "flow-scene-timeline .is-extend-generating, flow-scene-timeline .pending-placeholder, flow-scene-timeline [aria-busy='true']",
+      ),
+    );
+    const scope = document.querySelector("flow-scene-builder") ?? document.body;
+    const extendingText = Array.from(
+      scope.querySelectorAll(
+        '[class*="extend"], [class*="status"], [class*="progress"], [aria-live]',
+      ),
+    ).some(
+      (el) =>
+        !el.closest('[contenteditable="true"], textarea, input') &&
+        /\bExtending\b|Extending…/i.test(elText(el)),
+    );
+    return { ok: true, extending: busyDom || extendingText };
   }
 
   if (action === "done_scene") {

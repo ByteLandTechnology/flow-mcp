@@ -140,8 +140,12 @@ export interface SceneClipItem {
   primaryMediaId?: string | number;
   /** Clip status field. */
   Zc?: string;
+  /** Clip status field in the Flow front end from 2026-11-15 on. */
+  od?: string;
   /** Clip error field. */
   nf?: unknown;
+  /** Clip error field in the Flow front end from 2026-11-15 on. */
+  Bf?: unknown;
   /** Direct clip video URL. */
   Bd?: string;
   /** Secondary clip video URL. */

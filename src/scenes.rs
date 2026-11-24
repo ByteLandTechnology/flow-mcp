@@ -19,9 +19,122 @@ use crate::engine::ChromeEngine;
 use crate::generation::{collect_created_assets, inspect_generation_network};
 use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_workspace_url,
-    wait_flow_mutation_rpc,
 };
 use crate::queue::ProgressCallback;
+
+/// Pre-submit state of a video tile or scene clip used to detect extension updates and failures.
+struct ClipBaseline {
+    /// Primary media ID recorded before extension submission.
+    primary_media_id: Option<String>,
+    /// Resolved media URL recorded before extension submission.
+    url: Option<String>,
+    /// Media status recorded before extension submission, cleared if a failed clip restarts.
+    media_status: Option<String>,
+    /// Media error recorded before extension submission, cleared if a failed clip restarts.
+    media_error: Option<String>,
+}
+
+impl ClipBaseline {
+    /// Captures the baseline fields of one project asset.
+    fn from_asset(asset: &FlowAsset) -> Self {
+        Self {
+            primary_media_id: asset.primary_media_id.clone(),
+            url: asset.url.clone(),
+            media_status: asset.media_status.clone(),
+            media_error: asset.media_error.clone(),
+        }
+    }
+
+    /// Returns `true` when the baseline already held a failed or canceled state.
+    fn was_failed(&self) -> bool {
+        matches!(self.media_status.as_deref(), Some("failed" | "canceled"))
+            || self.media_error.is_some()
+    }
+}
+
+/// Checks whether an observed start trim bound matches the requested start time.
+fn start_bound_matches(actual: Option<f64>, expected: Option<f64>) -> bool {
+    match expected {
+        None => actual.is_none_or(|act| act.abs() <= 0.01),
+        Some(exp) if exp.abs() <= 0.01 => actual.is_none_or(|act| act.abs() <= 0.01),
+        Some(exp) => actual.is_some_and(|act| (act - exp).abs() <= 0.01),
+    }
+}
+
+/// Checks whether an observed end trim bound matches the requested end time.
+fn end_bound_matches(
+    actual: Option<f64>,
+    expected: Option<f64>,
+    before: Option<f64>,
+    duration: Option<f64>,
+) -> bool {
+    match expected {
+        None => {
+            actual.is_none()
+                || actual.zip(duration).is_some_and(|(act, dur)| {
+                    dur > 0.0
+                        && before.is_none_or(|b| (b - dur).abs() > 0.01)
+                        && (act - dur).abs() <= 0.01
+                })
+        }
+        Some(exp) => actual.is_some_and(|act| (act - exp).abs() <= 0.01),
+    }
+}
+
+/// Polls active project store snapshots until `before.id` holds the requested trim bounds.
+async fn confirm_trimmed_video(
+    engine: &ChromeEngine,
+    before: &FlowAsset,
+    start_seconds: Option<f64>,
+    end_seconds: Option<f64>,
+) -> Result<(Option<f64>, Option<f64>)> {
+    let query = AssetsParams {
+        kind: Some("video".to_string()),
+        resolve_urls: Some(false),
+        ..AssetsParams::default()
+    };
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        let videos = list_assets(engine, &query).await?;
+        if let Some(video) = videos.iter().find(|a| a.id == before.id)
+            && start_bound_matches(video.trim_start_seconds, start_seconds)
+            && end_bound_matches(
+                video.trim_end_seconds,
+                end_seconds,
+                before.trim_end_seconds,
+                video.duration.or(before.duration),
+            )
+        {
+            return Ok((video.trim_start_seconds, video.trim_end_seconds));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    anyhow::bail!(
+        "Failed to confirm updated trim bounds in the Flow project store for video '{}'",
+        before.id
+    )
+}
+
+/// Returns `true` when `asset` currently holds a failed or canceled media state.
+fn clip_is_failed(asset: &FlowAsset) -> bool {
+    matches!(asset.media_status.as_deref(), Some("failed" | "canceled"))
+        || asset.media_error.is_some()
+}
+
+/// Returns `true` when `asset` is a video tile or clip that entered an error state since `before`.
+fn clip_entered_error(asset: &FlowAsset, before: &HashMap<String, ClipBaseline>) -> bool {
+    if asset.kind != "video" || !clip_is_failed(asset) {
+        return false;
+    }
+    match before.get(&asset.id) {
+        None => true,
+        Some(prior) => {
+            !prior.was_failed()
+                || asset.primary_media_id != prior.primary_media_id
+                || asset.media_error != prior.media_error
+        }
+    }
+}
 
 /// Parameters for `flow_scenes`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -148,8 +261,7 @@ pub(crate) async fn trim_video(
         "start_seconds": start_seconds,
         "end_seconds": end_seconds,
     });
-    let mut net_rx = engine.subscribe_network().await.ok();
-    let res = engine.call_flow_async("videoOp", json!([payload])).await?;
+    let mut res = engine.call_flow_async("videoOp", json!([payload])).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
             "Failed to trim video '{}': {}",
@@ -159,8 +271,11 @@ pub(crate) async fn trim_video(
                 .unwrap_or("unknown")
         );
     }
-    if let Some(rx) = net_rx.as_mut() {
-        let _ = wait_flow_mutation_rpc(rx, Duration::from_millis(2500)).await;
+    let (confirmed_start, confirmed_end) =
+        confirm_trimmed_video(engine, &target, start_seconds, end_seconds).await?;
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("start_seconds".to_string(), json!(confirmed_start));
+        obj.insert("end_seconds".to_string(), json!(confirmed_end));
     }
     Ok(res)
 }
@@ -185,7 +300,6 @@ pub(crate) async fn run_video_extend(
         target.id
     );
     let project_id = snap.project_id.clone();
-    let mut net_rx = engine.subscribe_network().await?;
 
     on_progress(format!("opening extend editor for {}", target.id));
     let req_payload = json!({
@@ -234,11 +348,12 @@ pub(crate) async fn run_video_extend(
         prepared.project_id == project_id,
         "The Flow project changed"
     );
-    let before: HashMap<_, _> = prepared
+    let mut before: HashMap<String, ClipBaseline> = prepared
         .assets
-        .into_iter()
-        .map(|asset| (asset.id.clone(), asset))
+        .iter()
+        .map(|asset| (asset.id.clone(), ClipBaseline::from_asset(asset)))
         .collect();
+    let mut net_rx = engine.subscribe_network().await?;
     engine.click_point(point).await?;
 
     on_progress("extending video in Flow scene editor".to_string());
@@ -263,42 +378,53 @@ pub(crate) async fn run_video_extend(
             on_progress("extending video...".to_string());
         }
 
-        if !extending && let Ok(cur_snap) = list_assets_with_project(engine).await {
-            let fresh: Vec<FlowAsset> = cur_snap
+        if let Ok(cur_snap) = list_assets_with_project(engine).await {
+            for asset in &cur_snap.assets {
+                if asset.kind == "video"
+                    && !clip_is_failed(asset)
+                    && let Some(prior) = before.get_mut(&asset.id)
+                    && prior.was_failed()
+                {
+                    prior.media_status = asset.media_status.clone();
+                    prior.media_error = None;
+                }
+            }
+            if let Some(failed_tile) = cur_snap
                 .assets
                 .iter()
-                .filter(|a| {
-                    a.kind == "video"
-                        && a.url.is_some()
-                        && before.get(&a.id).is_none_or(|prior| {
-                            a.primary_media_id.as_ref().map_or_else(
-                                || a.url != prior.url,
-                                |media_id| {
-                                    prior
-                                        .primary_media_id
-                                        .as_ref()
-                                        .is_some_and(|id| id != media_id)
-                                },
-                            )
-                        })
-                })
-                .cloned()
-                .collect();
-            if !fresh.is_empty() {
-                new_assets = fresh;
-                break;
-            }
-            if let Some(failed_tile) = cur_snap.assets.iter().find(|a| {
-                a.kind == "video"
-                    && !before.contains_key(&a.id)
-                    && matches!(a.media_status.as_deref(), Some("failed" | "canceled"))
-            }) {
+                .find(|a| clip_entered_error(a, &before))
+            {
                 extend_err = Some(anyhow::anyhow!(
                     "Flow video extend failed on tile {}: {}",
                     failed_tile.id,
-                    failed_tile.media_error.as_deref().unwrap_or("failed")
+                    failed_tile
+                        .media_error
+                        .as_deref()
+                        .or(failed_tile.media_status.as_deref())
+                        .unwrap_or("failed")
                 ));
                 break;
+            }
+            if !extending {
+                let fresh: Vec<FlowAsset> = cur_snap
+                    .assets
+                    .iter()
+                    .filter(|a| {
+                        a.kind == "video"
+                            && a.url.is_some()
+                            && before.get(&a.id).is_none_or(|prior| {
+                                a.primary_media_id.as_deref().map_or_else(
+                                    || a.url != prior.url,
+                                    |media_id| prior.primary_media_id.as_deref() != Some(media_id),
+                                )
+                            })
+                    })
+                    .cloned()
+                    .collect();
+                if !fresh.is_empty() {
+                    new_assets = fresh;
+                    break;
+                }
             }
         }
         if Instant::now() >= deadline {

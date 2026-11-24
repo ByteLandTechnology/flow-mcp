@@ -21,12 +21,6 @@ use crate::engine::{ChromeEngine, NetworkResponseEvent, validate_local_files};
 use crate::project::{ensure_flow_store, ensure_project_workspace_root};
 use crate::queue::{ProgressCallback, SceneParams};
 
-/// Batchexecute RPC IDs associated with Google Flow generation requests.
-const BATCH_GENERATION_RPC_IDS: &[&str] = &[
-    "Z9cAtf", "ogiZ0b", "YhhmEf", "MZZa6b", "eb1hJf", "nprQif", "jIps6", "fZytfe", "p0UkFb",
-    "IJhj9c", "xNyCid",
-];
-
 /// Parameters for `flow_generate`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub(crate) struct GenerateParams {
@@ -259,16 +253,38 @@ fn format_submit_progress(prefix: &str, submit_res: &serde_json::Value) -> Strin
     )
 }
 
-/// Returns `true` when `url` matches a Flow generation API endpoint.
-fn is_generation_rpc_url(url: &str) -> bool {
-    url.contains("aisandbox-pa.googleapis.com")
+/// Returns `true` when `method` is an HTTP write verb used by Flow mutations or RPCs.
+fn is_write_method(method: &str) -> bool {
+    method.eq_ignore_ascii_case("POST")
+        || method.eq_ignore_ascii_case("PUT")
+        || method.eq_ignore_ascii_case("PATCH")
+        || method.eq_ignore_ascii_case("DELETE")
+}
+
+/// Returns `true` when `url` targets a Google Flow backend or page RPC endpoint.
+fn is_flow_api_url(url: &str) -> bool {
+    if url.contains("/jserror") || url.contains("/cspreport") {
+        return false;
+    }
+    if let Ok(parsed) = url::Url::parse(url)
+        && let Some(host) = parsed.host_str()
+    {
+        let host = host.to_ascii_lowercase();
+        if host == "flow.google.com"
+            || host == "labs.google"
+            || host.ends_with(".labs.google")
+            || host == "aisandbox-pa.googleapis.com"
+        {
+            return true;
+        }
+    }
+    url.contains("flow.google.com")
+        || url.contains("aisandbox-pa.googleapis.com")
         || url.contains("FlowCreationAgentService")
         || url.contains("flowMedia")
         || url.contains("batchGenerate")
         || url.contains("AsyncGenerate")
         || url.contains("VideoFx")
-        || (url.contains("batchexecute")
-            && BATCH_GENERATION_RPC_IDS.iter().any(|id| url.contains(id)))
 }
 
 /// Drains CDP network events to surface API HTTP errors, reCAPTCHA blocks, or request acceptance.
@@ -288,7 +304,7 @@ pub(crate) fn inspect_generation_network(
                         ev.url
                     );
                 }
-                if ev.method.eq_ignore_ascii_case("POST") && is_generation_rpc_url(&ev.url) {
+                if is_write_method(&ev.method) && is_flow_api_url(&ev.url) {
                     if ev.status >= 400 {
                         let excerpt = ev.error_excerpt.as_deref().unwrap_or("no error body");
                         if excerpt.to_ascii_lowercase().contains("recaptcha")
