@@ -101,7 +101,7 @@ MCP クライアントから次の手順を順番に実行します：
 }
 ```
 
-可視 Chrome ウィンドウ上で Google サインインを完了してください。サインイン後に `flow-mcp` は可視ウィンドウを閉じ、`<home>/chrome-profile` へ状態をフラッシュします。続いて同じプロファイルでバックグラウンドの CDP Chrome を起動し、`<home>/cookies.json`（Unix 権限 `0600`）を保存します。
+可視 Chrome ウィンドウ上で Google サインインを完了してください。サインイン後に `flow-mcp` は可視ウィンドウを閉じ、`<home>/chrome-profile` へ状態をフラッシュします。続いて同じプロファイルでバックグラウンドの CDP Chrome を起動し、Google Flow ワークスペースセッションを検証します。
 
 ターミナルから `flow-mcp login --home /path/to/.flow-mcp` を実行してサインインすることもできます。2 つの `flow-mcp` プロセスは同じ Chrome プロファイルを同時に使用できないため、先に MCP クライアントを停止してください。結果は `flow-mcp status` で確認できます。
 

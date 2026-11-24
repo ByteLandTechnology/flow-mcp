@@ -8,7 +8,6 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::auth::is_signed_in_flow_url;
 use crate::cdp::{CdpConnection, fetch_json_version};
 use crate::config::{chrome_profile_dir, cli_chrome_path, configured_cdp_port};
 use crate::cookies::is_google_auth_cookie_pair;
@@ -52,15 +51,9 @@ impl Drop for LoginChrome {
 /// Sign-in state read from scratch copies of a Chrome user profile directory.
 #[derive(Debug, Default)]
 pub(crate) struct LoginProfileProbe {
-    /// Google Accounts rejection URL observed in profile history or session files.
+    /// Google Accounts rejection URL observed in profile history.
     pub(crate) rejected_url: Option<String>,
-    /// Signed-in Google Flow URL observed in profile history or session files.
-    pub(crate) flow_url: Option<String>,
-    /// True when core Google Sign-In cookies were written since launch, or when Chrome locks the
-    /// cookie database so that it cannot be read (Chrome on Windows).
-    ///
-    /// For a locked database, the signed-in Flow URL alone starts the promotion, and the promotion
-    /// then verifies the session over CDP.
+    /// True when core Google Sign-In cookies were written since launch.
     pub(crate) has_google_auth_cookies: bool,
 }
 
@@ -256,13 +249,15 @@ impl ManagedChrome {
 }
 
 impl LoginChrome {
-    /// Launches standard visible Chrome on a clean `<home>/chrome-profile` (`0700`) without CDP flags.
-    pub(crate) async fn launch(start_url: &str) -> Result<Self> {
+    /// Launches standard visible Chrome on `<home>/chrome-profile` (`0700`) without CDP flags, deleting prior profile data when `clean` is `true`.
+    pub(crate) async fn launch(start_url: &str, clean: bool) -> Result<Self> {
         let chrome = resolve_chrome_binary()?;
         let profile_dir = chrome_profile_dir();
         prepare_profile_dir(&profile_dir).await?;
-        let _ = tokio::fs::remove_dir_all(&profile_dir).await;
-        create_private_dir_all(&profile_dir)?;
+        if clean {
+            let _ = tokio::fs::remove_dir_all(&profile_dir).await;
+            create_private_dir_all(&profile_dir)?;
+        }
 
         let initial_url = if start_url.trim().is_empty() {
             "about:blank"
@@ -333,33 +328,23 @@ fn copy_sqlite_files_to_scratch(
     Some(dst)
 }
 
-/// Inspects a scratch copy of Chrome's `History` SQLite database for Flow or rejection URLs.
+/// Inspects a scratch copy of Chrome's `History` SQLite database for Google Accounts rejection URLs.
 fn probe_history_db(scratch_history: &Path, min_webkit_us: i64, probe: &mut LoginProfileProbe) {
     let Ok(conn) = rusqlite::Connection::open(scratch_history) else {
         return;
     };
     let Ok(mut stmt) = conn.prepare(
-        "SELECT url, hidden FROM urls WHERE last_visit_time >= ?1 ORDER BY last_visit_time DESC, id DESC LIMIT 25",
+        "SELECT url FROM urls WHERE last_visit_time >= ?1 ORDER BY last_visit_time DESC, id DESC LIMIT 25",
     ) else {
         return;
     };
-    let Ok(rows) = stmt.query_map([min_webkit_us], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    }) else {
+    let Ok(rows) = stmt.query_map([min_webkit_us], |row| row.get::<_, String>(0)) else {
         return;
     };
-    let mut checked_latest_visible = false;
-    for (url, hidden) in rows.flatten() {
-        if probe.rejected_url.is_none() && url.contains("accounts.google.com/v3/signin/rejected") {
-            probe.rejected_url = Some(url.clone());
-        }
-        if hidden == 0 && !checked_latest_visible {
-            checked_latest_visible = true;
-            if is_signed_in_flow_url(&url) {
-                probe.flow_url = Some(url);
-            } else {
-                probe.flow_url = None;
-            }
+    for url in rows.flatten() {
+        if url.contains("accounts.google.com/v3/signin/rejected") {
+            probe.rejected_url = Some(url);
+            return;
         }
     }
 }
@@ -387,62 +372,7 @@ fn probe_cookies_db(scratch_cookies: &Path, min_webkit_us: i64) -> bool {
     false
 }
 
-/// Extracts standalone `https://` URL strings from raw Chrome session bytes.
-fn extract_standalone_https_urls(bytes: &[u8]) -> Vec<String> {
-    let mut urls = Vec::new();
-    for slice in bytes
-        .split(|&b| !b.is_ascii_graphic() || matches!(b, b'"' | b'\'' | b'\\' | b'<' | b'>' | b'`'))
-    {
-        if slice.is_empty() {
-            continue;
-        }
-        let Ok(chunk) = std::str::from_utf8(slice) else {
-            continue;
-        };
-        let Some(pos) = chunk.find("https://") else {
-            continue;
-        };
-        if pos <= 2 && !chunk[..pos].contains(['=', '?', '&', ':', '/']) {
-            urls.push(chunk[pos..].to_string());
-        }
-    }
-    urls
-}
-
-/// Scans Chrome `Sessions` files in modification order for Google Flow or rejection URLs.
-fn probe_sessions_dir(sessions_dir: &Path, probe: &mut LoginProfileProbe) {
-    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
-        return;
-    };
-    let mut files: Vec<(Option<SystemTime>, PathBuf)> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !path.is_file() {
-                return None;
-            }
-            let modified = entry.metadata().and_then(|m| m.modified()).ok();
-            Some((modified, path))
-        })
-        .collect();
-    files.sort_by_key(|(modified, _)| *modified);
-    for (_, path) in files {
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        for url in extract_standalone_https_urls(&bytes) {
-            if probe.rejected_url.is_none()
-                && url.contains("accounts.google.com/v3/signin/rejected")
-            {
-                probe.rejected_url = Some(url);
-            } else if probe.flow_url.is_none() && is_signed_in_flow_url(&url) {
-                probe.flow_url = Some(url);
-            }
-        }
-    }
-}
-
-/// Inspects Chrome `Sessions`, `History`, and `Cookies` files for entries updated since `started_at`.
+/// Inspects Chrome `History` and `Cookies` files for entries updated since `started_at`.
 pub(crate) async fn inspect_login_profile(
     profile_dir: &Path,
     started_at: SystemTime,
@@ -457,7 +387,6 @@ pub(crate) async fn inspect_login_profile(
     let dir = profile_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut probe = LoginProfileProbe::default();
-        probe_sessions_dir(&dir.join("Default").join("Sessions"), &mut probe);
 
         let Ok(scratch) = tempfile::tempdir() else {
             return probe;
@@ -474,20 +403,14 @@ pub(crate) async fn inspect_login_profile(
             dir.join("Default").join("Cookies"),
             dir.join("Default").join("Network").join("Cookies"),
         ];
-        let mut cookies_locked = false;
         for (idx, src) in cookie_candidates.iter().enumerate() {
             let base = format!("Cookies_{idx}");
-            match copy_sqlite_files_to_scratch(src, scratch.path(), &base) {
-                Some(scratch_cookies) if probe_cookies_db(&scratch_cookies, min_webkit_us) => {
-                    probe.has_google_auth_cookies = true;
-                    break;
-                }
-                None if src.is_file() => cookies_locked = true,
-                _ => {}
+            if let Some(scratch_cookies) = copy_sqlite_files_to_scratch(src, scratch.path(), &base)
+                && probe_cookies_db(&scratch_cookies, min_webkit_us)
+            {
+                probe.has_google_auth_cookies = true;
+                break;
             }
-        }
-        if cookies_locked {
-            probe.has_google_auth_cookies = true;
         }
 
         probe

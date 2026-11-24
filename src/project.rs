@@ -15,7 +15,7 @@ use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{Duration, Instant};
 
-use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
+use crate::auth::{check_page_auth, check_page_signed_in, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
 use crate::project_store::prepare_project_store_status;
@@ -210,7 +210,6 @@ async fn ensure_signed_in_flow_page(engine: &ChromeEngine) -> Result<String> {
         );
     }
     url = engine.current_url().await.unwrap_or(url);
-    let _ = engine.save_cookies().await;
     Ok(url)
 }
 
@@ -280,32 +279,16 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
         let _ = redirect_sso_if_about(engine, &mut url).await;
     }
+    let auth_check = check_page_auth(engine, !probe).await;
+    if !probe {
+        url = engine.current_url().await.unwrap_or(url);
+    }
     let project_id = project_id_from_url(&url);
     let in_project = project_id.is_some();
-
-    let auth_check = if is_signed_in_flow_url(&url) {
-        engine
-            .call_flow_js("checkAuth", json!([]))
-            .await
-            .unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
-
-    let signed_in = if auth_check
+    let signed_in = auth_check
         .get("signed_in")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        true
-    } else if !probe {
-        check_page_signed_in(engine).await
-    } else {
-        false
-    };
-    if signed_in && !probe {
-        let _ = engine.save_cookies().await;
-    }
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let mut project = auth_check
         .get("title")
@@ -374,7 +357,6 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
 /// Signs in if needed, opens a `/project/<id>` route, and binds `lService` in runtime state.
 pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
     let url = ensure_signed_in_flow_page(engine).await?;
-    let mut navigated = false;
 
     if project_id_from_url(&url).is_none() {
         let entered = eval_project_nav(engine, "enter_existing")
@@ -399,7 +381,6 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             }
             if project_id_from_url(&cur).is_some() {
                 entered_project = true;
-                navigated = true;
                 let has_workspace = eval_project_nav(engine, "has_workspace")
                     .await
                     .ok()
@@ -429,13 +410,6 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         if bound {
-            let newly_discovered = discovery
-                .get("newlyDiscovered")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if navigated || newly_discovered {
-                let _ = engine.save_cookies().await;
-            }
             return Ok(());
         }
         if attempt == 2 && !input_pending {

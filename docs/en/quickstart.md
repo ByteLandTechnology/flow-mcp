@@ -101,7 +101,7 @@ If `signed_in` is `true`, skip step 2.
 }
 ```
 
-Complete Google Sign-In in the visible Chrome window. After you sign in, `flow-mcp` closes the visible window and flushes `<home>/chrome-profile`. It then starts background CDP Chrome on that profile and saves `<home>/cookies.json` (`0600` permissions on Unix).
+Complete Google Sign-In in the visible Chrome window. After you sign in, `flow-mcp` closes the visible window and flushes `<home>/chrome-profile`. It then starts background CDP Chrome on that profile and verifies your Google Flow workspace session.
 
 You can also sign in from a terminal with `flow-mcp login --home /path/to/.flow-mcp`. Stop your MCP client first, because two `flow-mcp` processes cannot use one Chrome profile at the same time. Run `flow-mcp status` to check the result.
 

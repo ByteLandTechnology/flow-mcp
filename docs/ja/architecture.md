@@ -26,15 +26,15 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
 ![デュアルモード Chrome 認証とセッション引き継ぎ](../assets/ja/login-session-flow.svg)
 
 1. **`LoginChrome`（対話モード専用）**：
-   - CDP フラグを**付けずに** `<home>/chrome-profile`（Unix 権限 `0700`）で標準の可視 Chrome を起動し、Google サインイン（`?hl=en`）を開きます。
-   - `wait=true`（既定、`timeout_secs=180`）の間、`flow_login` は CDP 干渉なしでプロファイルディレクトリの Flow URL と Google Cookie を確認します。
+   - CDP フラグを**付けずに** `<home>/chrome-profile`（Unix 権限 `0700`）で標準の可視 Chrome を起動し、Google サインイン（`?hl=en`）を開きます。`force` が `false` の場合は既存プロファイルを保持し、`force` が `true` の場合は起動前に削除します。
+   - `wait=true`（既定、`timeout_secs=180`）の間、`flow_login` は CDP 干渉や生セッションファイルの走査なしで、サインイン拒否エントリと新しい Google Cookie を確認します。
    - サインイン終了後、`ChromeEngine::promote_login_chrome` は `LoginChrome` を停止します。続いて Chromium が Cookie と DBSC 鍵を `<home>/chrome-profile` へフラッシュします。
 2. **`ManagedChrome`（既定のバックグラウンドモード）**：
    - `<home>/chrome-profile` 上でローカル WebSocket CDP 接続（`--cdp-port`、`FLOW_MCP_CDP_PORT`、またはポート `0`）付きのウィンドウ表示の Chrome（`--headless` 指定時はヘッドレス Chrome）を起動します。
-   - ページ読み込み時に埋め込み済み `flow_runtime.js` IIFE バンドルを実行し、正規化済み Cookie を `<home>/cookies.json`（Unix 権限 `0600`）へ原子的に書き込みます。
-3. **Cookie 正規化とネイティブプロファイル優先**：
-   - 正規化では `google.com`、`labs.google`、`googleusercontent.com`、`gstatic.com` ドメインのみを保持し、`__Host-` プレフィックスと `hostOnly` フラグも維持します。
-   - `<home>/chrome-profile` に有効なネイティブ Google Cookie がある場合、`flow-mcp` はそれらを変更せずに保持し、`<home>/cookies.json` の古いデータで上書きしません。
+   - ページ読み込み時に埋め込み済み `flow_runtime.js` IIFE バンドルを実行し、`WIZ_global_data` トークンと読み取り専用の Flow バックエンドプローブでワークスペースアクセスを検証します。
+3. **明示的な Cookie エクスポートとインポート**：
+   - 通常のサインイン、状態確認、およびダウンロード操作は `<home>/cookies.json` を読み書きせず、`<home>/chrome-profile` を直接使用します。
+   - 明示的な `save_cookies` と `sync_cookies` アクションは、`__Host-` プレフィックスと先頭ドットなしドメインのホスト限定スコープを保持したまま、`google.com`、`labs.google`、`googleusercontent.com`、`gstatic.com` の正規化済み Cookie を `<home>/cookies.json`（Unix 権限 `0600`）へ原子的に書き込みます。
 4. **単一インスタンスロックと孤立 Chrome**：
    - Chrome を起動する前に、`flow-mcp` は `<home>/flow-mcp.lock`（Unix 権限 `0600`）に排他ロックを取得し、プロセス終了まで保持します。プロセスが終了すると（クラッシュ時も含む）、OS がロックを解放します。
    - 別のプロセスがロックを保持している場合、Chrome の起動、`login`、`status`、`logout`、および `flow_login` の `logout` はエラーになります。`doctor` は警告を表示します。
@@ -60,7 +60,7 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
 | `<home>` 配下のパス | Unix モード | 役割 |
 | :--- | :--- | :--- |
 | `chrome-profile/` | `0700` | 永続 Chrome プロファイル、DBSC 鍵、ライブセッション Cookie |
-| `cookies.json` | `0600` | `flow-mcp` が原子的に書き込む正規化済み Google / Flow Cookie 配列 |
+| `cookies.json` | `0600` | 明示的な `save_cookies` と `sync_cookies` 用の正規化済み Google / Flow Cookie 配列 |
 | `flow-mcp.lock` | `0600` | Chrome を起動できる間にプロセスが保持する単一インスタンスロック |
 | `flow-mcp.db` | `0600` | `downloads`、`character_looks`、`characters` 用の `WAL` モード SQLite DB |
 | `downloads/` | プライベートディレクトリ | すべてのダウンロードメディアの固定フォルダ（`flow-mcp` は外部出力パスを拒否します） |
@@ -68,7 +68,7 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
 ### メディアダウンロードパイプライン（`flow_download` とジョブダウンロード）
 
 1. **URL 解決**：`flow-mcp` はプロジェクトスナップショットから `fifeUrl`、`videoUrl`、または `imageUrl` を読み取ります。欠損時は Flow の `as29s` RPC を呼び出して署名付き URL を取得します。
-2. **主 HTTP ストリーム（`reqwest`）**：`reqwest` はバイト列を一時ファイルへストリーミングします。署名付き CDN URL（`storage.googleapis.com` と `flow-content.google`）では Cookie ヘッダーを省き、Google URL には `Referer: https://flow.google.com/` と Chrome Cookie を送信します。
-3. **ブラウザ `fetchMedia` フォールバック**：HTTP ストリームが失敗した場合、`ChromeEngine` は Flow ページ内で `fetchMedia` を実行し、Base64 結果をデコードします。
+2. **署名付き HTTP ストリームと認証済み `fetchMedia`**：署名付き CDN URL（`storage.googleapis.com`、`flow-content.google`、`video-downloads.googleusercontent.com`）では、`reqwest` が Cookie ヘッダーなしで一時ファイルへ直接ストリーミングし、失敗時は `fetchMedia` にフォールバックします。
+3. **認証済みブラウザ取得とライブ CDP Cookie フォールバック**：未署名の Google / Flow URL では、`ChromeEngine` が先に Flow ページ内で `fetchMedia` を実行し、失敗時は `Referer: https://flow.google.com/` とライブ Chrome CDP Cookie を使う `reqwest` へフォールバックします。
 4. **検証と自然な命名**：`flow-mcp` は 0 バイトファイルを拒否し、`Content-Type` とマジックバイトを確認します。`Content-Disposition`、URL パス、または `<asset_id>.<ext>` からファイル名を選択し、重複名を解決して SQLite（`downloads`）を更新します。
 5. **MCP リソース配信**：`flow-mcp` は各ダウンロードを `flow://downloads/{id}` と `flow://downloads/asset/{asset_id}` として登録します。`resources/list` は 1 ページ `100` 件を返します。`resources/read` は `64 MiB` までのファイルを Base64 として返し、より大きなファイルは `flow_downloads`（`action="read_chunk"`）がスライス単位で読み取ります。

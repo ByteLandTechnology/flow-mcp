@@ -8,12 +8,16 @@ export type NgLView = unknown[];
 
 /** Google internal Wiz payload attached to window. */
 export interface WizGlobalData {
+  /** True when the server rendered an authenticated Google session. */
+  awbSEf?: boolean;
   /** Signed request token for batchexecute calls. */
   SNlM0e?: string;
   /** Session identifier for batchexecute calls. */
   FdrFJe?: string;
   /** Build label for batchexecute calls. */
   cfb2h?: string;
+  /** Frontend data path prefix for batchexecute calls. */
+  eptZe?: string;
   /** Encoded FIFE host configuration string. */
   TSDtV?: string;
 }
@@ -434,10 +438,16 @@ export interface CachedMediaInfo {
 
 /** Result returned by `checkAuth`. */
 export interface AuthCheckResult {
-  /** True when Flow displays an authenticated app shell. */
+  /** True when Flow confirms an active workspace session. */
   signed_in: boolean;
-  /** True when a landing page or sign-in link explicitly indicates signed-out state. */
+  /** True when route, Wiz flags, or backend errors reject the session. */
   explicit_signed_out: boolean;
+  /** True when the session token expired and the workspace page must reload. */
+  token_expired: boolean;
+  /** HTTP status code of the backend probe, or 0 when skipped. */
+  status: number;
+  /** Short code that describes the verification outcome. */
+  reason: string;
   /** Current document title. */
   title: string;
   /** Lowercase active location pathname. */
@@ -735,8 +745,8 @@ export interface FlowMcpRuntime {
   agentStatus: typeof import("./agent_chat").agentStatus;
   /** Binds the Agent services of the project page. */
   bindAgent: typeof import("./agent_chat").bindAgent;
-  /** Probes Google Flow authentication shell status. */
-  checkAuth: () => AuthCheckResult;
+  /** Verifies Google Flow workspace authentication on the active page. */
+  checkAuth: () => Promise<AuthCheckResult>;
   /** Discovers Angular Ivy store services and binds module state. */
   discoverStore: () => Promise<DiscoverStoreResult>;
   /** Reads normalized assets, collections, title, and credits from bound store. */

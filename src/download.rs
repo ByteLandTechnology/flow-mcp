@@ -299,7 +299,7 @@ async fn resolve_download_candidates(
     (candidates, queried_rpc)
 }
 
-/// Attempts direct HTTP streaming then in-browser fetch across `candidates`.
+/// Downloads signed URLs over HTTP first and routes authenticated URLs through `fetchMedia` or live CDP cookies.
 async fn try_download_candidates(
     engine: &ChromeEngine,
     candidates: &[String],
@@ -309,7 +309,8 @@ async fn try_download_candidates(
     let mut attempts = Vec::new();
     for cand_url in candidates {
         let lower = cand_url.to_ascii_lowercase();
-        if lower.starts_with("http://") || lower.starts_with("https://") {
+        let is_http = lower.starts_with("http://") || lower.starts_with("https://");
+        if is_http && is_signed_direct_url(cand_url) {
             let _ = tokio::fs::remove_file(temp_path).await;
             match stream_http_to_temp(engine, cand_url, expected_kind, temp_path).await {
                 Ok(res) => return Ok((res, cand_url.clone())),
@@ -328,6 +329,28 @@ async fn try_download_candidates(
                             attempts.push(format!(
                                 "{} (HTTP: {}; browser: {})",
                                 cand_url, http_err, browser_err
+                            ));
+                        }
+                    }
+                }
+            }
+        } else if is_http {
+            let _ = tokio::fs::remove_file(temp_path).await;
+            match fetch_via_browser_to_temp(engine, cand_url, expected_kind, temp_path).await {
+                Ok(res) => return Ok((res, cand_url.clone())),
+                Err(browser_err) => {
+                    let _ = tokio::fs::remove_file(temp_path).await;
+                    if browser_err.to_string().contains(MEDIA_KIND_MISMATCH_TAG) {
+                        attempts.push(format!("{} (browser: {})", cand_url, browser_err));
+                        continue;
+                    }
+                    match stream_http_to_temp(engine, cand_url, expected_kind, temp_path).await {
+                        Ok(res) => return Ok((res, cand_url.clone())),
+                        Err(http_err) => {
+                            let _ = tokio::fs::remove_file(temp_path).await;
+                            attempts.push(format!(
+                                "{} (browser: {}; HTTP: {})",
+                                cand_url, browser_err, http_err
                             ));
                         }
                     }
