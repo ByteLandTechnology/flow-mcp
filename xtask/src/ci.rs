@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::contracts::check_flow_contracts;
 use crate::examples::check_doc_examples;
 use crate::forbidden::check_forbidden_code;
 use crate::headers::check_license_headers;
@@ -23,6 +24,7 @@ pub(crate) fn run_all_checks(root: &Path) -> Result<(), String> {
     errors.extend(check_line_limits(root, &files));
     errors.extend(check_doc_examples(root, &files));
     errors.extend(check_forbidden_code(root, &files));
+    errors.extend(check_flow_contracts(root));
 
     if errors.is_empty() {
         return Ok(());
@@ -50,6 +52,7 @@ pub(crate) fn run_forbidden_code(root: &Path) -> Result<(), String> {
     let files = collect_files(root)?;
     let mut errors = check_doc_examples(root, &files);
     errors.extend(check_forbidden_code(root, &files));
+    errors.extend(check_flow_contracts(root));
     report_errors(errors)
 }
 

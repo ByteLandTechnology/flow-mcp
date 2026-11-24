@@ -293,17 +293,20 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       t.Fb?.imageUrl ||
       t.Fb?.mediaUrl ||
       t.Fb?.url ||
+      asHttpOrDataUrl(t.Fb?.kc) ||
       t.Wb ||
       t.fifeUrl ||
       t.videoUrl ||
       t.imageUrl ||
       t.mediaUrl ||
       t.url ||
+      asHttpOrDataUrl(t.kc) ||
       t.fb?.Wb ||
       t.fb?.fifeUrl ||
       t.fb?.videoUrl ||
       t.fb?.imageUrl ||
       t.fb?.mediaUrl ||
+      asHttpOrDataUrl(t.fb?.kc) ||
       charFallbackUrl ||
       cachedVideoUrl ||
       null;
@@ -477,6 +480,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         asHttpOrDataUrl(mObj?.fifeUrl) ||
         asHttpOrDataUrl(mObj?.mediaUrl) ||
         asHttpOrDataUrl(mObj?.url) ||
+        asHttpOrDataUrl(mObj?.kc) ||
         asHttpOrDataUrl(clip?.Bd) ||
         asHttpOrDataUrl(clip?.uA) ||
         asHttpOrDataUrl(clip?.videoUrl) ||

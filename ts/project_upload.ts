@@ -293,7 +293,7 @@ function isCurrentPage(page: object, format: ProjectUploadFormat["page"], projec
 }
 
 /** Finds the live project page that owns the upload services. */
-function findProjectPage(format: ProjectUploadFormat["page"], projectId: string): object | undefined {
+export function findProjectPage(format: ProjectUploadFormat["page"], projectId: string): object | undefined {
   const host = document.querySelector("flow-project-page");
   const type = readOwn(readOwn(window, "default_AiSandboxAngularFrontend"), format.page);
   if (!host || typeof type !== "function") return;

@@ -3,7 +3,16 @@
 
 // Check the build and runtime requirements of internal Flow operations.
 
-import { frontendBuild, MEDIA_UPLOAD_EXPORTS, readBuildLabel } from "./frontend_builds";
+import { readOwn } from "./angular";
+import {
+  AGENT_ATTACHMENT_EXPORTS,
+  AGENT_EXPORTS,
+  AGENT_SETTINGS_EXPORTS,
+  FRONTEND_OPERATIONS,
+  frontendBuild,
+  MEDIA_UPLOAD_EXPORTS,
+  readBuildLabel,
+} from "./frontend_builds";
 import type {
   AgentAttachmentFormat,
   AgentChatFormat,
@@ -14,6 +23,7 @@ import type {
   FrontendFormats,
   ProjectUploadFormat,
 } from "./frontend_builds";
+import { findProjectPage } from "./project_upload";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
 import { runtimeState } from "./state";
@@ -75,18 +85,126 @@ function checkOperation<Operation extends keyof FrontendFormats>(
   return { ok: false, error: "unsupported_front_end", build, operation, failed_checks: failed };
 }
 
+/** Checks whether the page publishes a verified Flow build label. */
+function buildCheck(build: string | null): StoreProbeCheck {
+  const verified = Boolean(frontendBuild(build));
+  return {
+    name: "verified_build",
+    ok: verified,
+    detail:
+      build === null
+        ? "Build label unavailable"
+        : verified
+          ? "verified"
+          : "Unverified Flow front-end build",
+  };
+}
+
+/** Reports front-end build compatibility on Flow pages outside an open project. */
+export function probeBuild(): StoreProbeResult {
+  const build = readBuildLabel();
+  const verified = buildCheck(build);
+  const checks = [verified];
+  const operations: Record<
+    keyof FrontendFormats,
+    { ok: boolean; failed_checks: StoreProbeCheck[] }
+  > = {
+    agent_chat: operationStatus(checkOperation("agent_chat", build, [])),
+    agent_attachments: operationStatus(checkOperation("agent_attachments", build, [])),
+    agent_settings: operationStatus(checkOperation("agent_settings", build, [])),
+    project_upload: operationStatus(checkOperation("project_upload", build, [])),
+    collection_write: operationStatus(checkOperation("collection_write", build, [])),
+    character_bio: operationStatus(checkOperation("character_bio", build, [])),
+    asset_trash_store: operationStatus(checkOperation("asset_trash_store", build, [])),
+  };
+  const operationsOk = FRONTEND_OPERATIONS.every((name) => operations[name].ok);
+  return {
+    build,
+    ok: verified.ok && checks.every(({ ok }) => ok) && operationsOk,
+    checks,
+    operations,
+  };
+}
+
+/** Checks the class and protocol exports required by Agent chat. */
+function agentChatExportChecks(format: AgentChatFormat, namespace: unknown): StoreProbeCheck[] {
+  return [
+    {
+      name: "project_page",
+      ok: typeof readOwn(namespace, format.page) === "function",
+      detail: "Project workspace class",
+    },
+    {
+      name: "composer",
+      ok: typeof readOwn(namespace, format.composer) === "function",
+      detail: "Agent composer service",
+    },
+    {
+      name: "permissions",
+      ok: typeof readOwn(namespace, format.permissions) === "function",
+      detail: "Agent permission service",
+    },
+    {
+      name: "questions",
+      ok: typeof readOwn(namespace, format.questions) === "function",
+      detail: "Agent question service",
+    },
+    ...AGENT_EXPORTS.map((name) => {
+      const value = readOwn(namespace, format.exports[name]);
+      return {
+        name,
+        ok:
+          name === "errors"
+            ? value !== null && typeof value === "object"
+            : name === "toolEventGroup"
+              ? Array.isArray(value)
+              : typeof value === "function",
+        detail: "Agent frontend export",
+      };
+    }),
+  ];
+}
+
+/** Checks the protocol and catalogue exports required by Agent settings. */
+function agentSettingsExportChecks(
+  format: AgentSettingsFormat,
+  namespace: unknown,
+): StoreProbeCheck[] {
+  return AGENT_SETTINGS_EXPORTS.map((name) => {
+    const value = readOwn(namespace, format.exports[name]);
+    return {
+      name,
+      ok:
+        name === "modelKey" || name === "videoAspects"
+          ? Array.isArray(value)
+          : name === "aspectLabels" || name === "locale" || name === "updateMethod"
+            ? value !== null && typeof value === "object"
+            : typeof value === "function",
+      detail: "Agent settings frontend export",
+    };
+  });
+}
+
 /** Returns the Agent layout when the build and runtime checks pass. */
 export function agentChatCompatibility(
   checks: StoreProbeCheck[] = [],
 ): FrontendCompatibility<AgentChatFormat> {
-  return checkOperation("agent_chat", readBuildLabel(), checks);
+  const build = readBuildLabel();
+  const format = frontendBuild(build)?.operations.agent_chat;
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+  const exports = format ? agentChatExportChecks(format, namespace) : [];
+  return checkOperation("agent_chat", build, [...exports, ...checks]);
 }
 
 /** Returns the verified project settings format when its checks pass. */
 export function agentSettingsCompatibility(
   checks: StoreProbeCheck[] = [],
 ): FrontendCompatibility<AgentSettingsFormat> {
-  return checkOperation("agent_settings", readBuildLabel(), checks);
+  const build = readBuildLabel();
+  const format = frontendBuild(build)?.operations.agent_settings;
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+  const exports = format ? agentSettingsExportChecks(format, namespace) : [];
+  return checkOperation("agent_settings", build, [...exports, ...checks]);
 }
 
 /** Returns the Agent attachment format when the build and runtime checks pass. */
@@ -95,12 +213,19 @@ export function agentAttachmentCompatibility(
 ): FrontendCompatibility<AgentAttachmentFormat> {
   const build = readBuildLabel();
   const format = frontendBuild(build)?.operations.agent_attachments;
-  const namespace = Reflect.get(window, "default_AiSandboxAngularFrontend") ?? {};
-  const exports = Object.entries(format?.exports ?? {}).map(([name, key]) => ({
-    name,
-    ok: typeof namespace[key] === "function",
-    detail: "Agent attachment export",
-  }));
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+  const exports = format ? [
+    ...AGENT_ATTACHMENT_EXPORTS.map((name) => ({
+      name,
+      ok: typeof readOwn(namespace, format.exports[name]) === "function",
+      detail: "Agent attachment export",
+    })),
+    {
+      name: "upload_consent",
+      ok: typeof readOwn(namespace, format.consent) === "function",
+      detail: "Upload consent service",
+    },
+  ] : [];
   return checkOperation("agent_attachments", build, [...exports, ...checks]);
 }
 
@@ -110,21 +235,21 @@ export function projectUploadCompatibility(
 ): FrontendCompatibility<ProjectUploadFormat> {
   const build = readBuildLabel();
   const format = frontendBuild(build)?.operations.project_upload;
-  const namespace = Reflect.get(window, "default_AiSandboxAngularFrontend") ?? {};
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
   const exports = format ? [
     ...MEDIA_UPLOAD_EXPORTS.map((name) => ({
       name,
-      ok: typeof namespace[format.media.exports[name]] === "function",
+      ok: typeof readOwn(namespace, format.media.exports[name]) === "function",
       detail: "Media upload export",
     })),
     {
       name: "upload_consent",
-      ok: typeof namespace[format.media.consent] === "function",
+      ok: typeof readOwn(namespace, format.media.consent) === "function",
       detail: "Upload consent service",
     },
     {
       name: "project_page",
-      ok: typeof namespace[format.page.page] === "function",
+      ok: typeof readOwn(namespace, format.page.page) === "function",
       detail: "Project workspace class",
     },
   ] : [];
@@ -146,8 +271,136 @@ export function assetTrashCompatibility(): FrontendCompatibility<AssetTrashForma
   return checkOperation("asset_trash_store", readBuildLabel(), projectWriteChecks("project"));
 }
 
+/** Checks live services on `<flow-project-page>` when the workspace view is mounted. */
+function projectPageOperationChecks(
+  build: string | null,
+): Partial<Record<keyof FrontendFormats, StoreProbeCheck[]>> {
+  const projectId = /\/project\/([^/?#]+)/.exec(location.pathname)?.[1] ?? null;
+  const formats = frontendBuild(build)?.operations;
+  if (!projectId || !formats || !document.querySelector("flow-project-page")) return {};
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+  const page = findProjectPage(formats.agent_chat, projectId);
+  const pageCheck: StoreProbeCheck = {
+    name: "project_page_instance",
+    ok: Boolean(page),
+    detail: page ? "mounted" : "not bound for the active project",
+  };
+  if (!page) {
+    return {
+      agent_chat: [pageCheck],
+      agent_attachments: [pageCheck],
+      agent_settings: [pageCheck],
+      project_upload: [pageCheck],
+    };
+  }
+  const injector = readOwn(page, formats.agent_chat.injector) as
+    | { get?: (token: unknown, fallback?: null) => unknown }
+    | undefined;
+  const getService = (key: string): unknown => {
+    const token = readOwn(namespace, key);
+    if (typeof token !== "function" || typeof injector?.get !== "function") return null;
+    try {
+      return injector.get(token, null);
+    } catch {
+      return null;
+    }
+  };
+  const attachStore = readOwn(page, formats.agent_attachments.store);
+  const tileQuery = readOwn(attachStore, formats.agent_attachments.tileQuery);
+  const attachDispatcher = readOwn(page, formats.agent_attachments.dispatcher);
+  const projectService = getService(formats.agent_settings.exports.projectService);
+  const queryClient = readOwn(projectService, formats.agent_settings.queryClient) as
+    | { queryCache?: { find?: unknown } }
+    | undefined;
+  const requestClient = readOwn(projectService, formats.agent_settings.requestClient) as
+    | { mutate?: unknown }
+    | undefined;
+  const uploadDispatcher = readOwn(page, formats.project_upload.media.dispatcher);
+  return {
+    agent_chat: [
+      pageCheck,
+      {
+        name: "agent_transport",
+        ok: Boolean(readOwn(page, formats.agent_chat.transport)),
+        detail: "Agent transport service",
+      },
+      {
+        name: "agent_services",
+        ok:
+          typeof injector?.get === "function" &&
+          Boolean(getService(formats.agent_chat.composer)) &&
+          Boolean(getService(formats.agent_chat.permissions)) &&
+          Boolean(getService(formats.agent_chat.questions)),
+        detail: "Project page injector and Agent services",
+      },
+    ],
+    agent_attachments: [
+      pageCheck,
+      {
+        name: "attachment_store",
+        ok:
+          typeof readOwn(attachStore, formats.agent_attachments.tiles) === "function" &&
+          typeof readOwn(tileQuery, "data") === "function" &&
+          typeof readOwn(tileQuery, "refetch") === "function" &&
+          typeof readOwn(attachDispatcher, "mutate") === "function" &&
+          Boolean(getService(formats.agent_attachments.consent)),
+        detail: "Attachment tile query and upload dispatcher",
+      },
+    ],
+    agent_settings: [
+      pageCheck,
+      {
+        name: "metadata_service",
+        ok:
+          typeof queryClient?.queryCache?.find === "function" &&
+          typeof requestClient?.mutate === "function",
+        detail: "Project metadata query and writer",
+      },
+    ],
+    project_upload: [
+      pageCheck,
+      {
+        name: "project_upload_service",
+        ok:
+          Boolean(getService(formats.project_upload.media.consent)) &&
+          typeof readOwn(uploadDispatcher, "mutate") === "function",
+        detail: "Project upload services",
+      },
+    ],
+  };
+}
+
+/** Non-completed generation states that do not carry a final media URL yet. */
+const INCOMPLETE_MEDIA_STATUSES = new Set(["pending", "scheduled", "failed", "canceled"]);
+
+/** Returns true when `raw` or `media` carries an uploaded user media marker (`_.QE`). */
+function isUploadedMediaTile(raw: FlowTile, media: object, namespace: unknown): boolean {
+  const qe = readOwn(namespace, "QE");
+  const values = [...Object.values(media), ...Object.values(raw)];
+  if (typeof qe === "symbol") {
+    return values.includes(qe) || readOwn(media, "vp") === true;
+  }
+  return values.some((v) => typeof v === "symbol") || readOwn(media, "vp") === true;
+}
+
+/** Returns true when a media tile carries a valid in-progress status or a readable URL. */
+function isReadableMediaTile(raw: FlowTile, tile: FlowTile, namespace: unknown): boolean {
+  if (tile.isPending === true) return true;
+  const media = tile.Fb;
+  if (!media || typeof media !== "object") return false;
+  const hasUrl = Boolean(pickTileUrl(tile));
+  if (typeof media.Zc === "string") {
+    const status = media.Zc.toLowerCase();
+    if (INCOMPLETE_MEDIA_STATUSES.has(status)) return true;
+    return status === "success" && hasUrl;
+  }
+  if (media.Zc !== undefined) return false;
+  return isUploadedMediaTile(raw, media, namespace) && hasUrl;
+}
+
 /** Counts readable image and video tiles in the first 200 tiles. */
 function tileLayout(tiles: Iterable<FlowTile>): StoreProbeCheck {
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
   let readable = 0;
   let unreadable = 0;
   let seen = 0;
@@ -156,12 +409,12 @@ function tileLayout(tiles: Iterable<FlowTile>): StoreProbeCheck {
     const kind = String(raw?.type ?? "").toUpperCase();
     if (kind !== "IMAGE" && kind !== "VIDEO") continue;
     const tile = legacyTile(raw);
-    if (tile.Fb && (tile.Fb.Zc !== undefined || pickTileUrl(tile))) readable++;
+    if (isReadableMediaTile(raw, tile, namespace)) readable++;
     else unreadable++;
   }
   return {
     name: "tile_layout",
-    ok: readable > 0 || unreadable === 0,
+    ok: unreadable === 0,
     detail: readable + unreadable === 0 ? "no media tiles to inspect" :
       `readable=${readable} unreadable=${unreadable}`,
   };
@@ -198,9 +451,11 @@ function operationStatus(result: FrontendCompatibility<unknown>): {
 /** Reports the general store checks and compatibility of each managed operation. */
 export function probeStore(): StoreProbeResult {
   const build = readBuildLabel();
+  const verified = buildCheck(build);
   const trashChecks = assetTrashChecks(runtimeState.store?.getTileMap());
   const views = runtimeState.ngLViewMap;
   const checks = [
+    verified,
     {
       name: "lview_registry",
       ok: views instanceof Map,
@@ -208,18 +463,24 @@ export function probeStore(): StoreProbeResult {
     },
     ...trashChecks,
   ];
+  const pageChecks = projectPageOperationChecks(build);
+  const operations: Record<
+    keyof FrontendFormats,
+    { ok: boolean; failed_checks: StoreProbeCheck[] }
+  > = {
+    agent_chat: operationStatus(agentChatCompatibility(pageChecks.agent_chat)),
+    agent_attachments: operationStatus(agentAttachmentCompatibility(pageChecks.agent_attachments)),
+    agent_settings: operationStatus(agentSettingsCompatibility(pageChecks.agent_settings)),
+    project_upload: operationStatus(projectUploadCompatibility(pageChecks.project_upload)),
+    collection_write: operationStatus(collectionWriteCompatibility()),
+    character_bio: operationStatus(characterBioCompatibility()),
+    asset_trash_store: operationStatus(assetTrashCompatibility()),
+  };
+  const operationsOk = FRONTEND_OPERATIONS.every((name) => operations[name].ok);
   return {
     build,
-    ok: checks.every(({ ok }) => ok),
+    ok: verified.ok && checks.every(({ ok }) => ok) && operationsOk,
     checks,
-    operations: {
-      agent_chat: operationStatus(agentChatCompatibility()),
-      agent_attachments: operationStatus(agentAttachmentCompatibility()),
-      agent_settings: operationStatus(agentSettingsCompatibility()),
-      project_upload: operationStatus(projectUploadCompatibility()),
-      collection_write: operationStatus(checkOperation("collection_write", build, projectWriteChecks("collection"))),
-      character_bio: operationStatus(checkOperation("character_bio", build, projectWriteChecks("project"))),
-      asset_trash_store: operationStatus(assetTrashCompatibility()),
-    },
+    operations,
   };
 }

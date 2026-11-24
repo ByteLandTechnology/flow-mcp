@@ -154,7 +154,7 @@ You can also sign in from a terminal with `flow-mcp login --home /path/to/.flow-
 
 ## Troubleshooting
 
-- **Check the installation**: Run `flow-mcp doctor` to check the Chrome binary, `<home>` and file permissions, the instance lock, and the sign-in status.
+- **Check the installation**: Run `flow-mcp doctor` to check the Chrome binary, `<home>` and file permissions, the instance lock, the live Google Flow build, and the sign-in status. It exits with status `1` if any check fails.
 - **Missing native executable package**: Reinstall `@flow-mcp/cli` without `--omit=optional` or `--no-optional`.
 - **Chrome binary not found**: Set `--chrome <PATH>` or `FLOW_MCP_CHROME` to your Chrome or Chromium executable path.
 - **Expired or rejected Google sign-in**: Call `flow_login` with `{"action": "login", "force": true}` to open a clean Chrome window. Or call `{"action": "logout"}` to delete `<home>/chrome-profile` and `<home>/cookies.json`.

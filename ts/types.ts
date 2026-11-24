@@ -70,7 +70,7 @@ export interface FlowMediaPayload {
   resolution?: number;
   /** Media width divided by media height. */
   aspectRatio?: number;
-  /** Submission time in the Flow front end from 2026-11-15 on. */
+  /** Uploaded media URL in build 20261120.00, or submission Date in earlier builds. */
   kc?: unknown;
   /** Text prompt used to generate the media. */
   prompt?: string;
@@ -196,6 +196,8 @@ export interface FlowTile extends FlowMediaPayload {
   yb?: boolean;
   /** Minified trash flag of the 2026-11-15 front end. */
   Ab?: boolean;
+  /** Trash flag in build 20261118.14. */
+  Bb?: boolean;
   /** Trash flag in build 20261120.00. */
   Cb?: boolean;
   /** Primary uppercase media container. */
@@ -703,13 +705,13 @@ export interface StoreProbeCheck {
   detail: string;
 }
 
-/** Result of the non-mutating project store probe. */
+/** Result of the non-mutating front-end build and project store probe. */
 export interface StoreProbeResult {
   /** Front-end build label, or null when the page publishes none. */
   build: string | null;
-  /** True when every check passed. */
+  /** True when the build is verified and all checks and operations pass. */
   ok: boolean;
-  /** Individual checks in run order. */
+  /** Build and store checks in run order. */
   checks: StoreProbeCheck[];
   /** Compatibility of each managed internal operation. */
   operations: Record<string, { ok: boolean; failed_checks: StoreProbeCheck[] }>;
@@ -795,6 +797,8 @@ export interface FlowMcpRuntime {
   characterExtraOp: (req: CharacterExtraOpRequest) => Promise<unknown>;
   /** Returns the front-end build label of the page, or null. */
   buildLabel: () => string | null;
+  /** Checks front-end build compatibility outside an open project. */
+  probeBuild: () => StoreProbeResult;
   /** Checks the bound project store shape without calling a mutation. */
   probeStore: () => StoreProbeResult;
   /** Returns the click point of a visible control by accessible name, or null. */

@@ -57,6 +57,102 @@ export interface FrontendFormats {
   character_bio: CharacterBioFormat;
 }
 
+/** Managed operations that every verified Flow build must cover. */
+export const FRONTEND_OPERATIONS = [
+  "agent_chat",
+  "agent_attachments",
+  "agent_settings",
+  "project_upload",
+  "collection_write",
+  "character_bio",
+  "asset_trash_store",
+] as const satisfies readonly (keyof FrontendFormats)[];
+
+/** Browser exports required for native Agent settings requests. */
+export const AGENT_SETTINGS_EXPORTS = [
+  "projectService",
+  "projectKey",
+  "modelService",
+  "modelKey",
+  "fetchModels",
+  "serviceTier",
+  "locale",
+  "modelOptions",
+  "defaultModel",
+  "selectModel",
+  "aspectLabels",
+  "videoAspects",
+  "imageAspect",
+  "videoAspect",
+  "request",
+  "settings",
+  "mask",
+  "card",
+  "rpc",
+  "updateMethod",
+  "finish",
+  "message",
+  "maskPaths",
+  "string",
+  "strings",
+  "enumValue",
+  "integer",
+  "boolean",
+  "setCards",
+  "setMemoryEnabled",
+] as const satisfies readonly AgentSettingsExport[];
+
+/** Browser exports required for native Agent chat sessions and turns. */
+export const AGENT_EXPORTS = [
+  "allocate",
+  "init",
+  "sessionList",
+  "readSession",
+  "resume",
+  "rows",
+  "metadata",
+  "string",
+  "turnType",
+  "turns",
+  "decode",
+  "hydrate",
+  "reply",
+  "permission",
+  "plan",
+  "newEnvelope",
+  "setContent",
+  "mutable",
+  "finish",
+  "newContent",
+  "setParts",
+  "newPart",
+  "setText",
+  "errors",
+  "legacyDecision",
+  "clearLegacyRequest",
+  "oneOf",
+  "toolEventType",
+  "toolEventGroup",
+  "toolResultType",
+  "resultItems",
+  "structFields",
+  "valueString",
+] as const satisfies readonly AgentExport[];
+
+/** Browser exports required for Agent attachments and local uploads. */
+export const AGENT_ATTACHMENT_EXPORTS = [
+  "reference",
+  "message",
+  "text",
+  "id",
+  "validateFiles",
+  "isVideo",
+  "mimeType",
+  "imageSize",
+  "videoInfo",
+  "confirmUpload",
+] as const satisfies readonly AgentAttachmentExport[];
+
 /** Browser exports and service fields for Agent settings. */
 export interface AgentSettingsFormat {
   /** Project metadata service's query client. */
@@ -303,36 +399,13 @@ const NOVEMBER_18_AGENT_SETTINGS: AgentSettingsFormat = {
   queryClient: "Wa",
   requestClient: "ka",
   exports: {
-    projectService: "DN",
-    projectKey: "RL",
-    modelService: "xN",
-    modelKey: "PFb",
-    fetchModels: "RFb",
-    serviceTier: "pG",
-    locale: "lh",
-    modelOptions: "xO",
-    defaultModel: "rO",
-    selectModel: "hZ",
-    aspectLabels: "AE",
-    videoAspects: "DO",
-    imageAspect: "Jlc",
-    videoAspect: "Klc",
-    request: "Ny",
-    settings: "k_",
-    mask: "Zq",
-    card: "bM",
-    rpc: "ax",
-    updateMethod: "CDb",
-    finish: "ac",
-    message: "Sk",
-    maskPaths: "Xq",
-    string: "pv",
-    strings: "rv",
-    enumValue: "Ft",
-    integer: "nv",
-    boolean: "Zs",
-    setCards: "csc",
-    setMemoryEnabled: "bsc",
+    projectService: "DN", projectKey: "RL", modelService: "xN", modelKey: "PFb",
+    fetchModels: "RFb", serviceTier: "pG", locale: "lh", modelOptions: "xO",
+    defaultModel: "rO", selectModel: "hZ", aspectLabels: "AE", videoAspects: "DO",
+    imageAspect: "Jlc", videoAspect: "Klc", request: "Ny", settings: "k_",
+    mask: "Zq", card: "bM", rpc: "ax", updateMethod: "CDb", finish: "ac",
+    message: "Sk", maskPaths: "Xq", string: "pv", strings: "rv", enumValue: "Ft",
+    integer: "nv", boolean: "Zs", setCards: "csc", setMemoryEnabled: "bsc",
   },
 };
 
@@ -373,39 +446,13 @@ const NOVEMBER_18_AGENT: AgentChatFormat = {
   lifecycle: "Ba",
   destroyed: "Va",
   exports: {
-    allocate: "yN",
-    init: "b0",
-    sessionList: "Kvc",
-    readSession: "Svc",
-    resume: "Tvc",
-    rows: "NZ",
-    metadata: "PZ",
-    string: "p",
-    turnType: "w_",
-    turns: "bv",
-    decode: "XZ",
-    hydrate: "Muc",
-    reply: "eCc",
-    permission: "yFc",
-    plan: "KEc",
-    newEnvelope: "B1",
-    setContent: "YZ",
-    mutable: "Uq",
-    finish: "Wq",
-    newContent: "wK",
-    setParts: "vK",
-    newPart: "qK",
-    setText: "pK",
-    errors: "uE",
-    legacyDecision: "xFc",
-    clearLegacyRequest: "Nuc",
-    oneOf: "nr",
-    toolEventType: "lZ",
-    toolEventGroup: "nZ",
-    toolResultType: "uZ",
-    resultItems: "qZ",
-    structFields: "hM",
-    valueString: "pZ",
+    allocate: "yN", init: "b0", sessionList: "Kvc", readSession: "Svc", resume: "Tvc",
+    rows: "NZ", metadata: "PZ", string: "p", turnType: "w_", turns: "bv",
+    decode: "XZ", hydrate: "Muc", reply: "eCc", permission: "yFc", plan: "KEc",
+    newEnvelope: "B1", setContent: "YZ", mutable: "Uq", finish: "Wq", newContent: "wK",
+    setParts: "vK", newPart: "qK", setText: "pK", errors: "uE", legacyDecision: "xFc",
+    clearLegacyRequest: "Nuc", oneOf: "nr", toolEventType: "lZ", toolEventGroup: "nZ",
+    toolResultType: "uZ", resultItems: "qZ", structFields: "hM", valueString: "pZ",
   },
 };
 
@@ -492,16 +539,8 @@ const NOVEMBER_18_ATTACHMENTS: AgentAttachmentFormat = {
   injector: "Cb",
   consent: "PR",
   exports: {
-    reference: "vO",
-    message: "nAc",
-    text: "FI",
-    id: "yN",
-    validateFiles: "uR",
-    isVideo: "sR",
-    mimeType: "jTb",
-    imageSize: "rR",
-    videoInfo: "qTb",
-    confirmUpload: "OR",
+    reference: "vO", message: "nAc", text: "FI", id: "yN", validateFiles: "uR",
+    isVideo: "sR", mimeType: "jTb", imageSize: "rR", videoInfo: "qTb", confirmUpload: "OR",
   },
   fields: {
     character: "Nc", text: "Lc", references: "nc", accepted: "mA", errors: "ir",
@@ -534,7 +573,7 @@ interface FrontendBuild {
   /** Layout for the project store. */
   projectStore: ProjectStoreFormat;
   /** Operations with verified request formats. */
-  operations: Partial<FrontendFormats>;
+  operations: FrontendFormats;
   /** Native fields used to confirm a character voice assignment. */
   voiceConfirmation?: VoiceConfirmationFormat;
   /** Native fields of the character preview panel. */
@@ -575,27 +614,23 @@ export interface VoiceConfirmationFormat {
   pickerSelection: string;
 }
 
-/** Request formats by exact build label. Include only verified operations. */
+/** Verified project store formats checked when build lookup falls back. */
+const PROJECT_STORE_FORMATS: readonly ProjectStoreFormat[] = [
+  NOVEMBER_17_STORE,
+  NOVEMBER_18_STORE,
+  NOVEMBER_20_STORE,
+];
+
+/** Request formats by exact build label. Every entry covers all managed operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
-  ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
-    projectStore: NOVEMBER_17_STORE,
-    operations: {
-      collection_write: { tileId: "Uc", tileChange: "df", moveTarget: "Sj", moveTiles: "Bb" },
-      asset_trash_store: {
-        entries: "Kv",
-        tile: "Oa",
-        trashed: "Ab",
-        date: "jc",
-        destination: "Dm",
-        sceneWorkflows: "qg",
-      },
-      character_bio: { tileId: "Uc", tileChange: "df", notes: "mx" },
-    },
-  }],
   ["boq_labs-ai-sandbox-frontend_20261118.14_p0", {
     projectStore: NOVEMBER_18_STORE,
     operations: {
       collection_write: { tileId: "Vc", tileChange: "jf", moveTarget: "Wj", moveTiles: "Ab" },
+      asset_trash_store: {
+        entries: "Yv", tile: "Ia", trashed: "Bb", date: "Yb", destination: "Km",
+        sceneWorkflows: "Gj",
+      },
       character_bio: { tileId: "Vc", tileChange: "jf", notes: "Jx" },
       agent_chat: NOVEMBER_18_AGENT,
       agent_attachments: NOVEMBER_18_ATTACHMENTS,
@@ -643,5 +678,5 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
 /** Returns the layouts to check when the runtime binds the active project store. */
 export function projectStoreFormats(): readonly ProjectStoreFormat[] {
   const format = frontendBuild(readBuildLabel())?.projectStore;
-  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE];
+  return format ? [format] : PROJECT_STORE_FORMATS;
 }

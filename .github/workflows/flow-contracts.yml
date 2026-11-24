@@ -1,0 +1,70 @@
+name: Flow Contracts
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flow-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-doctor:
+    name: Verify live Google Flow build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install Node.js build dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: flow-contracts-linux-x86_64
+
+      - name: Verify Google Chrome
+        run: |
+          if ! command -v google-chrome >/dev/null 2>&1 && ! command -v google-chrome-stable >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends wget gnupg ca-certificates
+            wget -qO- https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends google-chrome-stable
+          fi
+          google-chrome --version || google-chrome-stable --version
+
+      - name: Build flow-mcp
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo build --locked --bin flow-mcp
+
+      - name: Probe live Google Flow build
+        run: |
+          HOME_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/flow-mcp-doctor.XXXXXX")"
+          trap 'rm -rf "$HOME_DIR"' EXIT
+          ./target/debug/flow-mcp --home "$HOME_DIR" --headless doctor --json

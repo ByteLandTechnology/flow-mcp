@@ -15,7 +15,9 @@ use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{Duration, Instant};
 
-use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
+use crate::auth::{
+    check_page_signed_in, is_flow_host_url, is_signed_in_flow_url, redirect_sso_if_about,
+};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
 use crate::project_store::prepare_project_store_status;
@@ -273,10 +275,14 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     }
 
     let mut url = engine.current_url().await.unwrap_or_default();
+    let mut landing_frontend = None;
     if !probe {
         if url.is_empty() || url == "about:blank" {
             let _ = engine.navigate(FLOW_URL).await;
             url = engine.current_url().await.unwrap_or_default();
+        }
+        if is_flow_host_url(&url) && project_id_from_url(&url).is_none() {
+            landing_frontend = engine.call_flow_js("probeBuild", json!([])).await.ok();
         }
         let _ = redirect_sso_if_about(engine, &mut url).await;
     }
@@ -321,14 +327,18 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
             .call_flow_js("readStoreSnapshot", json!([]))
             .await
             .unwrap_or(Value::Null);
-        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true)
-            && !probe
-            && ensure_flow_store(engine).await.is_ok()
-        {
-            snap = engine
-                .call_flow_js("readStoreSnapshot", json!([]))
-                .await
-                .unwrap_or(Value::Null);
+        if snap.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let bound = if probe {
+                bind_open_project_store(engine).await
+            } else {
+                ensure_flow_store(engine).await.is_ok()
+            };
+            if bound {
+                snap = engine
+                    .call_flow_js("readStoreSnapshot", json!([]))
+                    .await
+                    .unwrap_or(Value::Null);
+            }
         }
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             if let Some(t) = snap.get("projectTitle").and_then(|v| v.as_str())
@@ -348,11 +358,30 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         }
     }
 
+    let mut error = None;
     let frontend = if let Some(project_id) = &project_id {
-        prepare_project_store_status(engine, project_id).await;
-        engine.call_flow_js("probeStore", json!([])).await.ok()
+        if let Err(err) = prepare_project_store_status(engine, project_id).await {
+            error = Some(format!("Failed to prepare the project store: {err:#}"));
+        }
+        match engine.call_flow_js("probeStore", json!([])).await {
+            Ok(probe_res) => Some(probe_res),
+            Err(err) => {
+                error.get_or_insert_with(|| format!("Failed to probe the project store: {err:#}"));
+                None
+            }
+        }
+    } else if is_flow_host_url(&url) {
+        match engine.call_flow_js("probeBuild", json!([])).await {
+            Ok(probe_res) => Some(probe_res),
+            Err(err) => {
+                if landing_frontend.is_none() {
+                    error = Some(format!("Failed to probe the Flow build: {err:#}"));
+                }
+                landing_frontend
+            }
+        }
     } else {
-        None
+        landing_frontend
     };
 
     FlowStatus {
@@ -367,8 +396,25 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         page_ready: true,
         engine: ENGINE_NAME.to_string(),
         frontend,
-        error: None,
+        error,
     }
+}
+
+/// Binds the general Flow store on an already-open `/project/<id>` route without navigation.
+async fn bind_open_project_store(engine: &ChromeEngine) -> bool {
+    for _ in 0..10 {
+        let cur = engine.current_url().await.unwrap_or_default();
+        if project_id_from_url(&cur).is_none() {
+            return false;
+        }
+        if let Ok(discovery) = engine.call_flow_async("discoverStore", json!([])).await
+            && discovery.get("bound").and_then(Value::as_bool) == Some(true)
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
 }
 
 /// Signs in if needed, opens a `/project/<id>` route, and binds `lService` in runtime state.

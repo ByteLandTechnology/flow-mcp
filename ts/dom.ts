@@ -135,7 +135,7 @@ export function collectionIdOf(
 /** Returns true when the project store marks the tile as trashed. */
 export function isTrashedTile(t: FlowTile): boolean {
   return t.trashed === true || t.isTrashed === true || t.Cb === true ||
-    t.yb === true || t.Ab === true;
+    t.Bb === true || t.yb === true || t.Ab === true;
 }
 
 /** Returns the look map of character tile `t`, or null. It accepts the old `oi` field, or any other `Map` field whose entries hold a `primaryMediaId` or a `history`, because the key name changes with each front-end build. */
@@ -350,21 +350,36 @@ export function fifeBase(u: unknown): string {
   return s ? s.split("?")[0].split("=")[0] : "";
 }
 
+/** Returns a trimmed URL string when `value` is a non-empty string. */
+function stringUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
 /** Selects the best available media URL from a project tile object. */
 export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
   const t = legacyTile(tile);
   return (
-    t?.Fb?.Wb ||
-    t?.Fb?.fifeUrl ||
-    t?.Fb?.imageUrl ||
-    t?.Fb?.videoUrl ||
-    t?.Fb?.url ||
-    t?.Wb ||
-    t?.fifeUrl ||
-    t?.imageUrl ||
-    t?.videoUrl ||
-    t?.url ||
-    t?.ue ||
+    stringUrl(t?.Fb?.Wb) ||
+    stringUrl(t?.Fb?.fifeUrl) ||
+    stringUrl(t?.Fb?.imageUrl) ||
+    stringUrl(t?.Fb?.videoUrl) ||
+    stringUrl(t?.Fb?.mediaUrl) ||
+    stringUrl(t?.Fb?.url) ||
+    stringUrl(t?.Fb?.kc) ||
+    stringUrl(t?.Fb?.Bd) ||
+    stringUrl(t?.Fb?.uA) ||
+    stringUrl(t?.Wb) ||
+    stringUrl(t?.fifeUrl) ||
+    stringUrl(t?.imageUrl) ||
+    stringUrl(t?.videoUrl) ||
+    stringUrl(t?.mediaUrl) ||
+    stringUrl(t?.url) ||
+    stringUrl(t?.kc) ||
+    stringUrl(t?.Bd) ||
+    stringUrl(t?.uA) ||
+    stringUrl(t?.ue) ||
     null
   );
 }

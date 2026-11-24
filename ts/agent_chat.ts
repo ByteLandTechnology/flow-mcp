@@ -22,7 +22,7 @@ import { agentSettingsOp, settingsWritePending } from "./agent_settings";
 import type { AgentInjector } from "./agent_settings";
 import { adaptAgentWire } from "./agent_wire";
 import { agentChatCompatibility } from "./frontend_compatibility";
-import { readBuildLabel } from "./frontend_builds";
+import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import type { AgentChatFormat } from "./frontend_builds";
 
 /** Session and services bound to one project document. */
@@ -142,25 +142,17 @@ export function agentBusy(projectId: string): boolean {
 
 /** Checks the frontend build and verifies the native Agent exports. */
 export function agentStatus(projectId: string) {
-  if (!onProject(projectId) || readBuildLabel() === null)
+  const build = readBuildLabel();
+  if (!onProject(projectId) || build === null)
     return failure("agent_page_not_ready");
-  const compatibility = agentChatCompatibility();
-  if (!compatibility.ok) return compatibility;
-  const ns = namespace();
-  const { format } = compatibility;
-  if (typeof ns[format.page] !== "function")
+  const format = frontendBuild(build)?.operations.agent_chat;
+  if (
+    format &&
+    !document.querySelector("flow-project-page") &&
+    typeof namespace()[format.page] !== "function"
+  )
     return failure("agent_page_not_ready");
-  const checks = Object.entries(format.exports).map(([key, name]) => ({
-    name: key,
-    ok:
-      key === "errors"
-        ? typeof ns[name] === "object" && ns[name] !== null
-        : key === "toolEventGroup"
-          ? Array.isArray(ns[name])
-          : typeof ns[name] === "function",
-    detail: "Agent frontend export",
-  }));
-  const result = agentChatCompatibility(checks);
+  const result = agentChatCompatibility();
   return result.ok ? { ok: true as const } : result;
 }
 

@@ -366,27 +366,17 @@ export async function agentSettingsOp(context: SettingsContext, patch?: AgentSet
   const exports = Object.fromEntries(
     Object.entries(format.exports).map(([key, name]) => [key, readOwn(namespace, name)]),
   );
-  const checks = Object.entries(exports).map(([name, value]) => ({
-    name,
-    ok: name === "modelKey" || name === "videoAspects"
-      ? Array.isArray(value)
-      : name === "aspectLabels" || name === "locale" || name === "updateMethod"
-        ? value !== null && typeof value === "object"
-        : typeof value === "function",
-    detail: "Agent settings frontend export",
-  }));
   const native = exports as unknown as AgentSettingsExports;
   const project = service(injector, native.projectService);
   const client = readOwn(project, format.queryClient) as QueryClient | undefined;
   const request = readOwn(project, format.requestClient) as
     | { mutate?: (input: object) => Promise<unknown> }
     | undefined;
-  checks.push({
+  const compatibility = agentSettingsCompatibility([{
     name: "metadata_service",
     ok: typeof client?.queryCache?.find === "function" && typeof request?.mutate === "function",
     detail: "Project metadata query and writer",
-  });
-  const compatibility = agentSettingsCompatibility(checks);
+  }]);
   if (!compatibility.ok) return compatibility;
   const { flow, settings, catalogue } = agentSettingsWire(native, format.wire);
   if (settingsWritePending) return { ok: false, error: "agent_settings_write_pending" };
