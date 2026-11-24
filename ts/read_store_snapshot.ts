@@ -13,6 +13,7 @@ import {
   isTrashedTile,
   legacyMedia,
   legacyTile,
+  readTileTrim,
 } from "./dom";
 import { clearStore, runtimeState } from "./state";
 import type {
@@ -330,32 +331,8 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       normalizeVoiceVal(t.audioReferences) ??
       null;
 
-    const trimStart =
-      kind === "video" && typeof t.Fb?.Jc === "number" ? t.Fb.Jc :
-      typeof t.trimStartSeconds === "number"
-        ? t.trimStartSeconds
-        : typeof t.Fb?.Ac === "number"
-          ? t.Fb.Ac
-          : typeof t.Ac === "number"
-            ? t.Ac
-            : typeof t.Cg === "number"
-              ? t.Cg
-              : typeof t.Fb?.Cg === "number"
-                ? t.Fb.Cg
-                : null;
-    const trimEnd =
-      kind === "video" && typeof t.Fb?.Pc === "number" ? t.Fb.Pc :
-      typeof t.trimEndSeconds === "number"
-        ? t.trimEndSeconds
-        : typeof t.Fb?.Ic === "number"
-          ? t.Fb.Ic
-          : typeof t.Ic === "number"
-            ? t.Ic
-            : typeof t.Rf === "number"
-              ? t.Rf
-              : typeof t.Fb?.Rf === "number"
-                ? t.Fb.Rf
-                : null;
+    const { start: trimStart, end: trimEnd, duration: tileDuration } =
+      readTileTrim(t, kind === "video");
 
     rawList.push({
       id: tid,
@@ -397,20 +374,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               : typeof t.tc?.height === "number"
                 ? t.tc.height
                 : null,
-      duration:
-        typeof t.durationSeconds === "number"
-          ? t.durationSeconds
-          : typeof t.duration === "number"
-            ? t.duration
-            : typeof t.Fb?.durationSeconds === "number"
-              ? t.Fb.durationSeconds
-              : typeof t.Fb?.duration === "number"
-                ? t.Fb.duration
-                : typeof t.Fb?.Lf === "number"
-                  ? t.Fb.Lf
-                  : typeof t.Lf === "number"
-                    ? t.Lf
-                    : null,
+      duration: tileDuration,
       created_at:
         t.hc instanceof Date
           ? t.hc.toISOString()

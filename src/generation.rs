@@ -21,10 +21,10 @@ use crate::engine::{ChromeEngine, NetworkResponseEvent, validate_local_files};
 use crate::project::{ensure_flow_store, ensure_project_workspace_root};
 use crate::queue::{ProgressCallback, SceneParams};
 
-/// Batchexecute RPC IDs associated with Google Flow generation requests.
+/// Batchexecute RPC IDs associated with Google Flow generation, upsampling, transformation, and frame capture requests.
 const BATCH_GENERATION_RPC_IDS: &[&str] = &[
     "Z9cAtf", "ogiZ0b", "YhhmEf", "MZZa6b", "eb1hJf", "nprQif", "jIps6", "fZytfe", "p0UkFb",
-    "IJhj9c", "xNyCid",
+    "IJhj9c", "xNyCid", "LcEY2c", "SPrCad", "sAVZzc", "jeNy9c",
 ];
 
 /// Parameters for `flow_generate`.
@@ -289,7 +289,7 @@ pub(crate) fn inspect_generation_network(
                     );
                 }
                 if ev.method.eq_ignore_ascii_case("POST") && is_generation_rpc_url(&ev.url) {
-                    if ev.status >= 400 {
+                    if ev.status >= 400 || ev.wrb_ok == Some(false) {
                         let excerpt = ev.error_excerpt.as_deref().unwrap_or("no error body");
                         if excerpt.to_ascii_lowercase().contains("recaptcha")
                             || ev.url.to_ascii_lowercase().contains("recaptcha")

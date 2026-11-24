@@ -19,8 +19,9 @@ use crate::engine::ChromeEngine;
 use crate::generation::{collect_created_assets, inspect_generation_network};
 use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_workspace_url,
-    wait_flow_mutation_rpc,
+    read_snapshot,
 };
+use crate::project_store::await_flow_mutation_rpc;
 use crate::queue::ProgressCallback;
 
 /// Parameters for `flow_scenes`.
@@ -121,7 +122,7 @@ pub(crate) async fn handle_scenes(
         "rename" => {
             let id = req.id.context("flow_scenes rename requires 'id'")?;
             let name = req.name.context("flow_scenes rename requires 'name'")?;
-            rename_assets(engine, vec![RenameEntry { id, name }]).await
+            rename_assets(engine, db, vec![RenameEntry { id, name }]).await
         }
         "trash" => {
             let target = req
@@ -131,6 +132,86 @@ pub(crate) async fn handle_scenes(
             trash_asset(engine, db, &target).await
         }
         other => anyhow::bail!("Unknown scene action: {}", other),
+    }
+}
+
+/// Checks whether one observed video trim bound matches the requested bound.
+fn trim_bound_matches(
+    actual: Option<f64>,
+    expected: Option<f64>,
+    cleared_fallback: Option<f64>,
+) -> bool {
+    match expected {
+        None => {
+            actual.is_none()
+                || cleared_fallback
+                    .zip(actual)
+                    .is_some_and(|(fb, act)| (act - fb).abs() <= 0.05)
+        }
+        Some(exp) => actual.is_some_and(|act| (act - exp).abs() <= 0.05),
+    }
+}
+
+/// Checks whether the active store snapshot holds the requested trim bounds for `asset_id`.
+fn snapshot_has_video_trim(
+    snap: &Value,
+    asset_id: &str,
+    start_seconds: Option<f64>,
+    end_seconds: Option<f64>,
+) -> bool {
+    snap.get("assets")
+        .and_then(Value::as_array)
+        .and_then(|assets| {
+            assets
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(asset_id))
+        })
+        .is_some_and(|item| {
+            let actual_start = item.get("trim_start_seconds").and_then(Value::as_f64);
+            let actual_end = item.get("trim_end_seconds").and_then(Value::as_f64);
+            let duration = item.get("duration").and_then(Value::as_f64);
+            trim_bound_matches(actual_start, start_seconds, Some(0.0))
+                && trim_bound_matches(actual_end, end_seconds, duration)
+        })
+}
+
+/// Polls active project snapshots until `asset_id` reflects the requested trim bounds.
+async fn wait_video_trim_in_store(
+    engine: &ChromeEngine,
+    asset_id: &str,
+    start_seconds: Option<f64>,
+    end_seconds: Option<f64>,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(snap) = read_snapshot(engine).await
+            && snapshot_has_video_trim(&snap, asset_id, start_seconds, end_seconds)
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Checks whether a video tile entered a new failed or canceled state since `before`.
+fn is_new_extend_failure(asset: &FlowAsset, before: &HashMap<String, FlowAsset>) -> bool {
+    if asset.kind != "video"
+        || !matches!(asset.media_status.as_deref(), Some("failed" | "canceled"))
+    {
+        return false;
+    }
+    match before.get(&asset.id) {
+        None => true,
+        Some(prior) => {
+            !matches!(prior.media_status.as_deref(), Some("failed" | "canceled"))
+                || asset.media_status != prior.media_status
+                || asset.primary_media_id != prior.primary_media_id
+                || asset.media_error != prior.media_error
+        }
     }
 }
 
@@ -148,20 +229,45 @@ pub(crate) async fn trim_video(
         "start_seconds": start_seconds,
         "end_seconds": end_seconds,
     });
-    let mut net_rx = engine.subscribe_network().await.ok();
+    let mut net_rx = engine.subscribe_network().await?;
     let res = engine.call_flow_async("videoOp", json!([payload])).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        anyhow::bail!(
-            "Failed to trim video '{}': {}",
-            target.id,
-            res.get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
+        let mut reason = res
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        if reason != "store_not_bound"
+            && !reason.starts_with("video_asset_not_found:")
+            && let Err(rpc_err) =
+                await_flow_mutation_rpc(&mut net_rx, Duration::from_millis(400)).await
+            && !rpc_err.starts_with("Timed out")
+        {
+            reason = rpc_err;
+        }
+        anyhow::bail!("Failed to trim video '{}': {}", target.id, reason);
     }
-    if let Some(rx) = net_rx.as_mut() {
-        let _ = wait_flow_mutation_rpc(rx, Duration::from_millis(2500)).await;
-    }
+    await_flow_mutation_rpc(&mut net_rx, Duration::from_secs(6))
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to confirm trim RPC for video '{}': {}",
+                target.id,
+                err
+            )
+        })?;
+    anyhow::ensure!(
+        wait_video_trim_in_store(
+            engine,
+            &target.id,
+            start_seconds,
+            end_seconds,
+            Duration::from_secs(5),
+        )
+        .await,
+        "Timed out waiting for store trim values on video '{}'",
+        target.id
+    );
     Ok(res)
 }
 
@@ -239,6 +345,9 @@ pub(crate) async fn run_video_extend(
         .into_iter()
         .map(|asset| (asset.id.clone(), asset))
         .collect();
+    let _ = engine
+        .call_flow_async("videoOp", json!([{ "action": "baseline_extend" }]))
+        .await;
     engine.click_point(point).await?;
 
     on_progress("extending video in Flow scene editor".to_string());
@@ -255,50 +364,94 @@ pub(crate) async fn run_video_extend(
             .call_flow_async("videoOp", json!([{ "action": "poll_extend" }]))
             .await
             .unwrap_or_default();
-        let extending = poll_res
+        if let Some(failed_id) = poll_res.get("failed_tile_id").and_then(Value::as_str) {
+            let reason = poll_res
+                .get("media_error")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("failed");
+            extend_err = Some(anyhow::anyhow!(
+                "Flow video extend failed on tile {}: {}",
+                failed_id,
+                reason
+            ));
+            break;
+        }
+        let mut extending = poll_res
             .get("extending")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let store_was_bound = poll_res
+            .get("store_bound")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         if extending {
             on_progress("extending video...".to_string());
         }
 
-        if !extending && let Ok(cur_snap) = list_assets_with_project(engine).await {
-            let fresh: Vec<FlowAsset> = cur_snap
+        if let Ok(cur_snap) = list_assets_with_project(engine).await {
+            if !store_was_bound {
+                let repoll = engine
+                    .call_flow_async("videoOp", json!([{ "action": "poll_extend" }]))
+                    .await
+                    .unwrap_or_default();
+                if let Some(failed_id) = repoll.get("failed_tile_id").and_then(Value::as_str) {
+                    let reason = repoll
+                        .get("media_error")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("failed");
+                    extend_err = Some(anyhow::anyhow!(
+                        "Flow video extend failed on tile {}: {}",
+                        failed_id,
+                        reason
+                    ));
+                    break;
+                }
+                if repoll.get("extending").and_then(Value::as_bool) == Some(true) {
+                    extending = true;
+                }
+            }
+            if let Some(failed_tile) = cur_snap
                 .assets
                 .iter()
-                .filter(|a| {
-                    a.kind == "video"
-                        && a.url.is_some()
-                        && before.get(&a.id).is_none_or(|prior| {
-                            a.primary_media_id.as_ref().map_or_else(
-                                || a.url != prior.url,
-                                |media_id| {
-                                    prior
-                                        .primary_media_id
-                                        .as_ref()
-                                        .is_some_and(|id| id != media_id)
-                                },
-                            )
-                        })
-                })
-                .cloned()
-                .collect();
-            if !fresh.is_empty() {
-                new_assets = fresh;
-                break;
-            }
-            if let Some(failed_tile) = cur_snap.assets.iter().find(|a| {
-                a.kind == "video"
-                    && !before.contains_key(&a.id)
-                    && matches!(a.media_status.as_deref(), Some("failed" | "canceled"))
-            }) {
+                .find(|a| is_new_extend_failure(a, &before))
+            {
                 extend_err = Some(anyhow::anyhow!(
                     "Flow video extend failed on tile {}: {}",
                     failed_tile.id,
-                    failed_tile.media_error.as_deref().unwrap_or("failed")
+                    failed_tile
+                        .media_error
+                        .as_deref()
+                        .unwrap_or(failed_tile.media_status.as_deref().unwrap_or("failed"))
                 ));
                 break;
+            }
+            if !extending {
+                let fresh: Vec<FlowAsset> = cur_snap
+                    .assets
+                    .iter()
+                    .filter(|a| {
+                        a.kind == "video"
+                            && a.url.is_some()
+                            && before.get(&a.id).is_none_or(|prior| {
+                                a.primary_media_id.as_ref().map_or_else(
+                                    || a.url != prior.url,
+                                    |media_id| {
+                                        prior
+                                            .primary_media_id
+                                            .as_ref()
+                                            .is_some_and(|id| id != media_id)
+                                    },
+                                )
+                            })
+                    })
+                    .cloned()
+                    .collect();
+                if !fresh.is_empty() {
+                    new_assets = fresh;
+                    break;
+                }
             }
         }
         if Instant::now() >= deadline {

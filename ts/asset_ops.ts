@@ -32,17 +32,24 @@ export async function assetOps(
       // Ignore immutable tile objects.
     }
   }
-  if (helper?.rename) {
-    await helper.rename(id, newName);
-  } else if (helper?.mutate) {
-    await helper.mutate({
-      type: "single_tile",
-      Xc: id,
-      Uc: id,
-      Ve: { type: "set_display_name", displayName: newName },
-    });
-  } else {
-    return { ok: false, err: "rename_method_missing" };
+  try {
+    if (helper?.rename) {
+      await helper.rename(id, newName);
+    } else if (helper?.mutate) {
+      await helper.mutate({
+        type: "single_tile",
+        Xc: id,
+        Uc: id,
+        Ve: { type: "set_display_name", displayName: newName },
+      });
+    } else {
+      return { ok: false, err: "rename_method_missing" };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      err: err instanceof Error ? err.message : String(err),
+    };
   }
   return { ok: true };
 }

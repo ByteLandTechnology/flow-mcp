@@ -380,18 +380,7 @@ impl FlowService {
     /// Renames one or more assets or collections in the active Google Flow project.
     pub(crate) async fn rename(&self, items: Vec<RenameEntry>) -> Result<Value> {
         anyhow::ensure!(!items.is_empty(), "flow_rename requires at least one item");
-        let res = assets::rename_assets(&self.engine, items).await?;
-        if let Some(renamed) = res.get("items").and_then(|v| v.as_array()) {
-            for item in renamed {
-                if let (Some(id), Some(name)) = (
-                    item.get("id").and_then(|v| v.as_str()),
-                    item.get("name").and_then(|v| v.as_str()),
-                ) {
-                    let _ = self.db.rename_character_if_exists(id, name).await;
-                }
-            }
-        }
-        Ok(res)
+        assets::rename_assets(&self.engine, &self.db, items).await
     }
 
     /// Lists, creates, renames, or populates collections in the active Flow project.

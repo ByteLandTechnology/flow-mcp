@@ -11,14 +11,12 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::broadcast::Receiver;
-use tokio::sync::broadcast::error::{RecvError, TryRecvError};
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 
 use crate::auth::{check_page_signed_in, is_signed_in_flow_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
-use crate::engine::{ChromeEngine, ENGINE_NAME, NetworkResponseEvent};
-use crate::project_store::prepare_project_store_status;
+use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::project_store::{prepare_project_store_status, wait_flow_mutation_rpc};
 
 /// Angular error code for a required input that has no value yet.
 const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
@@ -83,43 +81,6 @@ pub(crate) struct FlowStatus {
     /// Error message when page startup or probing fails.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
-}
-
-/// Returns `true` when an HTTP response marks a successful Flow store mutation RPC.
-pub(crate) fn is_flow_mutation_rpc_ok(ev: &NetworkResponseEvent) -> bool {
-    (ev.url.contains("aisandbox-pa.googleapis.com") || ev.url.contains("batchexecute"))
-        && (200..300).contains(&ev.status)
-}
-
-/// Drains buffered network events and waits up to `wait` for a Flow RPC response.
-pub(crate) async fn wait_flow_mutation_rpc(
-    rx: &mut Receiver<NetworkResponseEvent>,
-    wait: Duration,
-) -> bool {
-    loop {
-        match rx.try_recv() {
-            Ok(ev) => {
-                if is_flow_mutation_rpc_ok(&ev) {
-                    return true;
-                }
-            }
-            Err(TryRecvError::Lagged(_)) => continue,
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Closed) => return false,
-        }
-    }
-    let deadline = Instant::now() + wait;
-    loop {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(ev)) => {
-                if is_flow_mutation_rpc_ok(&ev) {
-                    return true;
-                }
-            }
-            Ok(Err(RecvError::Lagged(_))) => continue,
-            Ok(Err(RecvError::Closed)) | Err(_) => return false,
-        }
-    }
 }
 
 /// Extracts the `/project/<id>` segment from a Flow project URL.

@@ -4,10 +4,156 @@
 // Trim Flow videos and drive the scene builder extend workflow.
 
 import { createScene, findRouter } from "./angular";
-import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import {
+  delay,
+  elText,
+  isDisabledProp,
+  isVisibleEnabled,
+  legacyMedia,
+  legacyTile,
+  readTileTrim,
+} from "./dom";
 import { writePromptBox } from "./prompt_writer";
+import { sceneContents } from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
-import type { FlowTile, VideoOpRequest } from "./types";
+import type { FlowMediaPayload, FlowTile, VideoOpRequest } from "./types";
+
+/** Failed or canceled media entry observed in the bound project store. */
+interface FailedMediaRecord {
+  /** Unique fingerprint for baseline deduplication across extend runs. */
+  key: string;
+  /** Workflow or tile identifier that owns the failed media entry. */
+  tileId: string;
+  /** Human-readable failure or cancellation message. */
+  error: string;
+}
+
+/** Failed or canceled media keys present before the latest extend submission. */
+let baselineFailedMediaKeys = new Set<string>();
+
+/** Formats a media error field into a short diagnostic string. */
+function formatExtendMediaError(errVal: unknown, fallback: string): string {
+  if (typeof errVal === "string" && errVal.trim()) return errVal.trim();
+  if (errVal && typeof errVal === "object") {
+    const msg = (errVal as { message?: unknown }).message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+    try {
+      const encoded = JSON.stringify(errVal);
+      if (encoded && encoded !== "{}") return encoded;
+    } catch {
+      // Ignore cyclic object serialization errors and use fallback.
+    }
+  }
+  return fallback;
+}
+
+/** Checks whether `v` has media or workflow attempt fields in the project store. */
+function isMediaCandidate(v: unknown): v is FlowMediaPayload {
+  if (!v || typeof v !== "object" || Array.isArray(v) || v instanceof Map || v instanceof Date) {
+    return false;
+  }
+  return (
+    "id" in v ||
+    "mediaId" in v ||
+    "workflowId" in v ||
+    "Zc" in v ||
+    "od" in v
+  );
+}
+
+/** Checks whether one observed trim bound matches the requested bound. */
+function trimBoundMatches(
+  actual: number | null,
+  expected: number | null,
+  clearedFallback: number | null,
+): boolean {
+  if (expected === null) {
+    return (
+      actual === null ||
+      (clearedFallback !== null && Math.abs(actual - clearedFallback) <= 0.05)
+    );
+  }
+  return actual !== null && Math.abs(actual - expected) <= 0.05;
+}
+
+/** Collects failed and canceled media records across workflow tiles and scenes. */
+function collectFailedMedia(
+  tileMap: Map<string, FlowTile> | null | undefined,
+): FailedMediaRecord[] {
+  if (!(tileMap instanceof Map)) return [];
+  const out: FailedMediaRecord[] = [];
+  const seen = new Set<string>();
+  const record = (
+    tileId: string,
+    rawMedia: FlowMediaPayload | null | undefined,
+    fallbackId = "",
+  ): void => {
+    const m = legacyMedia(rawMedia ?? null);
+    if (!m) return;
+    const status = String(m.Zc ?? "").toLowerCase();
+    if (status !== "failed" && status !== "canceled") return;
+    const mediaId = String(m.id ?? m.mediaId ?? fallbackId);
+    const error = formatExtendMediaError(m.nf, status);
+    const key = `${tileId}:${mediaId}:${status}:${error}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ key, tileId, error });
+  };
+
+  for (const [id, rawTile] of tileMap.entries()) {
+    if (!rawTile) continue;
+    const t = legacyTile(rawTile);
+    const tileId = String(t.id ?? id);
+    const ttype = String(t.type ?? "").toUpperCase();
+    record(tileId, t.Fb, String(t.primaryMediaId ?? ""));
+    record(tileId, t.fb, String(t.primaryMediaId ?? ""));
+    if (ttype !== "SCENE") {
+      for (const val of Object.values(rawTile as Record<string, unknown>)) {
+        if (!Array.isArray(val)) continue;
+        for (const item of val) {
+          if (isMediaCandidate(item)) {
+            record(tileId, item);
+          }
+        }
+      }
+    }
+    if (ttype === "SCENE") {
+      const { clips, history } = sceneContents(rawTile);
+      for (const clip of clips) {
+        const wfId = clip?.workflowId ? String(clip.workflowId) : tileId;
+        const mClip = legacyMedia(clip as unknown as FlowMediaPayload);
+        const clipStatus = String(mClip?.Zc ?? clip?.Zc ?? "").toLowerCase();
+        if (clipStatus === "failed" || clipStatus === "canceled") {
+          const mediaId = String(clip?.primaryMediaId ?? "");
+          const error = formatExtendMediaError(mClip?.nf ?? clip?.nf, clipStatus);
+          const key = `${wfId}:${mediaId}:${clipStatus}:${error}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            out.push({ key, tileId: wfId, error });
+          }
+        }
+      }
+      for (const [wfId, list] of history.entries()) {
+        if (!Array.isArray(list)) continue;
+        for (const item of list) {
+          record(wfId, item);
+        }
+      }
+      for (const val of Object.values(rawTile as Record<string, unknown>)) {
+        if (!(val instanceof Map)) continue;
+        for (const [wfId, list] of val.entries()) {
+          if (!Array.isArray(list)) continue;
+          for (const item of list) {
+            if (isMediaCandidate(item)) {
+              record(String(wfId), item);
+            }
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
 
 /** Trims video clip timestamps or orchestrates scene-builder video extension. */
 export async function videoOp(req: VideoOpRequest): Promise<unknown> {
@@ -34,27 +180,46 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     const startSec =
       typeof req.start_seconds === "number" ? req.start_seconds : null;
     const endSec = typeof req.end_seconds === "number" ? req.end_seconds : null;
-    await helper.mutate({
-      type: "single_tile",
-      Xc: String(tile.id ?? id),
-      Uc: String(tile.id ?? id),
-      Ve: {
-        type: "set_video_trim_seconds",
-        mediaId,
-        Cg: startSec,
-        Rf: endSec,
-        Gg: startSec,
-        Wf: endSec,
-      },
-    });
-    await delay(500);
-    return {
-      ok: true,
-      asset_id: id,
-      media_id: mediaId,
-      start_seconds: startSec,
-      end_seconds: endSec,
-    };
+    try {
+      await helper.mutate({
+        type: "single_tile",
+        Xc: String(tile.id ?? id),
+        Uc: String(tile.id ?? id),
+        Ve: {
+          type: "set_video_trim_seconds",
+          mediaId,
+          Cg: startSec,
+          Rf: endSec,
+          Gg: startSec,
+          Wf: endSec,
+        },
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    for (let i = 0; i < 34; i++) {
+      const current = getMap()?.get(id);
+      if (current) {
+        const { start, end, duration } = readTileTrim(current);
+        if (
+          trimBoundMatches(start, startSec, 0) &&
+          trimBoundMatches(end, endSec, duration)
+        ) {
+          return {
+            ok: true,
+            asset_id: id,
+            media_id: mediaId,
+            start_seconds: startSec,
+            end_seconds: endSec,
+          };
+        }
+      }
+      await delay(150);
+    }
+    return { ok: false, error: "trim_store_not_confirmed" };
   }
 
   if (action === "prepare_extend") {
@@ -326,7 +491,17 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     if (!submitBtn.contains(document.elementFromPoint(x, y))) {
       return { ok: false, error: "extend_submit_button_obscured" };
     }
+    baselineFailedMediaKeys = new Set(
+      collectFailedMedia(getMap()).map((entry) => entry.key),
+    );
     return { ok: true, submit_point: { x, y } };
+  }
+
+  if (action === "baseline_extend") {
+    baselineFailedMediaKeys = new Set(
+      collectFailedMedia(getMap()).map((entry) => entry.key),
+    );
+    return { ok: true, count: baselineFailedMediaKeys.size };
   }
 
   if (action === "poll_extend") {
@@ -338,7 +513,21 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
           "flow-scene-timeline .is-extend-generating, flow-scene-timeline .pending-placeholder, flow-scene-timeline [aria-busy='true']",
         ),
       );
-    return { ok: true, extending };
+    const currentMap = getMap();
+    const storeBound = currentMap instanceof Map;
+    const newFailed = collectFailedMedia(currentMap).find(
+      (entry) => !baselineFailedMediaKeys.has(entry.key),
+    );
+    if (newFailed) {
+      return {
+        ok: true,
+        extending,
+        store_bound: storeBound,
+        failed_tile_id: newFailed.tileId,
+        media_error: newFailed.error,
+      };
+    }
+    return { ok: true, extending, store_bound: storeBound };
   }
 
   if (action === "done_scene") {

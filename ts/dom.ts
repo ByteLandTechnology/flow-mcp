@@ -350,6 +350,39 @@ export function fifeBase(u: unknown): string {
   return s ? s.split("?")[0].split("=")[0] : "";
 }
 
+/** Reads start trim, end trim, and duration values in seconds from tile `raw`. */
+export function readTileTrim(
+  raw: FlowTile,
+  isVideo = true,
+): { start: number | null; end: number | null; duration: number | null } {
+  const t = legacyTile(raw);
+  const start =
+    isVideo && typeof t.Fb?.Jc === "number" ? t.Fb.Jc :
+    typeof t.trimStartSeconds === "number" ? t.trimStartSeconds :
+    typeof t.Fb?.Ac === "number" ? t.Fb.Ac :
+    typeof t.Ac === "number" ? t.Ac :
+    typeof t.Cg === "number" ? t.Cg :
+    typeof t.Fb?.Cg === "number" ? t.Fb.Cg :
+    null;
+  const end =
+    isVideo && typeof t.Fb?.Pc === "number" ? t.Fb.Pc :
+    typeof t.trimEndSeconds === "number" ? t.trimEndSeconds :
+    typeof t.Fb?.Ic === "number" ? t.Fb.Ic :
+    typeof t.Ic === "number" ? t.Ic :
+    typeof t.Rf === "number" ? t.Rf :
+    typeof t.Fb?.Rf === "number" ? t.Fb.Rf :
+    null;
+  const duration =
+    typeof t.durationSeconds === "number" ? t.durationSeconds :
+    typeof t.duration === "number" ? t.duration :
+    typeof t.Fb?.durationSeconds === "number" ? t.Fb.durationSeconds :
+    typeof t.Fb?.duration === "number" ? t.Fb.duration :
+    typeof t.Fb?.Lf === "number" ? t.Fb.Lf :
+    typeof t.Lf === "number" ? t.Lf :
+    null;
+  return { start, end, duration };
+}
+
 /** Selects the best available media URL from a project tile object. */
 export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
   const t = legacyTile(tile);

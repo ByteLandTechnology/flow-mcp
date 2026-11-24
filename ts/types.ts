@@ -587,7 +587,7 @@ export interface SceneOpRequest {
 
 /** Request payload for `videoOp`. */
 export interface VideoOpRequest {
-  /** Operation (`trim`, `prepare_extend`, `poll_extend`, or `done_scene`). */
+  /** Operation (`trim`, `prepare_extend`, `baseline_extend`, `poll_extend`, or `done_scene`). */
   action?: string;
   /** Target video asset identifier. */
   asset_id?: string | null;

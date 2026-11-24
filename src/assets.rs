@@ -11,16 +11,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Duration, Instant};
 
 use crate::collections::{FlowCollection, find_collection};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
-use crate::project::{ensure_flow_store, is_flow_mutation_rpc_ok, read_snapshot};
-use crate::project_store::ProjectStoreSession;
-use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu};
+use crate::project::{ensure_flow_store, read_snapshot};
+use crate::project_store::{ProjectStoreSession, await_flow_mutation_rpc};
+use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu, wait_trashed};
 
 /// Maximum number of URL lookups that can run at the same time.
 const MEDIA_URL_LOOKUPS: usize = 4;
@@ -383,8 +382,33 @@ fn snapshot_has_renamed(snap: &Value, id: &str, name: &str) -> bool {
         })
 }
 
+/// Polls active project snapshots until asset `id` shows `name` or `timeout` expires.
+async fn wait_snapshot_renamed(
+    engine: &ChromeEngine,
+    id: &str,
+    name: &str,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(snap) = read_snapshot(engine).await
+            && snapshot_has_renamed(&snap, id, name)
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// Renames collections through the collection store and other tiles through the page or store.
-pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
+pub(crate) async fn rename_assets(
+    engine: &ChromeEngine,
+    db: &FlowDb,
+    items: Vec<RenameEntry>,
+) -> Result<Value> {
     let collections = ProjectStoreSession::open(engine).await?;
     let total = items.len();
     let mut renamed = Vec::new();
@@ -412,85 +436,95 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
             ensure_flow_store(engine).await?;
             asset_store_ready = true;
         }
-        // Use the rename control of the page first. The page then builds its own mutation.
-        if tile_state(engine, &entry.id).await.is_present()
-            && matches!(
+        let initial_state = tile_state(engine, &entry.id).await;
+        let mut tried_menu = false;
+        // Use the rename control of the page first when the tile displays a different name.
+        if initial_state.is_present() && initial_state.name != entry.name {
+            let mut menu_rx = engine.subscribe_network().await?;
+            if matches!(
                 rename_through_menu(engine, &entry.id, &entry.name).await,
                 Ok(true)
-            )
-        {
-            renamed.push(json!({ "id": entry.id, "name": entry.name, "method": "menu:rename" }));
-            if idx + 1 < total {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+            ) {
+                tried_menu = true;
+                if await_flow_mutation_rpc(&mut menu_rx, Duration::from_secs(6))
+                    .await
+                    .is_ok()
+                    && wait_snapshot_renamed(engine, &entry.id, &entry.name, Duration::from_secs(3))
+                        .await
+                {
+                    let _ = db.rename_character_if_exists(&entry.id, &entry.name).await;
+                    renamed.push(json!({
+                        "id": entry.id,
+                        "name": entry.name,
+                        "method": "menu:rename",
+                    }));
+                    if idx + 1 < total {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    continue 'items;
+                }
             }
-            continue 'items;
         }
         let mut ok = false;
+        let mut last_error = "rename mutation not confirmed".to_string();
         for attempt in 0..2 {
             // Subscribe before calling rename so the listener catches store RPC responses.
             let mut rx = engine.subscribe_network().await?;
+            let reset_old = attempt > 0
+                || tried_menu
+                || (initial_state.is_present() && initial_state.name == entry.name);
             let res = engine
                 .call_flow_async(
                     "assetOps",
                     json!([
                         "rename",
                         entry.id,
-                        { "name": entry.name, "resetOld": attempt > 0 }
+                        { "name": entry.name, "resetOld": reset_old }
                     ]),
                 )
                 .await?;
             if let Some(e) = res.get("err").and_then(|v| v.as_str()) {
-                failed.push(json!({ "id": entry.id, "name": entry.name, "error": e }));
-                continue 'items;
+                if matches!(
+                    e,
+                    "store_not_bound" | "collection_path_required" | "rename_method_missing"
+                ) {
+                    last_error = e.to_string();
+                    break;
+                }
+                if let Err(rpc_err) =
+                    await_flow_mutation_rpc(&mut rx, Duration::from_millis(400)).await
+                    && !rpc_err.starts_with("Timed out")
+                {
+                    last_error = rpc_err;
+                } else {
+                    last_error = e.to_string();
+                }
+                continue;
             }
 
-            let mut confirmed = read_snapshot(engine)
-                .await
-                .is_ok_and(|snap| snapshot_has_renamed(&snap, &entry.id, &entry.name));
-
-            if !confirmed {
-                let deadline = Instant::now() + Duration::from_secs(6);
-                loop {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
+            match await_flow_mutation_rpc(&mut rx, Duration::from_secs(6)).await {
+                Ok(()) => {
+                    if wait_snapshot_renamed(engine, &entry.id, &entry.name, Duration::from_secs(5))
+                        .await
+                    {
+                        ok = true;
                         break;
                     }
-                    let slice = remaining.min(Duration::from_millis(500));
-                    match tokio::time::timeout(slice, rx.recv()).await {
-                        Ok(Ok(ev)) => {
-                            if is_flow_mutation_rpc_ok(&ev) {
-                                confirmed = true;
-                                break;
-                            }
-                        }
-                        Ok(Err(RecvError::Lagged(_))) => continue,
-                        Ok(Err(RecvError::Closed)) => break,
-                        Err(_) => {
-                            if let Ok(snap) = read_snapshot(engine).await
-                                && snapshot_has_renamed(&snap, &entry.id, &entry.name)
-                            {
-                                confirmed = true;
-                                break;
-                            }
-                        }
-                    }
+                    last_error = "rename store state not confirmed".to_string();
                 }
-            }
-            if !confirmed && let Ok(snap) = read_snapshot(engine).await {
-                confirmed = snapshot_has_renamed(&snap, &entry.id, &entry.name);
-            }
-            if confirmed {
-                ok = true;
-                break;
+                Err(rpc_err) => {
+                    last_error = rpc_err;
+                }
             }
         }
         if ok {
+            let _ = db.rename_character_if_exists(&entry.id, &entry.name).await;
             renamed.push(json!({ "id": entry.id, "name": entry.name, "method": "mutation" }));
         } else {
             failed.push(json!({
                 "id": entry.id,
                 "name": entry.name,
-                "error": "rename mutation not confirmed",
+                "error": last_error,
             }));
         }
         if idx + 1 < total {
@@ -498,12 +532,16 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
         }
     }
 
-    Ok(json!({
+    let summary = json!({
         "renamed": renamed.len(),
         "failed": failed.len(),
         "items": renamed,
         "errors": failed,
-    }))
+    });
+    if !failed.is_empty() {
+        anyhow::bail!("Failed to rename {} item(s): {}", failed.len(), summary);
+    }
+    Ok(summary)
 }
 
 /// Returns the error for a rename entry.
@@ -517,14 +555,30 @@ async fn invoke_trash_tile(
     session: &ProjectStoreSession<'_>,
     id: &str,
 ) -> Result<Value> {
+    let mut menu_rx = engine.subscribe_network().await.ok();
     let menu_error =
         if ensure_flow_store(engine).await.is_ok() && tile_state(engine, id).await.is_present() {
             match trash_through_menu(engine, id).await {
-                Ok(true) => {
-                    return Ok(
-                        json!({ "ok": true, "method": "menu:move_to_trash", "confirmed": true }),
-                    );
-                }
+                Ok(true) => match menu_rx.as_mut() {
+                    Some(rx) => match await_flow_mutation_rpc(rx, Duration::from_secs(6)).await {
+                        Ok(()) if wait_trashed(engine, id, 12).await => {
+                            return Ok(json!({
+                                "ok": true,
+                                "method": "menu:move_to_trash",
+                                "confirmed": true,
+                            }));
+                        }
+                        Ok(()) => Some("trash store state not confirmed".to_string()),
+                        Err(rpc_err) => Some(rpc_err),
+                    },
+                    None => {
+                        return Ok(json!({
+                            "ok": true,
+                            "method": "menu:move_to_trash",
+                            "confirmed": true,
+                        }));
+                    }
+                },
                 Ok(false) => None,
                 Err(err) => Some(format!("{err:#}")),
             }

@@ -46,8 +46,10 @@ pub(crate) struct NetworkResponseEvent {
     pub(crate) method: String,
     /// HTTP response status code.
     pub(crate) status: u16,
-    /// Optional truncated response body returned on HTTP error responses.
+    /// Optional truncated response body returned on HTTP or RPC error responses.
     pub(crate) error_excerpt: Option<String>,
+    /// Envelope status for HTTP 200 `batchexecute` `POST` responses, or `None` when not inspected.
+    pub(crate) wrb_ok: Option<bool>,
 }
 
 /// Verifies that every optional file path exists on disk and points to a regular file.
