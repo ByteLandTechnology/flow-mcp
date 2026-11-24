@@ -30,8 +30,10 @@ export interface AngularRouter {
 
 /** Destroyable Angular component or service lifecycle handle. */
 export interface AngularLifecycleHandle {
-  /** Ivy destroy marker containing the disposed flag `Va`. */
-  Ca?: { Va?: boolean };
+  /** Ivy destroy marker containing the disposed flag `Va` or `Wa`. */
+  Ca?: { Va?: boolean; Wa?: boolean };
+  /** Ivy destroy marker in Flow builds from 2026-11-18 on. */
+  Ba?: { Va?: boolean; Wa?: boolean };
 }
 
 /** Minified nested media metadata stored on a Flow tile. */
@@ -238,36 +240,71 @@ export interface FlowTile extends FlowMediaPayload {
   createDate?: string;
 }
 
+/** Observable error event payload from a store mutation queue. */
+export interface MutationErrorEvent {
+  /** Dispatched mutation payload for the error. */
+  mutation?: unknown;
+  /** Backend or validation failure value. */
+  error?: unknown;
+}
+
+/** Subscribable error stream exposed on a store mutation queue. */
+export interface MutationErrorStream {
+  /** Registers an observer for mutation error events. */
+  subscribe?: (cb: (ev: MutationErrorEvent) => void) => { unsubscribe?: () => void };
+}
+
 /** Mutation signal or queue object inside Angular store services. */
 export interface MutationQueueObj {
   /** Pending item reader. */
   ka?: () => { items?: Array<{ mutation?: unknown }> } | null | undefined;
   /** Async promise mutation runner. */
   oe?: (payload: Record<string, unknown>) => Promise<unknown>;
+  /** Alternate async promise mutation runner. */
+  re?: (payload: Record<string, unknown>) => Promise<unknown>;
   /** Async mutation helper. */
   mutateAsync?: (payload: Record<string, unknown>) => Promise<unknown>;
   /** Queue mutation dispatcher. */
   mutate?: (payload: Record<string, unknown>) => unknown;
+  /** Reset method on TanStack mutation results. */
+  reset?: () => void;
   /** Signal error accessor. */
   error?: () => unknown;
-  /** Status stream with `subscribe`. */
-  Ha?: { subscribe?: (cb: (ev: { mutation?: unknown; error?: unknown }) => void) => { unsubscribe?: () => void } };
-  /** Alternate status stream with `subscribe`. */
-  ua?: { subscribe?: (cb: (ev: { mutation?: unknown; error?: unknown }) => void) => { unsubscribe?: () => void } };
+  /** Queue configuration callbacks for `_.EO`. */
+  parameters?: Record<string, unknown>;
+  /** Observable error stream in Flow builds from 2026-11-20 on. */
+  Da?: MutationErrorStream;
+  /** Subject error stream in Flow builds from 2026-11-20 on. */
+  oa?: MutationErrorStream;
+  /** Legacy status stream with `subscribe`. */
+  Ha?: MutationErrorStream;
+  /** Alternate legacy status stream with `subscribe`. */
+  ua?: MutationErrorStream;
 }
 
 /** Resolved Angular project store service instance or wrapper. */
 export interface FlowStoreService extends AngularLifecycleHandle {
   /** Underlying `_ap` store variant. */
-  _ap?: FlowStoreService & { RC?: { isPending?: () => boolean }; lc?: MutationQueueObj };
+  _ap?: FlowStoreService & {
+    RC?: { isPending?: () => boolean };
+    rs?: { isPending?: () => boolean };
+    lc?: MutationQueueObj;
+    ld?: MutationQueueObj;
+  };
   /** Underlying `_uo` store variant. */
   _uo?: FlowStoreService;
   /** Tile map getter or inner signal container. */
   ka?: (() => Map<string, FlowTile> | null | undefined) | MutationQueueObj;
   /** Nested signal container or mutator. */
   ha?: (FlowStoreService & MutationQueueObj) | null;
-  /** Lifecycle controller or mutation runner. */
+  /** Legacy TanStack mutation runner. */
   lc?: MutationQueueObj;
+  /** TanStack tile mutation runner in Flow builds from 2026-11-20 on. */
+  ld?: MutationQueueObj;
+  /** Tile query signal in Flow builds from 2026-11-20 on. */
+  rs?: { isPending?: () => boolean };
+  /** Legacy tile query signal. */
+  RC?: { isPending?: () => boolean };
   /** Nested mutation runner. */
   mutate?: (payload: Record<string, unknown>) => unknown;
   /** Direct rename method on legacy store services. */
@@ -276,6 +313,8 @@ export interface FlowStoreService extends AngularLifecycleHandle {
   ZA?: (...args: unknown[]) => unknown;
   /** Optional nested query metadata. */
   na?: unknown;
+  /** Optional tile service in Flow builds from 2026-11-18 on. */
+  ma?: unknown;
   /** Optional tile fetcher signal. */
   PG?: (projectId: string | null, payload: Record<string, unknown>) => Promise<unknown>;
   /** Query key builder on UO stores. */

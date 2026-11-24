@@ -15,6 +15,7 @@ import {
   legacyTile,
 } from "./dom";
 import { clearStore, runtimeState } from "./state";
+import { isStoreDestroyed } from "./store_shape";
 import type {
   FlowMediaPayload,
   FlowTile,
@@ -53,10 +54,7 @@ export function readStoreSnapshot(): StoreSnapshotResult {
   const l = runtimeState.lService;
   if (
     (helper || l) &&
-    (runtimeState.routePath !== location.pathname ||
-      l?.Ca?.Va ||
-      l?._ap?.Ca?.Va ||
-      l?.ha?.Ca?.Va)
+    (runtimeState.routePath !== location.pathname || isStoreDestroyed(l))
   ) {
     clearStore();
     return { ok: false, error: "route_changed" };

@@ -10,12 +10,16 @@ import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types"
 
 /** Object with optional Angular Ivy `__ngContext__` or internal `lView` links. */
 export interface NgContextCarrier {
-  /** Angular Ivy LView array or registry slot index. */
-  __ngContext__?: number | NgLView;
-  /** Embedded view LView reference. */
+  /** Angular Ivy LView array, registry slot index, or upgraded LContext wrapper. */
+  __ngContext__?: number | NgLView | NgContextCarrier;
+  /** Embedded view or LContext LView reference. */
   lView?: NgLView;
+  /** Minified LContext LView reference in Flow builds from 2026-11-20 on. */
+  zp?: NgLView;
   /** Minified LView reference alias. */
   Pn?: NgLView;
+  /** Optional LView registry slot identifier on LContext wrappers. */
+  lViewId?: number;
 }
 
 /** Reads an own or prototype property safely without triggering exceptions. */
@@ -60,6 +64,17 @@ export function bindAngularViews(maps: unknown[], selector: string): boolean {
   return true;
 }
 
+/** Checks whether `val` matches the header shape of an Angular Ivy `LView` array. */
+function isLViewArray(val: unknown): val is NgLView {
+  return (
+    Array.isArray(val) &&
+    val.length >= 20 &&
+    (typeof val[19] === "number" ||
+      typeof val[2] === "number" ||
+      (Boolean(val[1]) && typeof val[1] === "object"))
+  );
+}
+
 /** Resolves a DOM element, numeric slot index, or wrapper object to its Angular `NgLView`. */
 export function resolveLView(elOrCtx: unknown): NgLView | null {
   const ctxObj =
@@ -74,9 +89,33 @@ export function resolveLView(elOrCtx: unknown): NgLView | null {
       ? runtimeState.ngLViewMap.get(raw) || null
       : null;
   }
-  if (raw && typeof raw === "object") {
+  if (raw && typeof raw === "object" && !(raw instanceof Node)) {
     const carrier = raw as NgContextCarrier;
-    return carrier.lView || carrier.Pn || null;
+    for (const key of ["lView", "zp", "Pn"] as const) {
+      const candidate = readOwn(carrier, key);
+      if (Array.isArray(candidate)) return candidate;
+    }
+    const id = readOwn(carrier, "lViewId");
+    if (typeof id === "number" && runtimeState.ngLViewMap instanceof Map) {
+      const mapped = runtimeState.ngLViewMap.get(id);
+      if (Array.isArray(mapped)) return mapped;
+    }
+    let fallback: NgLView | null = null;
+    let arrayCount = 0;
+    try {
+      for (const key of Object.getOwnPropertyNames(raw)) {
+        if (key === "directives") continue;
+        const desc = Object.getOwnPropertyDescriptor(raw, key);
+        const val = desc && "value" in desc ? desc.value : undefined;
+        if (!Array.isArray(val)) continue;
+        if (isLViewArray(val)) return val;
+        arrayCount += 1;
+        if (val.length > 0 && !fallback) fallback = val;
+      }
+    } catch {
+      return null;
+    }
+    return arrayCount === 1 ? fallback : null;
   }
   return null;
 }

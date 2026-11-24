@@ -214,6 +214,8 @@ export interface ProjectStoreFormat {
   destroyed: string;
   /** Project ID signal. */
   projectId: string;
+  /** Query signal on the store that loads project tiles. */
+  tileQuery?: string;
   /** Service that owns the tile query and writes. */
   tilesService: string;
   /** Query client on the tile service. */
@@ -275,6 +277,7 @@ const NOVEMBER_18_STORE: ProjectStoreFormat = {
   lifecycle: "Ba",
   destroyed: "Va",
   projectId: "ua",
+  tileQuery: "Ir",
   tilesService: "ma",
   queryClient: "Wa",
   dispatcher: "sJ",
@@ -287,6 +290,7 @@ const NOVEMBER_20_STORE: ProjectStoreFormat = {
   lifecycle: "Ba",
   destroyed: "Va",
   projectId: "ua",
+  tileQuery: "rs",
   tilesService: "ma",
   queryClient: "Wa",
   dispatcher: "YJ",
@@ -643,5 +647,5 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
 /** Returns the layouts to check when the runtime binds the active project store. */
 export function projectStoreFormats(): readonly ProjectStoreFormat[] {
   const format = frontendBuild(readBuildLabel())?.projectStore;
-  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE];
+  return format ? [format] : [NOVEMBER_17_STORE, NOVEMBER_18_STORE, NOVEMBER_20_STORE];
 }

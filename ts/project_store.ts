@@ -137,10 +137,11 @@ export function bindProjectStore(maps: unknown[], projectId: string): ReturnType
       if (!Array.isArray(view)) continue;
       for (const slot of view) {
         consider(slot, map);
-        // The project shell holds the store in its component instance.
-        if (!slot || typeof slot !== "object") continue;
-        for (const key of ["ha", "Eu", "oa", "ka", "fh"]) {
-          consider(Object.getOwnPropertyDescriptor(slot, key)?.value, map);
+        // Components across project, editor, character, and scene views hold the store on own properties.
+        if (!slot || typeof slot !== "object" || Array.isArray(slot) || slot instanceof Node) continue;
+        for (const key of ["ha", "fh", "Ew", "la", "Eu", "oa", "ka", ...Object.keys(slot)]) {
+          const desc = Object.getOwnPropertyDescriptor(slot, key);
+          if (desc && "value" in desc) consider(desc.value, map);
         }
       }
     }

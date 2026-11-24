@@ -11,6 +11,7 @@ import {
   elText,
   isVisibleEnabled,
 } from "./dom";
+import { isStoreDestroyed } from "./store_shape";
 import type { AngularLifecycleHandle, CharacterVoiceOpRequest } from "./types";
 
 /** Minified Angular character form component hosting voice signals. */
@@ -65,7 +66,7 @@ export async function characterVoiceOp(
     const form = document.querySelector("flow-character-form");
     if (!form) return null;
     const cached = formComponents.get(form);
-    if (cached && !cached.Ca?.Va) {
+    if (cached && !isStoreDestroyed(cached)) {
       return cached;
     }
     const isBasicObj = (cand: unknown): cand is CharacterFormComponent =>
@@ -78,7 +79,7 @@ export async function characterVoiceOp(
           !(cand instanceof Set) &&
           cand !== window &&
           cand !== document &&
-          !(cand as AngularLifecycleHandle).Ca?.Va,
+          !isStoreDestroyed(cand),
       );
     const isExactComp = (cand: unknown): cand is CharacterFormComponent =>
       isBasicObj(cand) &&

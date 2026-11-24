@@ -6,10 +6,14 @@
 import { findRouter } from "./angular";
 import { clickButtonByRegex, delay, isVisibleEnabled, setNativeValue } from "./dom";
 import { clearStore, runtimeState } from "./state";
+import { isStoreDestroyed } from "./store_shape";
 import type { CharacterOpRequest } from "./types";
 
 /** Creates, opens, updates, or finishes character entity editing in Google Flow. */
 export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
+  if ((runtimeState.lService || runtimeState.store) && isStoreDestroyed(runtimeState.lService)) {
+    clearStore();
+  }
   const helper = runtimeState.store;
   const getMap = () => helper?.getTileMap?.();
   const action = String(req?.action || "").toLowerCase();
@@ -51,11 +55,11 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     }
     if (
       runtimeState.projectId === pid &&
-      runtimeState.lService &&
-      !runtimeState.lService.Ca?.Va &&
-      !runtimeState.lService._ap?.Ca?.Va
+      !isStoreDestroyed(runtimeState.lService)
     ) {
       runtimeState.routePath = location.pathname;
+    } else if (runtimeState.lService || runtimeState.store) {
+      clearStore();
     }
     return { ok: true, spa: true, path: location.pathname };
   }
