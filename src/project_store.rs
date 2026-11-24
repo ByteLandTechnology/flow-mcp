@@ -111,7 +111,9 @@ pub(crate) async fn bind_current_store(engine: &ChromeEngine, project_id: &str) 
     let status = engine
         .call_flow_js("projectStoreStatus", json!([project_id]))
         .await?;
-    if status.get("error").and_then(Value::as_str) == Some("collection_store_not_bound") {
+    let err = status.get("error").and_then(Value::as_str);
+    let bound = status.get("bound").and_then(Value::as_bool) == Some(true);
+    if err == Some("collection_store_not_bound") || (err == Some("store_loading") && !bound) {
         return engine.bind_project_store(project_id).await;
     }
     Ok(status)

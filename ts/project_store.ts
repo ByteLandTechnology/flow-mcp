@@ -53,15 +53,20 @@ let boundHandle: FlowStoreHandle | null = null;
 /** Promise chain that serializes general store mutations in this document. */
 let mutationChain: Promise<void> = Promise.resolve();
 
-/** Route host elements that mount once the active `/project/<id>` view bundle initializes. */
+/** Route host elements that appear when the active `/project/<id>` view bundle initializes. */
 const PROJECT_ROUTE_HOST_SELECTOR = [
   "flow-project-shell",
   "flow-project-page",
   "flow-character-page",
   "flow-character-edit-page",
+  "flow-character-preview-panel",
+  "flow-create-character-footer",
+  "flow-edit-character-footer",
   "flow-scene-builder",
   "flow-editor-dispatcher",
   "flow-editor-page",
+  "flow-applet-view-header",
+  "flow-agent-panel",
 ].join(", ");
 
 /** Returns the project ID in the current route. */
@@ -116,7 +121,7 @@ export function currentProjectStore(projectId: string): ProjectStore | null {
   return active?.projectId === projectId ? active : null;
 }
 
-/** Finds the query by its full project key, priming the lazy signal query when needed. */
+/** Finds the query by its full project key and initializes the signal query when needed. */
 function projectQuery({ projectId, service, format }: ProjectStore): ProjectTileQuery | undefined {
   const tiles = readOwn(service, format.tilesService);
   const queryKey = readOwn(tiles, "queryKey");
@@ -132,7 +137,7 @@ function projectQuery({ projectId, service, format }: ProjectStore): ProjectTile
       try {
         void ("status" in signalQuery);
       } catch {
-        // Ignore transient signal evaluation errors while inputs settle.
+        // Ignore signal read errors before inputs are ready.
       }
       query = find.call(cache, { queryKey: key, exact: true }) as ProjectTileQuery | undefined;
     }
@@ -412,9 +417,10 @@ export function findProjectStoreInView(
   return matches;
 }
 
-/** Returns true while the `/project/<id>` route bundle or shell host has not mounted yet. */
+/** Returns true while the `/project/<id>` route view is not in the document yet. */
 function isProjectRouteLoading(): boolean {
   if (document.querySelector(PROJECT_ROUTE_HOST_SELECTOR)) return false;
+  if (document.querySelector("flow-landing-page")) return false;
   if (document.readyState !== "complete") return true;
   return Boolean(document.querySelector("aisandbox-root, app-root"));
 }

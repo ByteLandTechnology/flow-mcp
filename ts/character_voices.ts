@@ -126,7 +126,13 @@ export async function characterVoiceOp(
       return direct;
     }
     const formNg = (form as NgContextCarrier).__ngContext__;
-    if (typeof formNg !== "number" || probedForms.has(form)) {
+    const formSlotId =
+      typeof formNg === "number"
+        ? formNg
+        : typeof readOwn(formNg, "lViewId") === "number"
+          ? (readOwn(formNg, "lViewId") as number)
+          : null;
+    if (formSlotId === null || probedForms.has(form)) {
       return null;
     }
     probedForms.add(form);
@@ -182,7 +188,7 @@ export async function characterVoiceOp(
     } finally {
       stop();
     }
-    const idx = formNg;
+    const idx = formSlotId;
     const findAcrossCaptured = (
       predicate: (c: unknown) => c is CharacterFormComponent,
     ): CharacterFormComponent | null => {

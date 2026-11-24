@@ -142,10 +142,16 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
           pid = extractIdFromObject(resolved, 0, new Set());
         } else {
           const ng = (card as NgContextCarrier).__ngContext__;
-          if (typeof ng === "number") {
+          const slotId =
+            typeof ng === "number"
+              ? ng
+              : typeof readOwn(ng, "lViewId") === "number"
+                ? (readOwn(ng, "lViewId") as number)
+                : null;
+          if (slotId !== null) {
             for (const sm of seenMaps) {
               try {
-                const lv = sm.get(ng);
+                const lv = sm.get(slotId);
                 if (Array.isArray(lv)) {
                   pid = extractIdFromObject(lv, 0, new Set());
                   if (pid) break;
