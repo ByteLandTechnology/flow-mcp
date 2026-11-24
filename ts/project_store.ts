@@ -53,18 +53,40 @@ let boundHandle: FlowStoreHandle | null = null;
 /** Promise chain that serializes general store mutations in this document. */
 let mutationChain: Promise<void> = Promise.resolve();
 
+/** Route host elements that mount once the active `/project/<id>` view bundle initializes. */
+const PROJECT_ROUTE_HOST_SELECTOR = [
+  "flow-project-shell",
+  "flow-project-page",
+  "flow-character-page",
+  "flow-character-edit-page",
+  "flow-scene-builder",
+  "flow-editor-dispatcher",
+  "flow-editor-page",
+].join(", ");
+
 /** Returns the project ID in the current route. */
 export function projectInRoute(): string | null {
   return /\/project\/([^/?#]+)/.exec(location.pathname)?.[1] ?? null;
 }
 
+/** Invokes a zero-argument getter or Angular signal on `owner` without throwing. */
+function callStoreGetter(owner: object, key: string): unknown {
+  const getter = readOwn(owner, key);
+  if (typeof getter !== "function") return undefined;
+  try {
+    return getter.call(owner);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Checks the active route, lifecycle flag, and project signal of `store`. */
 export function isCurrent({ projectId, service, format }: ProjectStore): boolean {
-  const currentProject = readOwn(service, format.projectId);
   const lifecycle = readOwn(service, format.lifecycle);
-  return projectInRoute() === projectId &&
+  return Boolean(projectId) &&
+    projectInRoute() === projectId &&
     Boolean(lifecycle) && !readOwn(lifecycle, format.destroyed) &&
-    typeof currentProject === "function" && currentProject.call(service) === projectId;
+    callStoreGetter(service, format.projectId) === projectId;
 }
 
 /** Clears both the direct store binding and `runtimeState.store`. */
@@ -94,7 +116,7 @@ export function currentProjectStore(projectId: string): ProjectStore | null {
   return active?.projectId === projectId ? active : null;
 }
 
-/** Finds the query by its full project key. */
+/** Finds the query by its full project key, priming the lazy signal query when needed. */
 function projectQuery({ projectId, service, format }: ProjectStore): ProjectTileQuery | undefined {
   const tiles = readOwn(service, format.tilesService);
   const queryKey = readOwn(tiles, "queryKey");
@@ -103,7 +125,18 @@ function projectQuery({ projectId, service, format }: ProjectStore): ProjectTile
   if (typeof queryKey !== "function" || typeof find !== "function") return undefined;
   const key: unknown = queryKey.call(tiles, projectId);
   if (!isProjectKey(key, projectId)) return undefined;
-  const query = find.call(cache, { queryKey: key, exact: true }) as ProjectTileQuery | undefined;
+  let query = find.call(cache, { queryKey: key, exact: true }) as ProjectTileQuery | undefined;
+  if (!query) {
+    const signalQuery = readOwn(service, format.tileQuery);
+    if (signalQuery && typeof signalQuery === "object") {
+      try {
+        void ("status" in signalQuery);
+      } catch {
+        // Ignore transient signal evaluation errors while inputs settle.
+      }
+      query = find.call(cache, { queryKey: key, exact: true }) as ProjectTileQuery | undefined;
+    }
+  }
   return isProjectKey(query?.queryKey, projectId) ? query : undefined;
 }
 
@@ -112,13 +145,27 @@ function isProjectKey(key: unknown, projectId: string): boolean {
   return Array.isArray(key) && key.length === 2 && key[0] === "PROJECT_TILES" && key[1] === projectId;
 }
 
+/** Reads a boolean or status field from a TanStack signal query proxy without throwing. */
+function readQueryField(signalQuery: object, key: string): unknown {
+  try {
+    if (!(key in signalQuery)) return undefined;
+    const prop = readOwn(signalQuery, key);
+    return typeof prop === "function" ? prop.call(signalQuery) : prop;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Returns true while the verified tile query of `store` loads initial rows. */
 export function isProjectStorePending(store: ProjectStore): boolean {
   if (!isCurrent(store)) return false;
   const signalQuery = readOwn(store.service, store.format.tileQuery);
-  if (signalQuery && typeof signalQuery === "object" && "isPending" in signalQuery) {
-    const isPending = readOwn(signalQuery, "isPending");
-    if (typeof isPending === "function" ? Boolean(isPending.call(signalQuery)) : isPending === true) {
+  if (signalQuery && typeof signalQuery === "object") {
+    if (
+      readQueryField(signalQuery, "isPending") === true ||
+      readQueryField(signalQuery, "isLoading") === true ||
+      readQueryField(signalQuery, "status") === "pending"
+    ) {
       return true;
     }
   }
@@ -342,12 +389,34 @@ export function findProjectStoreInView(
 
   for (const slot of view) {
     consider(slot);
-    if (!slot || typeof slot !== "object" || slot instanceof Node) continue;
+    if (
+      !slot ||
+      typeof slot !== "object" ||
+      Array.isArray(slot) ||
+      slot instanceof Node ||
+      slot instanceof Map ||
+      slot instanceof Set
+    ) {
+      continue;
+    }
+    const checked = new Set<string>();
     for (const key of format.componentSlots) {
+      checked.add(key);
+      consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
+    }
+    for (const key of Object.keys(slot)) {
+      if (checked.has(key)) continue;
       consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
     }
   }
   return matches;
+}
+
+/** Returns true while the `/project/<id>` route bundle or shell host has not mounted yet. */
+function isProjectRouteLoading(): boolean {
+  if (document.querySelector(PROJECT_ROUTE_HOST_SELECTOR)) return false;
+  if (document.readyState !== "complete") return true;
+  return Boolean(document.querySelector("aisandbox-root, app-root"));
 }
 
 /** Reports whether the current runtime has a bound and ready store for `projectId`. */
@@ -359,7 +428,11 @@ export function projectStoreStatus(projectId: string): ProjectStoreStatus {
   }
   if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
   const store = currentProjectStore(projectId);
-  if (!store) return { ok: false, error: "collection_store_not_bound" };
+  if (!store) {
+    return isProjectRouteLoading()
+      ? { ok: false, error: "store_loading" }
+      : { ok: false, error: "collection_store_not_bound" };
+  }
   if (isProjectStorePending(store)) {
     return { ok: false, bound: true, error: "store_loading" };
   }
@@ -387,7 +460,9 @@ export function bindProjectStore(maps: unknown[], projectId: string): ProjectSto
   if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
   if (!verifiedStoreLayout()) {
     clearProjectStore();
-    return { ok: false, error: "collection_store_not_bound" };
+    return isProjectRouteLoading()
+      ? { ok: false, error: "store_loading" }
+      : { ok: false, error: "collection_store_not_bound" };
   }
 
   const seen = new Set<object>();
@@ -405,8 +480,11 @@ export function bindProjectStore(maps: unknown[], projectId: string): ProjectSto
   const selected = candidates.find(({ store }) => store === selectedStore);
   if (!selected) {
     clearProjectStore();
-    return candidates.length > 1
-      ? { ok: false, error: "ambiguous_collection_store" }
+    if (candidates.length > 1) {
+      return { ok: false, error: "ambiguous_collection_store" };
+    }
+    return isProjectRouteLoading()
+      ? { ok: false, error: "store_loading" }
       : { ok: false, error: "collection_store_not_bound" };
   }
   installProjectStore(selected.store, selected.views);

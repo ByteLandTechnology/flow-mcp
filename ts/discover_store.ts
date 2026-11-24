@@ -23,11 +23,13 @@ import type { DiscoverStoreResult, NgLView } from "./types";
 const STORE_HOST_SELECTORS = [
   "flow-project-shell",
   "flow-project-page",
+  "flow-character-page",
   "flow-character-edit-page",
   "flow-character-edit-header",
   "flow-character-form",
   "flow-character-preview-panel",
   "flow-character-image-preview",
+  "flow-create-character-footer",
   "flow-edit-character-footer",
   "flow-character-header",
   "flow-editor-dispatcher",

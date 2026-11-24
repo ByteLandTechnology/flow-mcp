@@ -48,7 +48,7 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       }
     }
     if (Array.isArray(obj)) {
-      for (let i = 0; i < Math.min(obj.length, 25); i++) {
+      for (let i = 0; i < Math.min(obj.length, 80); i++) {
         const hit = extractIdFromObject(obj[i], depth + 1, seen);
         if (hit) return hit;
       }
@@ -137,19 +137,22 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         }
       }
       if (!pid) {
-        const ng = (card as NgContextCarrier).__ngContext__;
-        if (Array.isArray(ng)) {
-          pid = extractIdFromObject(ng, 0, new Set());
-        } else if (typeof ng === "number") {
-          for (const sm of seenMaps) {
-            try {
-              const lv = sm.get(ng);
-              if (Array.isArray(lv)) {
-                pid = extractIdFromObject(lv, 0, new Set());
-                if (pid) break;
+        const resolved = resolveLView(card);
+        if (resolved) {
+          pid = extractIdFromObject(resolved, 0, new Set());
+        } else {
+          const ng = (card as NgContextCarrier).__ngContext__;
+          if (typeof ng === "number") {
+            for (const sm of seenMaps) {
+              try {
+                const lv = sm.get(ng);
+                if (Array.isArray(lv)) {
+                  pid = extractIdFromObject(lv, 0, new Set());
+                  if (pid) break;
+                }
+              } catch {
+                // Ignore map read error.
               }
-            } catch {
-              // Ignore map read error.
             }
           }
         }

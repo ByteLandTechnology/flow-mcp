@@ -22,7 +22,7 @@ pub(crate) use crate::project_route::{
 use crate::project_store::{bind_current_store, prepare_project_store_status};
 
 /// Angular error code for a required input that has no value yet.
-const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
+pub(crate) const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
 
 /// Parameters for `flow_status`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -367,7 +367,8 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
 
     let workspace = project_workspace_url(&url, &project_id);
     let mut input_pending = false;
-    for attempt in 0..10 {
+    let mut store_loading = false;
+    for attempt in 0..24 {
         let active_url = engine.current_url().await?;
         anyhow::ensure!(
             is_flow_host_url(&active_url)
@@ -387,10 +388,12 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             return Ok(());
         }
         if status_err == Some("store_loading") {
+            store_loading = true;
             tokio::time::sleep(Duration::from_millis(250)).await;
             continue;
         }
         input_pending = status_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
+        store_loading = false;
 
         let discovery =
             store_loading_result(engine.call_flow_async("discoverStore", json!([])).await)?;
@@ -425,6 +428,12 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             build_suffix(engine).await
         );
     }
+    if store_loading {
+        anyhow::bail!(
+            "The Flow project store is still loading.{}",
+            build_suffix(engine).await
+        );
+    }
     anyhow::bail!(
         "Failed to bind the Flow project store. Open a Flow project first.{}",
         build_suffix(engine).await
@@ -432,7 +441,7 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
 }
 
 /// Treats an unset Angular input as a loading result for a project store read.
-fn store_loading_result(result: Result<Value>) -> Result<Value> {
+pub(crate) fn store_loading_result(result: Result<Value>) -> Result<Value> {
     match result {
         Err(error)
             if error.to_string().lines().next().is_some_and(|line| {

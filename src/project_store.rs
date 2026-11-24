@@ -11,7 +11,7 @@ use tokio::sync::MutexGuard;
 
 use crate::auth::is_signed_in_flow_url;
 use crate::engine::{ChromeEngine, checked_runtime_result};
-use crate::project::project_id_from_url;
+use crate::project::{ANGULAR_REQUIRED_INPUT_ERROR, project_id_from_url, store_loading_result};
 
 /// Holds the browser project store lock and pins the project and runtime session.
 pub(crate) struct ProjectStoreSession<'a> {
@@ -36,20 +36,23 @@ impl<'a> ProjectStoreSession<'a> {
             .context("Open a Google Flow project before you use this tool")?;
         let guard = engine.lock_project_store().await;
         let mut dom_probed = false;
-        let mut status = bind_current_store(engine, &project_id).await?;
+        let mut status = store_loading_result(bind_current_store(engine, &project_id).await)?;
         for _ in 0..25 {
             let err = status.get("error").and_then(Value::as_str);
             if err == Some("collection_store_not_bound") && !dom_probed {
                 dom_probed = true;
-                let _ = engine.call_flow_async("discoverStore", json!([])).await;
-                status = engine
-                    .call_flow_js("projectStoreStatus", json!([project_id]))
-                    .await?;
+                let _ =
+                    store_loading_result(engine.call_flow_async("discoverStore", json!([])).await)?;
+                status = store_loading_result(
+                    engine
+                        .call_flow_js("projectStoreStatus", json!([project_id]))
+                        .await,
+                )?;
                 continue;
             }
-            if err == Some("store_loading") {
+            if matches!(err, Some("store_loading" | ANGULAR_REQUIRED_INPUT_ERROR)) {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                status = bind_current_store(engine, &project_id).await?;
+                status = store_loading_result(bind_current_store(engine, &project_id).await)?;
                 continue;
             }
             break;
