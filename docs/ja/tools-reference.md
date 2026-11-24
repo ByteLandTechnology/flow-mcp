@@ -337,7 +337,7 @@ Flow シーンタイムラインの一覧表示、作成、クリップ追加、
 | `action` | `string` | いいえ | `list`（既定）または `upload`。 |
 | `files` | `string[]` | `upload` の場合に必須 | サーバー上のローカル画像または動画のパス。 |
 | `query` | `string` | いいえ | アセット ID、名前、またはプロンプトに一致する大文字小文字を区別しない部分文字列。 |
-| `kind` | `string` | いいえ | `"image"`、`"video"`、`"scene"`、`"character"`、または `"all"`（既定）で絞り込みます。 |
+| `kind` | `string` | いいえ | `"image"`、`"video"`、`"audio"`、`"scene"`、`"character"`、または `"all"`（既定）で絞り込みます。 |
 | `collection` | `string` | いいえ | コレクション ID、名前部分文字列、`"all"`、`"none"`、または `"uncollected"` で絞り込みます。 |
 | `limit` | `integer` | いいえ | 返す最大項目数（`>= 1`）。 |
 | `resolve_urls` | `boolean` | いいえ | 絞り込みと件数制限の後、不足しているメディア URL を取得します。既定値は `true` で、待機時間は最大 10 秒です。 |
@@ -386,7 +386,7 @@ Flow シーンタイムラインの一覧表示、作成、クリップ追加、
 
 ### `flow_download`
 
-一致するプロジェクトの画像または動画を `<home>/downloads` へダウンロードし、`flow-mcp.db` に登録します。最大 `45` 秒まで待機し（タイムアウト時は `pending: true`）、`{"file", "resource_uri", "record"}` を返します。クライアントが MCP `2025-06-18` 以降に対応している場合は、`resource_link` も返します。
+一致するプロジェクトのメディアアセット（画像、動画、音声、またはキャラクター外見）を `<home>/downloads` へダウンロードし、`flow-mcp.db` に登録します。最大 `45` 秒まで待機し（タイムアウト時は `pending: true`）、`{"file", "resource_uri", "record"}` を返します。クライアントが MCP `2025-06-18` 以降に対応している場合は、`resource_link` も返します。
 
 | パラメータ | 型 | 必須 | 説明 |
 | :--- | :--- | :--- | :--- |
@@ -402,7 +402,7 @@ Flow シーンタイムラインの一覧表示、作成、クリップ追加、
 | `id` | `integer` | いいえ | `"get"`、`"read_chunk"`、または `"delete"` 用の SQLite ダウンロード行 ID（`>= 1`）。 |
 | `asset_id` | `string` | いいえ | `"get"`、`"read_chunk"`、または `"delete"` 用の Flow アセット ID。 |
 | `query` | `string` | いいえ | ID、名前、プロンプト、ファイル名、またはパスに一致する大文字小文字を区別しない部分文字列（`"list"`）。 |
-| `kind` | `string` | いいえ | `"list"` 用のフィルタ：`"image"`、`"video"`、`"scene"`、`"character"`、または `"all"`（既定）。 |
+| `kind` | `string` | いいえ | `"list"` 用のフィルタ：`"image"`、`"video"`、`"audio"`、`"scene"`、`"character"`、または `"all"`（既定）。 |
 | `project_id` | `string` | いいえ | `"list"` 用のプロジェクト ID フィルタ。 |
 | `existing_only` | `boolean` | いいえ | `"list"` 時にディスク上に存在するファイルの行のみを返します。既定は `false`。 |
 | `limit` | `integer` | いいえ | `"list"` 用のページ上限（`1..=500`、既定 `50`）。 |

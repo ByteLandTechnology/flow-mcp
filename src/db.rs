@@ -61,7 +61,7 @@ pub(crate) struct NewDownloadRecord {
     pub(crate) project_title: Option<String>,
     /// Asset display name.
     pub(crate) name: String,
-    /// Asset kind (`"image"`, `"video"`, `"scene"`, or `"character"`).
+    /// Asset kind (`"image"`, `"video"`, `"audio"`, `"scene"`, or `"character"`).
     pub(crate) kind: String,
     /// Generation prompt when available.
     pub(crate) prompt: Option<String>,
@@ -94,7 +94,7 @@ pub(crate) struct DownloadRecord {
     pub(crate) project_title: Option<String>,
     /// Asset display name.
     pub(crate) name: String,
-    /// Asset kind (`"image"`, `"video"`, `"scene"`, or `"character"`).
+    /// Asset kind (`"image"`, `"video"`, `"audio"`, `"scene"`, or `"character"`).
     pub(crate) kind: String,
     /// Generation prompt when available.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,7 +157,7 @@ pub(crate) struct DownloadsParams {
     pub(crate) asset_id: Option<String>,
     /// Case-insensitive substring that matches asset ID, name, prompt, file name, or path for "list".
     pub(crate) query: Option<String>,
-    /// Asset kind filter for "list": "image", "video", "scene", "character", or "all" (default).
+    /// Asset kind filter for "list": "image", "video", "audio", "scene", "character", or "all" (default).
     pub(crate) kind: Option<String>,
     /// Filter by Google Flow project ID for "list".
     pub(crate) project_id: Option<String>,

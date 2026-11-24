@@ -310,6 +310,18 @@ export async function dismissOverlay(): Promise<void> {
   }
 }
 
+/** Lowercase query parameter names that identify signed GCS or CDN media URLs. */
+const SIGNED_QUERY_KEYS = new Set([
+  "signature",
+  "googleaccessid",
+  "x-goog-signature",
+  "x-goog-algorithm",
+  "x-goog-credential",
+  "x-goog-date",
+  "x-goog-expires",
+  "x-goog-signedheaders",
+]);
+
 /** Extracts active FIFE host, `authuser`, and signed-CDN detection from `window.WIZ_global_data`. */
 export function fifeEnv(): FifeEnv {
   const wiz = window.WIZ_global_data || {};
@@ -331,15 +343,24 @@ export function fifeEnv(): FifeEnv {
         : null;
   const isSignedCdnHost = (parsed: URL): boolean => {
     const host = parsed.hostname.toLowerCase();
-    return (
+    if (
       host === "storage.googleapis.com" ||
+      host.endsWith(".storage.googleapis.com") ||
       host === "flow-content.google" ||
       host.endsWith(".flow-content.google") ||
+      host === "labs-flow.dev" ||
+      host.endsWith(".labs-flow.dev") ||
       host === "video-downloads.googleusercontent.com" ||
-      parsed.searchParams.has("Signature") ||
-      parsed.searchParams.has("X-Goog-Signature") ||
-      parsed.searchParams.has("GoogleAccessId")
-    );
+      host.endsWith(".video-downloads.googleusercontent.com")
+    ) {
+      return true;
+    }
+    for (const key of parsed.searchParams.keys()) {
+      if (SIGNED_QUERY_KEYS.has(key.toLowerCase())) {
+        return true;
+      }
+    }
+    return false;
   };
   return { fifeHost, authuser, isSignedCdnHost };
 }

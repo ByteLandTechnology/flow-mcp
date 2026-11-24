@@ -120,6 +120,14 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
   const env = getFifeEnv();
   const fifeHost = env.fifeHost || "flow.google.com";
   const authuser = env.authuser || null;
+  const isSignedUrlStr = (v: string | null | undefined): v is string => {
+    if (typeof v !== "string" || !/^https?:\/\//i.test(v)) return false;
+    try {
+      return env.isSignedCdnHost(new URL(v));
+    } catch {
+      return false;
+    }
+  };
 
   const normalizeFlowMediaUrl = (u: string, kind: string): string => {
     if (typeof u !== "string" || !/^https?:\/\//i.test(u)) return u;
@@ -196,28 +204,35 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       counts.set(cid, (counts.get(cid) ?? 0) + 1);
     }
 
-    const kind =
+    const rawMime = String(t.Fb?.mimeType ?? t.fb?.mimeType ?? t.mimeType ?? "").toLowerCase();
+    const baseKind =
       ttype === "VIDEO"
         ? "video"
-        : ttype === "SCENE"
-          ? "scene"
-          : ttype === "CHARACTER"
-            ? "character"
-            : "image";
-    if (kind === "scene") {
+        : ttype === "AUDIO" || ttype === "MUSIC" || ttype === "VOICE" || rawMime.startsWith("audio/")
+          ? "audio"
+          : ttype === "SCENE"
+            ? "scene"
+            : ttype === "CHARACTER"
+              ? "character"
+              : "image";
+    if (baseKind === "scene") {
       sceneTiles.push(t);
     }
 
     let charFallbackUrl: string | null = null;
     let charLookPrimaryMediaId: string | number | null = null;
-    if (kind === "character") {
+    if (baseKind === "character") {
       charFallbackUrl = asHttpOrDataUrl(t.ue);
       const looks = characterLooksOf(t);
       if (looks) {
         for (const entry of looks.values()) {
           if (!entry) continue;
-          if (!charLookPrimaryMediaId && entry.primaryMediaId) {
-            charLookPrimaryMediaId = entry.primaryMediaId;
+          if (!charLookPrimaryMediaId) {
+            charLookPrimaryMediaId =
+              entry.primaryMediaId ??
+              entry.media?.id ??
+              entry.media?.mediaId ??
+              null;
           }
           if (!charFallbackUrl) {
             charFallbackUrl =
@@ -229,17 +244,30 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               asHttpOrDataUrl(entry.media?.fifeUrl) ||
               asHttpOrDataUrl(entry.media?.url);
           }
-          if (!charFallbackUrl && Array.isArray(entry.history)) {
+          if (
+            (!charFallbackUrl || !charLookPrimaryMediaId) &&
+            Array.isArray(entry.history)
+          ) {
             for (const h of entry.history) {
-              charFallbackUrl =
-                asHttpOrDataUrl(h?.Wb) ||
-                asHttpOrDataUrl(h?.fifeUrl) ||
-                asHttpOrDataUrl(h?.imageUrl) ||
-                asHttpOrDataUrl(h?.url) ||
-                asHttpOrDataUrl(h?.media?.Wb) ||
-                asHttpOrDataUrl(h?.media?.fifeUrl) ||
-                asHttpOrDataUrl(h?.media?.url);
-              if (charFallbackUrl) break;
+              if (!charLookPrimaryMediaId) {
+                charLookPrimaryMediaId =
+                  h?.primaryMediaId ??
+                  (h as FlowMediaPayload | undefined)?.id ??
+                  h?.media?.id ??
+                  h?.media?.mediaId ??
+                  null;
+              }
+              if (!charFallbackUrl) {
+                charFallbackUrl =
+                  asHttpOrDataUrl(h?.Wb) ||
+                  asHttpOrDataUrl(h?.fifeUrl) ||
+                  asHttpOrDataUrl(h?.imageUrl) ||
+                  asHttpOrDataUrl(h?.url) ||
+                  asHttpOrDataUrl(h?.media?.Wb) ||
+                  asHttpOrDataUrl(h?.media?.fifeUrl) ||
+                  asHttpOrDataUrl(h?.media?.url);
+              }
+              if (charFallbackUrl && charLookPrimaryMediaId) break;
             }
           }
           if (charFallbackUrl && charLookPrimaryMediaId) break;
@@ -248,7 +276,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     }
 
     const videoMediaUrl =
-      kind === "video"
+      baseKind === "video"
         ? asHttpOrDataUrl(t.Fb?.Bd) ||
           asHttpOrDataUrl(t.Fb?.uA) ||
           asHttpOrDataUrl(t.Fb?.videoUrl) ||
@@ -275,38 +303,44 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       t.Fb?.mediaId ||
       t.fb?.mediaId ||
       t.mediaId ||
-      (kind === "character" ? charLookPrimaryMediaId : null) ||
+      (baseKind === "character" ? charLookPrimaryMediaId : null) ||
       null;
 
-    const cachedVideoUrl =
-      kind === "video" && primaryMediaId
-        ? asHttpOrDataUrl(
-            runtimeState.mediaInfoCache.get(String(primaryMediaId))?.url,
-          )
-        : null;
+    const cachedEntry = primaryMediaId
+      ? runtimeState.mediaInfoCache.get(String(primaryMediaId))
+      : undefined;
+    const kind =
+      baseKind === "image" && cachedEntry?.media_kind === "audio"
+        ? "audio"
+        : baseKind;
+    const cachedMediaUrl = asHttpOrDataUrl(cachedEntry?.url);
 
-    const rawMediaUrl =
+    const tileMediaUrl =
       videoMediaUrl ||
-      t.Fb?.Wb ||
-      t.Fb?.fifeUrl ||
-      t.Fb?.videoUrl ||
-      t.Fb?.imageUrl ||
-      t.Fb?.mediaUrl ||
-      t.Fb?.url ||
-      t.Wb ||
-      t.fifeUrl ||
-      t.videoUrl ||
-      t.imageUrl ||
-      t.mediaUrl ||
-      t.url ||
-      t.fb?.Wb ||
-      t.fb?.fifeUrl ||
-      t.fb?.videoUrl ||
-      t.fb?.imageUrl ||
-      t.fb?.mediaUrl ||
+      asHttpOrDataUrl(t.Fb?.Wb) ||
+      asHttpOrDataUrl(t.Fb?.fifeUrl) ||
+      asHttpOrDataUrl(t.Fb?.videoUrl) ||
+      asHttpOrDataUrl(t.Fb?.imageUrl) ||
+      asHttpOrDataUrl(t.Fb?.mediaUrl) ||
+      asHttpOrDataUrl(t.Fb?.url) ||
+      asHttpOrDataUrl(t.Wb) ||
+      asHttpOrDataUrl(t.fifeUrl) ||
+      asHttpOrDataUrl(t.videoUrl) ||
+      asHttpOrDataUrl(t.imageUrl) ||
+      asHttpOrDataUrl(t.mediaUrl) ||
+      asHttpOrDataUrl(t.url) ||
+      asHttpOrDataUrl(t.fb?.Wb) ||
+      asHttpOrDataUrl(t.fb?.fifeUrl) ||
+      asHttpOrDataUrl(t.fb?.videoUrl) ||
+      asHttpOrDataUrl(t.fb?.imageUrl) ||
+      asHttpOrDataUrl(t.fb?.mediaUrl) ||
       charFallbackUrl ||
-      cachedVideoUrl ||
       null;
+    const rawMediaUrl = isSignedUrlStr(tileMediaUrl)
+      ? tileMediaUrl
+      : isSignedUrlStr(cachedMediaUrl)
+        ? cachedMediaUrl
+        : tileMediaUrl || cachedMediaUrl || null;
     const mediaUrl = mediaNotReady ? null : rawMediaUrl;
 
     const bio =
@@ -469,7 +503,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
             runtimeState.mediaInfoCache.get(clipPrimaryMediaId)?.url,
           )
         : null;
-      const rawClipUrl =
+      const tileClipUrl =
         asHttpOrDataUrl(mObj?.Bd) ||
         asHttpOrDataUrl(mObj?.uA) ||
         asHttpOrDataUrl(mObj?.videoUrl) ||
@@ -482,8 +516,12 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         asHttpOrDataUrl(clip?.videoUrl) ||
         asHttpOrDataUrl(clip?.Wb) ||
         asHttpOrDataUrl(clip?.fifeUrl) ||
-        cachedClipVideoUrl ||
         null;
+      const rawClipUrl = isSignedUrlStr(tileClipUrl)
+        ? tileClipUrl
+        : isSignedUrlStr(cachedClipVideoUrl)
+          ? cachedClipVideoUrl
+          : tileClipUrl || cachedClipVideoUrl || null;
       const clipUrl = mNotReady ? null : rawClipUrl;
       const trimStartVal =
         typeof clip?.Ji === "number" ? clip.Ji :

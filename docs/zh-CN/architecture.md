@@ -67,8 +67,8 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 
 ### 媒体下载流程（`flow_download` 与任务下载）
 
-1. **URL 解析**：`flow-mcp` 从项目快照读取 `fifeUrl`、`videoUrl` 或 `imageUrl`。如果缺失，它调用 Flow `as29s` RPC 获取签名 URL。
-2. **主 HTTP 流（`reqwest`）**：`reqwest` 将字节流式写入临时文件。对于签名 CDN URL（`storage.googleapis.com` 与 `flow-content.google`），它不附加 Cookie 请求头；对于 Google URL，它发送 `Referer: https://flow.google.com/` 与 Chrome Cookie。
-3. **浏览器 `fetchMedia` 回退**：如果 HTTP 流失败，`ChromeEngine` 会在 Flow 页面内部运行 `fetchMedia` 并解码返回的 Base64 结果。
+1. **URL 解析**：`flow-mcp` 优先使用项目快照中的签名直连 URL，并按媒体 ID 调用 Flow `as29s` RPC 获取签名 URL，最后才回退到未签名代理 URL。
+2. **主 HTTP 流（`reqwest`）**：`reqwest` 将字节流式写入临时文件。对于签名 CDN URL（`storage.googleapis.com`、`*.storage.googleapis.com`、`flow-content.google`、`labs-flow.dev`、`video-downloads.googleusercontent.com` 以及带 V2/V4 签名查询参数的 URL），它省略 `Cookie` 与 `Referer` 请求头；对于未签名 Google 代理 URL，它发送 `Referer: https://flow.google.com/` 与 Chrome Cookie。
+3. **浏览器 `fetchMedia` 回退**：如果 HTTP 流失败，`ChromeEngine` 会在 Flow 页面内部运行 `fetchMedia`（对签名 CDN URL 使用 `credentials: "omit"`）并解码返回的 Base64 结果。
 4. **校验与自然命名**：`flow-mcp` 拒绝空字节文件并校验 `Content-Type` 与文件魔数。它按 `Content-Disposition`、URL 路径或 `<asset_id>.<ext>` 选择文件名，处理重名冲突并更新 SQLite（`downloads`）。
 5. **MCP 资源服务**：`flow-mcp` 将每个下载项注册为 `flow://downloads/{id}` 与 `flow://downloads/asset/{asset_id}`。`resources/list` 每页返回 `100` 条项目。`resources/read` 以 Base64 提供不超过 `64 MiB` 的文件，而 `flow_downloads`（`action="read_chunk"`）按分片读取更大的文件。

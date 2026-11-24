@@ -56,6 +56,8 @@ export interface FlowMediaPayload {
   mediaUrl?: string;
   /** Fallback media URL field. */
   url?: string;
+  /** Media MIME type from the Flow front end. */
+  mimeType?: string;
   /** Media lifecycle status string. */
   Zc?: string;
   /** Media lifecycle status string in the Flow front end from 2026-11-15 on. */
@@ -178,7 +180,7 @@ export interface FlowTile extends FlowMediaPayload {
   primaryMediaId?: string | number;
   /** Tile display title. */
   displayName?: string;
-  /** Uppercase tile kind (`IMAGE`, `VIDEO`, `SCENE`, `CHARACTER`, `COLLECTION`). */
+  /** Uppercase tile kind (`IMAGE`, `VIDEO`, `AUDIO`, `SCENE`, `CHARACTER`, `COLLECTION`). */
   type?: string;
   /** True while creation mutation is pending. */
   isPending?: boolean;
@@ -430,6 +432,8 @@ export interface CachedMediaInfo {
   download_url: string;
   /** Ordered list of candidate download URLs. */
   candidates: string[];
+  /** Media kind from the wire response when known. */
+  media_kind?: "video" | "image" | "audio";
 }
 
 /** Result returned by `checkAuth`. */
@@ -458,7 +462,7 @@ export interface SnapshotAssetItem {
   id: string;
   /** Display name. */
   name: string;
-  /** Asset kind (`image`, `video`, `scene`, or `character`). */
+  /** Asset kind (`image`, `video`, `audio`, `scene`, or `character`). */
   kind: string;
   /** Generation prompt text. */
   prompt: string | null;
@@ -545,7 +549,13 @@ export interface FetchedMediaPayload {
 /** Result returned by `resolveVideoUrl`. */
 export type ResolvedMediaResult =
   | { ok: false; error: string }
-  | { ok: true; url: string; download_url: string; candidates: string[] };
+  | {
+      ok: true;
+      url: string;
+      download_url: string;
+      candidates: string[];
+      media_kind?: "video" | "image" | "audio";
+    };
 
 /** Configuration payload shared by `setupGeneration` and `attachIngredients`. */
 export interface GenerationConfig {
@@ -764,7 +774,11 @@ export interface FlowMcpRuntime {
   /** Fetches a media URL with page credentials and returns Base64 payload metadata. */
   fetchMedia: (u: string, expectedKind: string) => Promise<FetchedMediaPayload>;
   /** Resolves stream and download URLs for a primary media identifier via `as29s`. */
-  resolveVideoUrl: (primaryMediaId: string) => Promise<ResolvedMediaResult>;
+  resolveVideoUrl: (
+    primaryMediaId: string,
+    timeoutMs?: number | null,
+    bypassCache?: boolean,
+  ) => Promise<ResolvedMediaResult>;
   /** Configures generation mode, video type, aspect ratio, count, duration, resolution, and model. */
   setupGeneration: (cfg: GenerationConfig) => Promise<{ ok: boolean; error?: string }>;
   /** Attaches ingredient assets or characters and writes the generation prompt. */

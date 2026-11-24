@@ -337,7 +337,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | `action` | `string` | 否 | `list`（默认）或 `upload`。 |
 | `files` | `string[]` | `upload` 时必填 | 服务端所在机器的本地图片或视频路径。 |
 | `query` | `string` | 否 | 匹配资产 ID、名称或提示词的忽略大小写子串。 |
-| `kind` | `string` | 否 | 按 `"image"`、`"video"`、`"scene"`、`"character"` 或 `"all"`（默认）筛选。 |
+| `kind` | `string` | 否 | 按 `"image"`、`"video"`、`"audio"`、`"scene"`、`"character"` 或 `"all"`（默认）筛选。 |
 | `collection` | `string` | 否 | 按集合 ID、名称子串、`"all"`、`"none"` 或 `"uncollected"` 筛选。 |
 | `limit` | `integer` | 否 | 返回的最大条目数（`>= 1`）。 |
 | `resolve_urls` | `boolean` | 否 | 应用筛选和条数限制后，补齐返回项缺失的媒体 URL。默认 `true`，最多等待 10 秒。 |
@@ -386,7 +386,7 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ### `flow_download`
 
-将匹配的项目图像或视频下载至 `<home>/downloads` 并索引到 `flow-mcp.db`。最多等待 `45` 秒（超时返回 `pending: true`），并返回 `{"file", "resource_uri", "record"}`。如果客户端支持 MCP `2025-06-18` 或更高版本，还会返回 `resource_link`。
+将匹配的项目媒体资产（图像、视频、音频或角色外观）下载至 `<home>/downloads` 并索引到 `flow-mcp.db`。最多等待 `45` 秒（超时返回 `pending: true`），并返回 `{"file", "resource_uri", "record"}`。如果客户端支持 MCP `2025-06-18` 或更高版本，还会返回 `resource_link`。
 
 | 参数 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -402,7 +402,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | `id` | `integer` | 否 | 用于 `"get"`、`"read_chunk"` 或 `"delete"` 的 SQLite 下载行 ID（`>= 1`）。 |
 | `asset_id` | `string` | 否 | 用于 `"get"`、`"read_chunk"` 或 `"delete"` 的 Flow 资产 ID。 |
 | `query` | `string` | 否 | 匹配 ID、名称、提示词、文件名或路径的忽略大小写子串（`"list"`）。 |
-| `kind` | `string` | 否 | `"list"` 筛选：`"image"`、`"video"`、`"scene"`、`"character"` 或 `"all"`（默认）。 |
+| `kind` | `string` | 否 | `"list"` 筛选：`"image"`、`"video"`、`"audio"`、`"scene"`、`"character"` 或 `"all"`（默认）。 |
 | `project_id` | `string` | 否 | `"list"` 按项目 ID 筛选。 |
 | `existing_only` | `boolean` | 否 | `"list"` 仅返回磁盘上存在文件的行。默认 `false`。 |
 | `limit` | `integer` | 否 | `"list"` 分页上限（`1..=500`，默认 `50`）。 |

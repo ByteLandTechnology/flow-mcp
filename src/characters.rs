@@ -724,26 +724,26 @@ pub(crate) async fn create_or_update_character_job(
                         .and_then(|v| v.as_str())
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| char_id.clone());
-                    if let Some(src) = chk
+                        .map(str::to_string);
+                    let src = chk
                         .get("src")
                         .and_then(|v| v.as_str())
                         .map(str::trim)
                         .filter(|s| s.starts_with("http") || s.starts_with("data:"))
-                    {
+                        .map(str::to_string);
+                    if media_id.is_some() || src.is_some() {
                         let temp_asset = FlowAsset {
-                            id: media_id,
+                            id: media_id.clone().unwrap_or_else(|| char_id.clone()),
                             name: persisted_name.clone(),
                             kind: "image".to_string(),
                             prompt: None,
-                            url: Some(src.to_string()),
+                            url: src,
                             collection_id: None,
                             collection_name: None,
                             width: None,
                             height: None,
                             duration: None,
-                            primary_media_id: None,
+                            primary_media_id: media_id,
                             personality_notes: None,
                             voice: None,
                             trim_start_seconds: None,

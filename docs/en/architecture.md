@@ -67,8 +67,8 @@ Running parallel edits on one Google Flow Angular tab causes UI race conditions,
 
 ### Media download pipeline (`flow_download` and job downloads)
 
-1. **URL resolution**: `flow-mcp` reads `fifeUrl`, `videoUrl`, or `imageUrl` from the project snapshot. If missing, it calls Flow `as29s` RPCs to get signed URLs.
-2. **Primary HTTP stream (`reqwest`)**: `reqwest` streams bytes to a temporary file. For signed CDN URLs (`storage.googleapis.com` and `flow-content.google`), it omits cookie headers; for Google URLs, it sends `Referer: https://flow.google.com/` and Chrome cookies.
-3. **Browser `fetchMedia` fallback**: If the HTTP stream fails, `ChromeEngine` runs `fetchMedia` inside the Flow page and decodes the Base64 result.
+1. **URL resolution**: `flow-mcp` uses signed direct URLs from the project snapshot first. When a signed URL is missing, it calls Flow `as29s` RPCs by media ID before it tries unsigned proxy URLs.
+2. **Primary HTTP stream (`reqwest`)**: `reqwest` streams bytes to a temporary file. For signed CDN URLs (`storage.googleapis.com`, `*.storage.googleapis.com`, `flow-content.google`, `labs-flow.dev`, `video-downloads.googleusercontent.com`, and V2 or V4 signed query URLs), it omits `Cookie` and `Referer` headers. For unsigned Google proxy URLs, it sends `Referer: https://flow.google.com/` and Chrome cookies.
+3. **Browser `fetchMedia` fallback**: If the HTTP stream fails, `ChromeEngine` runs `fetchMedia` inside the Flow page (`credentials: "omit"` for signed CDN URLs) and decodes the Base64 result.
 4. **Validation and natural naming**: `flow-mcp` rejects zero-byte files and checks `Content-Type` plus magic bytes. It selects the file name from `Content-Disposition`, the URL path, or `<asset_id>.<ext>`, resolves duplicate names, and updates SQLite (`downloads`).
 5. **MCP resource serving**: `flow-mcp` registers each download as `flow://downloads/{id}` and `flow://downloads/asset/{asset_id}`. `resources/list` returns `100` items per page. `resources/read` serves files up to `64 MiB` as Base64, while `flow_downloads` (`action="read_chunk"`) reads larger files in slices.
