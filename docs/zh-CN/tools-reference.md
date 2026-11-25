@@ -122,6 +122,8 @@ flow-mcp [OPTIONS] <COMMAND>
 | `id` | `string` | 否 | 用于 `"open"`、`"rename"` 或 `"delete"` 的目标项目 ID。 |
 | `title` | `string` | 否 | 用于 `"create"` 或 `"rename"` 的新标题，或用于 `"open"` 与 `"delete"` 的忽略大小写标题匹配词。 |
 
+对于 `"delete"`，如果 `flow-mcp` 点击删除确认按钮后超出确认时限，工具会返回 `outcome_unknown`。请先调用 `"list"` 检查项目是否仍存在，再决定是否重试。
+
 ---
 
 ## 2. 角色与音色工具

@@ -122,6 +122,8 @@ List, create, open, rename, or delete Google Flow projects.
 | `id` | `string` | No | Target project ID for `"open"`, `"rename"`, or `"delete"`. |
 | `title` | `string` | No | New title for `"create"` or `"rename"`, or case-insensitive title match for `"open"` or `"delete"`. |
 
+For `"delete"`, if the confirmation deadline expires after `flow-mcp` clicks Delete project, the tool returns `outcome_unknown`. Call `"list"` to check whether the project still exists before you retry.
+
 ---
 
 ## 2. Characters & voice tools

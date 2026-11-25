@@ -587,10 +587,12 @@ export type StoreSnapshotResult =
 export interface ProjectsOpRequest {
   /** Operation (`list`, `set_title`, or `delete`). */
   action?: string;
-  /** Desired project title for `set_title` or target match for `delete`. */
+  /** Desired project title for `set_title` or target match for `list` and `delete`. */
   title?: string;
-  /** Project identifier for `delete`. */
+  /** Project identifier for `list` and `delete`. */
   project_id?: string;
+  /** Time limit in milliseconds for grid pagination and confirmation. */
+  timeout_ms?: number;
 }
 
 /** Extra options for `assetOps("rename", ...)`. */

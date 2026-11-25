@@ -15,7 +15,7 @@ use tokio::time::{Duration, Instant};
 
 use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
-use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::engine::{ChromeEngine, ENGINE_NAME, checked_runtime_result};
 pub(crate) use crate::project_route::{
     clean_project_title, is_project_subroute_url, project_id_from_url, project_subroute_url,
     project_workspace_url,
@@ -24,6 +24,9 @@ use crate::project_store::{bind_current_store, prepare_project_store_status};
 
 /// Angular error code for a required input that has no value yet.
 const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
+
+/// Time limit for home-page project grid pagination and confirmation.
+const PROJECTS_OP_BUDGET: Duration = Duration::from_secs(45);
 
 /// Parameters for `flow_status`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -588,6 +591,13 @@ async fn run_projects_op(engine: &ChromeEngine, req: Value) -> Result<Value> {
     engine.call_flow_async("projectsOp", json!([req])).await
 }
 
+/// Returns the remaining milliseconds before `deadline`, or `None` when expired.
+fn remaining_budget_ms(deadline: Instant) -> Option<u64> {
+    let rem = deadline.checked_duration_since(Instant::now())?;
+    let ms = u64::try_from(rem.as_millis()).unwrap_or(u64::MAX);
+    (ms > 0).then_some(ms)
+}
+
 /// Navigates to the signed-in Google Flow home page.
 async fn open_signed_in_home_page(engine: &ChromeEngine) -> Result<()> {
     engine.ensure_page().await?;
@@ -600,8 +610,15 @@ async fn open_signed_in_home_page(engine: &ChromeEngine) -> Result<()> {
 
 /// Lists all existing Flow projects from the Flow home page.
 async fn list_projects(engine: &ChromeEngine) -> Result<Value> {
+    let deadline = Instant::now() + PROJECTS_OP_BUDGET;
     open_signed_in_home_page(engine).await?;
-    let res = run_projects_op(engine, json!({ "action": "list" })).await?;
+    let timeout_ms = remaining_budget_ms(deadline)
+        .ok_or_else(|| anyhow::anyhow!("Timed out opening the Google Flow home page"))?;
+    let res = run_projects_op(
+        engine,
+        json!({ "action": "list", "timeout_ms": timeout_ms }),
+    )
+    .await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
             "Failed to list Flow projects: {}",
@@ -627,7 +644,25 @@ async fn open_project(
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Provide `id` or `title` to open a project"))?;
-        let listed = list_projects(engine).await?;
+        let deadline = Instant::now() + PROJECTS_OP_BUDGET;
+        open_signed_in_home_page(engine).await?;
+        let timeout_ms = remaining_budget_ms(deadline)
+            .ok_or_else(|| anyhow::anyhow!("Timed out opening the Google Flow home page"))?;
+        let listed = run_projects_op(
+            engine,
+            json!({ "action": "list", "title": want, "timeout_ms": timeout_ms }),
+        )
+        .await?;
+        if listed.get("ok").and_then(Value::as_bool) != Some(true) {
+            anyhow::bail!(
+                "Failed to list Flow projects: {}",
+                listed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+            );
+        }
+        let truncated = listed.get("truncated").and_then(Value::as_bool) == Some(true);
         let projects = listed
             .get("projects")
             .and_then(Value::as_array)
@@ -649,6 +684,12 @@ async fn open_project(
                 })
             });
         let Some(p) = hit else {
+            if truncated {
+                anyhow::bail!(
+                    "Timed out scanning the Google Flow projects grid for title '{}'",
+                    want
+                );
+            }
             anyhow::bail!("No Google Flow project matches title '{}'", want);
         };
         target_id = p.get("id").and_then(Value::as_str).map(str::to_string);
@@ -710,67 +751,6 @@ async fn confirm_project_title(engine: &ChromeEngine, desired: &str) -> Result<S
     )
 }
 
-/// Counts entries in a `projectsOp` list payload that match `id` or exact `title`.
-fn count_matching_project_entries(
-    entries: &[Value],
-    id: Option<&str>,
-    title: Option<&str>,
-) -> usize {
-    let want_id = id.map(str::trim).filter(|s| !s.is_empty());
-    let want_title = title
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_lowercase);
-    entries
-        .iter()
-        .filter(|entry| {
-            if let Some(wid) = want_id
-                && entry.get("id").and_then(Value::as_str) == Some(wid)
-            {
-                return true;
-            }
-            if let Some(wtitle) = want_title.as_deref()
-                && entry
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .is_some_and(|t| t.trim().to_lowercase() == wtitle)
-            {
-                return true;
-            }
-            false
-        })
-        .count()
-}
-
-/// Polls home-view project entries until the deleted project is absent from the page.
-async fn confirm_project_deleted(
-    engine: &ChromeEngine,
-    deleted_id: Option<&str>,
-    title: Option<&str>,
-    before_matches: usize,
-) -> Result<()> {
-    let want_id = deleted_id.map(str::trim).filter(|s| !s.is_empty());
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        let listed = run_projects_op(engine, json!({ "action": "list" })).await?;
-        if listed.get("ok").and_then(Value::as_bool) == Some(true)
-            && let Some(projects) = listed.get("projects").and_then(Value::as_array)
-        {
-            let gone = match want_id {
-                Some(did) => !projects
-                    .iter()
-                    .any(|p| p.get("id").and_then(Value::as_str) == Some(did)),
-                None => count_matching_project_entries(projects, None, title) < before_matches,
-            };
-            if gone {
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    anyhow::bail!("Failed to confirm project deletion on the Flow home page")
-}
-
 /// Renames the active project (or the project identified by `id`).
 async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) -> Result<Value> {
     let trimmed = title.trim();
@@ -814,37 +794,39 @@ async fn delete_project(
     id: Option<&str>,
     title: Option<&str>,
 ) -> Result<Value> {
-    if id.map(|s| s.trim()).filter(|s| !s.is_empty()).is_none()
-        && title.map(|s| s.trim()).filter(|s| !s.is_empty()).is_none()
-    {
+    let clean_id = id.map(str::trim).filter(|s| !s.is_empty());
+    let clean_title = title.map(str::trim).filter(|s| !s.is_empty());
+    if clean_id.is_none() && clean_title.is_none() {
         anyhow::bail!("Provide `id` or `title` to delete a project");
     }
+    let deadline = Instant::now() + PROJECTS_OP_BUDGET;
     open_signed_in_home_page(engine).await?;
+    let timeout_ms = remaining_budget_ms(deadline)
+        .ok_or_else(|| anyhow::anyhow!("Timed out opening the Google Flow home page"))?;
 
-    let before_list = run_projects_op(engine, json!({ "action": "list" })).await?;
-    let before_matches = before_list
-        .get("projects")
-        .and_then(Value::as_array)
-        .map_or(1, |projects| {
-            count_matching_project_entries(projects, id, title)
-        });
-
-    let res = run_projects_op(
+    let response = run_projects_op(
         engine,
-        json!({ "action": "delete", "project_id": id, "title": title }),
+        json!({
+            "action": "delete",
+            "project_id": clean_id,
+            "title": clean_title,
+            "timeout_ms": timeout_ms,
+        }),
     )
-    .await?;
-    if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        anyhow::bail!(
-            "Failed to delete project: {}",
-            res.get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
+    .await;
+    match response {
+        Ok(res) if res.get("ok").and_then(Value::as_bool) == Some(true) => Ok(res),
+        Ok(res) if res.get("error").and_then(Value::as_str) == Some("outcome_unknown") => {
+            checked_runtime_result(res)
+        }
+        Ok(res) => {
+            let err = checked_runtime_result(res)
+                .err()
+                .unwrap_or_else(|| anyhow::anyhow!("unknown"));
+            anyhow::bail!("Failed to delete project: {err:#}");
+        }
+        Err(err) => anyhow::bail!("outcome_unknown (delete project): {err:#}"),
     }
-    let deleted_id = res.get("deleted_id").and_then(Value::as_str).or(id);
-    confirm_project_deleted(engine, deleted_id, title, before_matches).await?;
-    Ok(res)
 }
 
 /// Dispatches `flow_projects` actions (`list`, `create`, `open`, `rename`, `delete`).
