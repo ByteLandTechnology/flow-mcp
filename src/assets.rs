@@ -27,8 +27,27 @@ const MEDIA_URL_LOOKUPS: usize = 4;
 /// Time to resolve missing URLs in one asset list response.
 const ASSET_LIST_URL_BUDGET: Duration = Duration::from_secs(10);
 
+/// Normalized media variant entry from tile or scene clip history.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct FlowAssetVariant {
+    /// Variant media ID.
+    pub(crate) id: String,
+    /// Lowercase variant generation status (`"pending"`, `"scheduled"`, `"success"`, `"failed"`, or `"canceled"`).
+    #[serde(default)]
+    pub(crate) status: Option<String>,
+    /// Failure description when variant generation failed or canceled.
+    #[serde(default)]
+    pub(crate) error: Option<String>,
+    /// Resolved media URL when the variant completed.
+    #[serde(default)]
+    pub(crate) url: Option<String>,
+    /// Generation prompt text for the variant when present.
+    #[serde(default)]
+    pub(crate) prompt: Option<String>,
+}
+
 /// Media asset or scene item inside a Google Flow project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct FlowAsset {
     /// Flow asset or tile ID.
     pub(crate) id: String,
@@ -60,6 +79,15 @@ pub(crate) struct FlowAsset {
     /// Primary media ID for video trim and edit operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) primary_media_id: Option<String>,
+    /// Parent scene ID when this video clip belongs to a scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scene_id: Option<String>,
+    /// Ordered clip workflow IDs when this asset is a scene tile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) clip_ids: Option<Vec<String>>,
+    /// Internal normalized variant history used to detect edit completions and failures.
+    #[serde(default, skip_serializing)]
+    pub(crate) variants: Vec<FlowAssetVariant>,
     /// Character personality notes or introduction text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) personality_notes: Option<String>,

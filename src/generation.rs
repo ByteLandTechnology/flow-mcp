@@ -1,7 +1,7 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-//! Google Flow media generation and asset editing.
+//! Google Flow media generation and asset polling.
 //!
 //! Drives the Flow generation form through the browser TypeScript runtime and defines MCP
 //! request parameter structs for [`crate::queue::JobQueue`] tasks.
@@ -14,9 +14,10 @@ use std::collections::HashSet;
 use tokio::sync::broadcast;
 use tokio::time::{Duration, Instant};
 
-use crate::assets::{FlowAsset, list_assets_with_project, match_asset};
+use crate::assets::{FlowAsset, list_assets_with_project};
 use crate::db::FlowDb;
 use crate::download::download_resolved_asset;
+use crate::edit::{check_failed_new_variants, resolve_new_completed_variant};
 use crate::engine::{ChromeEngine, NetworkResponseEvent, validate_local_files};
 use crate::project::{ensure_flow_store, ensure_project_workspace_root};
 use crate::queue::{ProgressCallback, SceneParams};
@@ -63,32 +64,24 @@ pub(crate) struct GenerateParams {
     pub(crate) resolution: Option<String>,
 }
 
-/// Parameters for `flow_edit`.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub(crate) struct EditParams {
-    /// Case-insensitive asset ID, name, or prompt substring that selects the source asset.
-    #[serde(rename = "match")]
-    pub(crate) r#match: String,
-    /// Edit prompt for the matched asset.
-    pub(crate) prompt: String,
-}
-
 /// Specification controlling asset polling during generation and edit jobs.
-struct AssetWaitSpec<'a> {
+pub(crate) struct AssetWaitSpec<'a> {
     /// Asset IDs already present before submission.
-    before_ids: &'a HashSet<String>,
+    pub(crate) before_ids: &'a HashSet<String>,
+    /// Variant and media IDs already present before edit submission.
+    pub(crate) before_variant_ids: Option<&'a HashSet<String>>,
     /// Optional existing tile `(asset_id, primary_media_id, url)` watched for replacement updates.
-    watch_updated: Option<(&'a str, Option<&'a str>, Option<&'a str>)>,
+    pub(crate) watch_updated: Option<(&'a str, Option<&'a str>, Option<&'a str>)>,
     /// Target number of generated outputs in the batch.
-    expected_count: usize,
+    pub(crate) expected_count: usize,
     /// Maximum wait time in seconds before failing with timeout.
-    timeout_secs: u64,
+    pub(crate) timeout_secs: u64,
     /// Compact submission diagnostics included in progress updates.
-    submit_summary: &'a str,
+    pub(crate) submit_summary: &'a str,
 }
 
 /// Configures generation controls, uploads reference frames, writes prompt text, and submits.
-async fn apply_generation_controls(
+pub(crate) async fn apply_generation_controls(
     engine: &ChromeEngine,
     scene: &SceneParams,
 ) -> Result<serde_json::Value> {
@@ -118,6 +111,7 @@ async fn apply_generation_controls(
         "video_type": scene.video_type,
         "duration": scene.duration,
         "resolution": scene.resolution,
+        "edit": scene.edit,
     });
 
     let setup_res = engine
@@ -195,7 +189,7 @@ async fn apply_generation_controls(
     }
 
     let mut submit_res = engine
-        .call_flow_async("submitGeneration", json!([]))
+        .call_flow_async("submitGeneration", json!([scene.edit]))
         .await?;
     if submit_res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let err = submit_res
@@ -226,7 +220,7 @@ async fn apply_generation_controls(
 }
 
 /// Formats compact setup and submit diagnostics for generation progress logs.
-fn format_submit_progress(prefix: &str, submit_res: &serde_json::Value) -> String {
+pub(crate) fn format_submit_progress(prefix: &str, submit_res: &serde_json::Value) -> String {
     fn str_or<'a>(obj: Option<&'a serde_json::Value>, key: &str, fallback: &'a str) -> &'a str {
         obj.and_then(|v| v.get(key))
             .and_then(|v| v.as_str())
@@ -323,7 +317,7 @@ pub(crate) fn inspect_generation_network(
 }
 
 /// Polls project snapshots until expected generated outputs resolve or fail.
-async fn wait_for_new_assets(
+pub(crate) async fn wait_for_new_assets(
     engine: &ChromeEngine,
     spec: AssetWaitSpec<'_>,
     net_rx: &mut broadcast::Receiver<NetworkResponseEvent>,
@@ -356,28 +350,35 @@ async fn wait_for_new_assets(
             }
         };
 
-        let new_ones: Vec<FlowAsset> = snap
-            .assets
-            .iter()
-            .filter(|a| {
-                if !spec.before_ids.contains(&a.id) && a.url.is_some() {
-                    return true;
-                }
-                if let Some((tid, prev_pmid, prev_url)) = spec.watch_updated
-                    && a.id == tid
-                    && a.url.is_some()
+        if let Some(before_variants) = spec.before_variant_ids {
+            let watch_id = spec.watch_updated.map(|(tid, _, _)| tid);
+            check_failed_new_variants(&snap.assets, spec.before_ids, before_variants, watch_id)?;
+        }
+
+        let mut new_ones: Vec<FlowAsset> = Vec::new();
+        for a in &snap.assets {
+            if !spec.before_ids.contains(&a.id) && a.url.is_some() {
+                new_ones.push(a.clone());
+                continue;
+            }
+            if let Some((tid, prev_pmid, prev_url)) = spec.watch_updated
+                && a.id == tid
+            {
+                let pmid_changed = a
+                    .primary_media_id
+                    .as_deref()
+                    .is_some_and(|p| Some(p) != prev_pmid);
+                let url_changed = a.url.as_deref() != prev_url;
+                if a.url.is_some() && (pmid_changed || url_changed) {
+                    new_ones.push(a.clone());
+                } else if let Some(before_variants) = spec.before_variant_ids
+                    && let Some(variant_asset) =
+                        resolve_new_completed_variant(engine, a, before_variants).await
                 {
-                    let pmid_changed = a
-                        .primary_media_id
-                        .as_deref()
-                        .is_some_and(|p| Some(p) != prev_pmid);
-                    let url_changed = a.url.as_deref() != prev_url;
-                    return pmid_changed || url_changed;
+                    new_ones.push(variant_asset);
                 }
-                false
-            })
-            .cloned()
-            .collect();
+            }
+        }
 
         if new_ones.is_empty() {
             let new_tiles: Vec<&FlowAsset> = snap
@@ -392,7 +393,29 @@ async fn wait_for_new_assets(
                         .iter()
                         .find(|a| a.id == tid)
                         .map(|a| {
-                            format!("{}:{}", a.id, a.media_status.as_deref().unwrap_or("none"))
+                            let new_pending: Vec<String> = spec
+                                .before_variant_ids
+                                .map(|bv| {
+                                    a.variants
+                                        .iter()
+                                        .filter(|v| !bv.contains(&v.id))
+                                        .map(|v| {
+                                            format!(
+                                                "{}:{}:{}",
+                                                a.id,
+                                                v.id,
+                                                v.status.as_deref().unwrap_or("pending")
+                                            )
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if !new_pending.is_empty() {
+                                last_pending_count = new_pending.len();
+                                new_pending.join(",")
+                            } else {
+                                format!("{}:{}", a.id, a.media_status.as_deref().unwrap_or("none"))
+                            }
                         })
                         .unwrap_or_else(|| "none".to_string())
                 } else {
@@ -573,6 +596,7 @@ pub(crate) async fn run_generation(
         engine,
         AssetWaitSpec {
             before_ids: &before,
+            before_variant_ids: None,
             watch_updated: None,
             expected_count,
             timeout_secs: 420,
@@ -590,137 +614,6 @@ pub(crate) async fn run_generation(
         project_id,
         project_title,
         should_dl,
-        &on_progress,
-    )
-    .await)
-}
-
-/// Opens an edit flow for an asset that matches `match_str`, submits `prompt`, and downloads/indexes outputs.
-pub(crate) async fn run_edit(
-    engine: &ChromeEngine,
-    db: &FlowDb,
-    match_str: &str,
-    prompt: &str,
-    on_progress: ProgressCallback,
-) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
-    ensure_project_workspace_root(engine).await?;
-    let snap = list_assets_with_project(engine).await?;
-    let target = match_asset(&snap.assets, match_str, true)
-        .cloned()
-        .with_context(|| format!("No asset matches '{}' for edit", match_str))?;
-    let before: HashSet<String> = snap.assets.into_iter().map(|a| a.id).collect();
-
-    let label = if target.name.is_empty() {
-        target.id.clone()
-    } else {
-        target.name.clone()
-    };
-    on_progress(format!("preparing edit for {}", label));
-
-    let edit_mode =
-        if target.kind == "video" || (target.kind == "scene" && target.duration.is_some()) {
-            "video"
-        } else {
-            "image"
-        };
-
-    let open_res = engine
-        .call_flow_async(
-            "openEditAsset",
-            json!([target.id, target.url, target.primary_media_id]),
-        )
-        .await
-        .unwrap_or_default();
-    let mut opened_in_ui = open_res
-        .get("opened")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    if !opened_in_ui {
-        if let Some(edit_url) = open_res.get("edit_url").and_then(|v| v.as_str()) {
-            engine.navigate(edit_url).await?;
-            tokio::time::sleep(Duration::from_millis(1200)).await;
-            ensure_flow_store(engine).await?;
-            opened_in_ui = true;
-        }
-    } else {
-        let _ = ensure_flow_store(engine).await;
-    }
-
-    let mut attached_frames: Option<Vec<String>> = None;
-    if !opened_in_ui {
-        if edit_mode == "video" {
-            anyhow::bail!(
-                "Could not open an inline edit control or /edit/ route for video asset '{}'",
-                label
-            );
-        }
-        if target.url.is_some() || target.primary_media_id.is_some() {
-            let local_path =
-                if let Some(cached) = db.find_existing_file_for_asset(&target.id).await? {
-                    cached.file_path
-                } else {
-                    let downloaded = download_resolved_asset(
-                        engine,
-                        db,
-                        &target,
-                        snap.project_id.clone(),
-                        snap.project_title.clone(),
-                    )
-                    .await?;
-                    downloaded.file_path
-                };
-            attached_frames = Some(vec![local_path]);
-        }
-    }
-
-    let in_edit_route = engine
-        .current_url()
-        .await
-        .unwrap_or_default()
-        .contains("/edit/");
-    on_progress(format!("submitting edit for {}", label));
-    let scene = SceneParams {
-        prompt: prompt.to_string(),
-        mode: if in_edit_route {
-            None
-        } else {
-            Some(edit_mode.to_string())
-        },
-        frames: attached_frames,
-        count: Some(1),
-        ..Default::default()
-    };
-    let mut net_rx = engine.subscribe_network().await?;
-    let submit_res = apply_generation_controls(engine, &scene).await?;
-    let submit_summary = format_submit_progress("submitted edit", &submit_res);
-    on_progress(submit_summary.clone());
-
-    let (created, project_id, project_title) = wait_for_new_assets(
-        engine,
-        AssetWaitSpec {
-            before_ids: &before,
-            watch_updated: Some((
-                target.id.as_str(),
-                target.primary_media_id.as_deref(),
-                target.url.as_deref(),
-            )),
-            expected_count: 1,
-            timeout_secs: 420,
-            submit_summary: &submit_summary,
-        },
-        &mut net_rx,
-        &on_progress,
-    )
-    .await?;
-    ensure_project_workspace_root(engine).await?;
-    Ok(collect_created_assets(
-        engine,
-        db,
-        created,
-        project_id,
-        project_title,
-        true,
         &on_progress,
     )
     .await)

@@ -5,6 +5,13 @@
 
 import { isLiveLView, readAngularTooltip, readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import {
+  EDIT_PROMPT_BOX_SELECTOR,
+  EDIT_SCOPE_SELECTOR,
+  EXCLUDED_COMPOSER_SELECTOR,
+  isExcludedComposerNode,
+  resolveEditBasePromptBox,
+} from "./edit_composer";
 import { runtimeState } from "./state";
 import type {
   BasePromptBoxInstance,
@@ -17,9 +24,6 @@ import type {
 const TEXTBOX_SELECTOR =
   '.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], [contenteditable="true"], textarea';
 
-/** Containers that belong to the Agent composer. */
-const AGENT_COMPOSER = "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
-
 /** Detected quota or high-demand warning button inside a Flow composer. */
 export interface ComposerWarning {
   /** Warning category (`"credit"` or `"high_demand"`). */
@@ -28,22 +32,35 @@ export interface ComposerWarning {
   detail: string;
 }
 
-/** Finds a visible textbox in a composer root. */
-function composerTextbox(root: ParentNode | null, edit: boolean): HTMLElement | null {
+/** Finds a visible textbox in a composer root outside excluded panels. */
+function composerTextbox(root: ParentNode | null): HTMLElement | null {
   return Array.from(root?.querySelectorAll(TEXTBOX_SELECTOR) ?? []).find(
     (el): el is HTMLElement =>
-      el instanceof HTMLElement && el.getClientRects().length > 0 &&
-      !isDisabledProp(el) && (edit || !el.closest(AGENT_COMPOSER)),
+      el instanceof HTMLElement &&
+      el.getClientRects().length > 0 &&
+      !isDisabledProp(el) &&
+      !isExcludedComposerNode(el),
   ) ?? null;
 }
 
 /** Finds the active visible prompt textbox for generation or edit composers. */
 export function findTextbox(editFlag: boolean): HTMLElement | null {
-  const scopedSelector = editFlag
-    ? "flow-edit-video-prompt-box, flow-editor-page, flow-scene-builder"
-    : "flow-prompt-box flow-base-prompt-box, flow-prompt-box";
-  return composerTextbox(document.querySelector(scopedSelector), editFlag) ||
-    composerTextbox(document, editFlag);
+  if (editFlag) {
+    for (const sel of [EDIT_PROMPT_BOX_SELECTOR, EDIT_SCOPE_SELECTOR]) {
+      const scopes = Array.from(document.querySelectorAll(sel)).filter(
+        (el) => !isExcludedComposerNode(el),
+      );
+      for (const scope of scopes) {
+        const hit = composerTextbox(scope);
+        if (hit) return hit;
+      }
+    }
+    return composerTextbox(document);
+  }
+  const manualScope = document.querySelector(
+    "flow-prompt-box flow-base-prompt-box, flow-prompt-box",
+  );
+  return composerTextbox(manualScope) || composerTextbox(document);
 }
 
 /** Closes the active Agent panel and waits for the manual prompt to become editable. */
@@ -52,7 +69,7 @@ export async function ensureManualComposer(): Promise<HTMLElement | null> {
   const hosts = new WeakSet<PromptBoxHost>();
   for (let attempt = 0; attempt < 40; attempt++) {
     const prompt = document.querySelector("flow-prompt-box");
-    const textbox = composerTextbox(prompt, false);
+    const textbox = composerTextbox(prompt);
     if (textbox) return textbox;
 
     const panel = document.querySelector("flow-agent-panel, .agent-panel-wrapper");
@@ -227,11 +244,13 @@ function isBasePromptBoxInst(cand: unknown): cand is BasePromptBoxInstance {
 
 /** Walks up parent elements and LViews from `startEl` to find a `BasePromptBoxInstance`. */
 function scanElementForBasePromptBox(startEl: Element | null): BasePromptBoxInstance | null {
-  if (!startEl) return null;
+  if (!startEl || isExcludedComposerNode(startEl)) return null;
   let cur: Element | null = startEl;
   for (let depth = 0; depth < 6 && cur; depth += 1) {
+    if (isExcludedComposerNode(cur)) return null;
     let lv: NgLView | null = resolveLView(cur);
     for (let pDepth = 0; pDepth < 6 && Array.isArray(lv); pDepth += 1) {
+      if (lv[0] instanceof Node && isExcludedComposerNode(lv[0])) break;
       for (const cand of lv) {
         if (isBasePromptBoxInst(cand)) return cand;
       }
@@ -268,18 +287,14 @@ export function findLiveBasePromptBox(
       document.querySelector("flow-prompt-box flow-base-prompt-box"),
     );
   }
-  return scanElementForBasePromptBox(
-    document.querySelector(
-      "flow-edit-video-prompt-box flow-base-prompt-box, flow-edit-video-prompt-box",
-    ),
-  );
+  return resolveEditBasePromptBox(scanElementForBasePromptBox);
 }
 
 /** Returns true when a custom warning element or one of its children is visible on screen. */
 function isWarningElementVisible(el: Element, excludeAgent: boolean): boolean {
   if (!(el instanceof HTMLElement) || !el.isConnected) return false;
   if (el.closest('[hidden], [aria-hidden="true"]')) return false;
-  if (excludeAgent && el.closest(AGENT_COMPOSER)) return false;
+  if (excludeAgent && el.closest(EXCLUDED_COMPOSER_SELECTOR)) return false;
   const style = window.getComputedStyle(el);
   if (style.display === "none" || style.visibility === "hidden") return false;
   if (el.getClientRects().length > 0) return true;

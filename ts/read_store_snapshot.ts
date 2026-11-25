@@ -7,7 +7,7 @@ import { readOwn } from "./angular";
 import { characterPersonalityNotes, characterVoice } from "./character_bio";
 import { activeProjectStoreFormat, snapshotFormat } from "./frontend_builds";
 import { currentProjectStore, projectInRoute } from "./project_store";
-import { sceneContents } from "./scene_tiles";
+import { sceneClipIds, sceneContents } from "./scene_tiles";
 import {
   asHttpOrDataUrl,
   characterLookMedia,
@@ -28,6 +28,7 @@ import type {
   SceneClipItem,
   SnapshotAssetItem,
   SnapshotCollectionItem,
+  SnapshotVariantItem,
   StoreSnapshotResult,
 } from "./types";
 
@@ -264,6 +265,68 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     }
   };
 
+  const normalizeVariantList = (
+    rawItems: unknown,
+    assetKind: string,
+  ): SnapshotVariantItem[] => {
+    if (!Array.isArray(rawItems) || rawItems.length === 0) return [];
+    const out: SnapshotVariantItem[] = [];
+    const seen = new Set<string>();
+    for (const rawItem of rawItems) {
+      if (!rawItem || typeof rawItem !== "object") continue;
+      const rawMediaItem = rawItem as FlowMediaPayload;
+      const m = legacyMedia(rawMediaItem);
+      const vid = String(
+        m?.id ?? rawMediaItem.id ?? m?.mediaId ?? rawMediaItem.mediaId ?? "",
+      ).trim();
+      if (!vid || seen.has(vid)) continue;
+      seen.add(vid);
+      const statusRaw = String(
+        m?.Zc ?? rawMediaItem.od ?? rawMediaItem.Zc ?? "",
+      )
+        .trim()
+        .toLowerCase();
+      const err = formatMediaError(
+        m?.nf ?? rawMediaItem.Bf ?? rawMediaItem.nf,
+      );
+      const notReady =
+        statusRaw === "pending" ||
+        statusRaw === "scheduled" ||
+        statusRaw === "failed" ||
+        statusRaw === "canceled" ||
+        Boolean(err);
+      const cachedUrl = asHttpOrDataUrl(
+        runtimeState.mediaInfoCache.get(vid)?.url,
+      );
+      const directUrl =
+        (assetKind === "video" ? readMediaUrl(m, true) : null) ||
+        readMediaUrl(m) ||
+        null;
+      const pickedUrl = isSignedUrlStr(directUrl)
+        ? directUrl
+        : isSignedUrlStr(cachedUrl)
+          ? cachedUrl
+          : directUrl || cachedUrl || null;
+      const readyUrl =
+        !notReady && pickedUrl
+          ? normalizeFlowMediaUrl(String(pickedUrl), assetKind, env)
+          : null;
+      const vPrompt = m?.prompt
+        ? String(m.prompt)
+        : m?.inputs?.prompt
+          ? String(m.inputs.prompt)
+          : null;
+      out.push({
+        id: vid,
+        status: statusRaw || null,
+        error: err,
+        url: readyUrl,
+        prompt: vPrompt,
+      });
+    }
+    return out;
+  };
+
   const collectionIds = new Set<string>();
   for (const [id, rawTile] of tileMap.entries()) {
     if (String(rawTile?.type ?? "").toUpperCase() === collectionType) {
@@ -389,6 +452,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       null;
 
     const { start: trimStart, end: trimEnd } = videoTrimBounds(t);
+    const clipIdsForScene = baseKind === "scene" ? sceneClipIds(rawTile) : null;
+    const rawHistory = readOwn(rawTile, "history") ?? readOwn(t, "history");
+    const tileVariants = normalizeVariantList(rawHistory, kind);
 
     const topEntry: Omit<SnapshotAssetItem, "collection_name"> = {
       id: tid,
@@ -404,6 +470,8 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       url: mediaUrl ? normalizeFlowMediaUrl(String(mediaUrl), kind, env) : null,
       collection_id: cid,
       primary_media_id: primaryMediaId ? String(primaryMediaId) : null,
+      ...(clipIdsForScene !== null ? { clip_ids: clipIdsForScene } : {}),
+      variants: tileVariants,
       personality_notes: bio == null ? null : String(bio),
       voice: voiceRaw != null ? voiceRaw : null,
       trim_start_seconds: trimStart,
@@ -458,6 +526,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
   }
 
   for (const st of sceneTiles) {
+    const parentSceneId = String(st.id ?? st.workflowId ?? "").trim() || null;
     const sceneCid = collectionIdOf(st, isCollectionId);
     const { clips, history } = sceneContents(st);
     const candidates: Array<
@@ -484,6 +553,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
 
     for (const [wfId, clip, rawMedia] of candidates) {
       if (!wfId) continue;
+      const clipVariants = normalizeVariantList(history.get(wfId), "video");
       const mObj = legacyMedia(rawMedia);
       const cObj = legacyMedia(clip as FlowMediaPayload | null);
       const mStatus = String(
@@ -492,6 +562,15 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       const mError = formatMediaError(mObj?.nf ?? cObj?.nf ?? clip?.nf);
       const existing = byId.get(wfId);
       if (existing) {
+        if (!existing.scene_id && parentSceneId) {
+          existing.scene_id = parentSceneId;
+        }
+        if (clipVariants.length > 0) {
+          const merged = new Map<string, SnapshotVariantItem>();
+          for (const v of existing.variants ?? []) merged.set(v.id, v);
+          for (const v of clipVariants) merged.set(v.id, v);
+          existing.variants = Array.from(merged.values());
+        }
         if (mStatus === "failed" || mStatus === "canceled" || mError) {
           if (
             existing.media_status !== "failed" &&
@@ -587,6 +666,8 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         url: clipUrl ? normalizeFlowMediaUrl(String(clipUrl), "video", env) : null,
         collection_id: sceneCid,
         primary_media_id: clipPrimaryMediaId,
+        ...(parentSceneId ? { scene_id: parentSceneId } : {}),
+        variants: clipVariants,
         personality_notes: null,
         voice: null,
         trim_start_seconds: trimStartVal,

@@ -16,6 +16,7 @@ import type {
   FrontendFormats,
   ProjectUploadFormat,
 } from "./frontend_builds";
+import { editBuildChecks } from "./edit_builds";
 import { findProjectPage } from "./project_upload";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
@@ -435,6 +436,7 @@ export function probeStore(): StoreProbeResult {
   const views = runtimeState.ngLViewMap;
   const checks = [
     verified,
+    ...editBuildChecks(build),
     {
       name: "lview_registry",
       ok: views instanceof Map,

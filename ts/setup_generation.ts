@@ -14,6 +14,7 @@ import {
   settingsOpen,
 } from "./composer";
 import { delay, elText, hoverProbe, isVisibleEnabled } from "./dom";
+import { isEditContext } from "./edit_composer";
 import { runtimeState } from "./state";
 import type { GenerationConfig, NgLView } from "./types";
 
@@ -232,7 +233,7 @@ async function ensureLViewCapture(allowSettingsClick = false): Promise<void> {
 export async function setupGeneration(
   cfg: GenerationConfig,
 ): Promise<{ ok: boolean; error?: string }> {
-  const onEditPage = /\/edit\//.test(location.pathname || "");
+  const onEditPage = isEditContext(cfg.edit);
 
   if (!onEditPage) {
     const textbox = await ensureManualComposer();

@@ -300,9 +300,11 @@ export interface PromptTextSegment {
 
 /** Serialized prompt document accepted by `PromptStateController`. */
 export interface PromptDocumentPayload {
+  /** Prompt segments produced by `_.QI` in build 20261120.00. */
+  kf?: PromptTextSegment[];
   /** Prompt segments in earlier builds. */
   Oe?: PromptTextSegment[];
-  /** Prompt segments in build 20261120.00. */
+  /** Prompt segments in fallback builds. */
   Te?: PromptTextSegment[];
 }
 
@@ -314,6 +316,8 @@ export interface PromptStateController {
   Gp?: (doc: PromptDocumentPayload) => void;
   /** Prompt text helper object. */
   prompt?: {
+    /** Returns the active serialized prompt document when available. */
+    content?: () => unknown;
     /** Returns true when the prompt is empty in earlier builds. */
     Le?: () => boolean;
     /** Returns true when the prompt is empty in build 20261120.00. */
@@ -516,6 +520,20 @@ export interface DiscoverStoreResult {
   error?: string;
 }
 
+/** Normalized media variant entry from tile or scene clip history. */
+export interface SnapshotVariantItem {
+  /** Variant media identifier. */
+  id: string;
+  /** Lowercase variant status (`pending`, `scheduled`, `success`, `failed`, or `canceled`). */
+  status: string | null;
+  /** Failure description when present. */
+  error: string | null;
+  /** Normalized media URL when resolved and ready. */
+  url: string | null;
+  /** Variant prompt text when present. */
+  prompt: string | null;
+}
+
 /** Asset entry normalized for `readStoreSnapshot`. */
 export interface SnapshotAssetItem {
   /** Tile or clip workflow identifier. */
@@ -534,6 +552,12 @@ export interface SnapshotAssetItem {
   collection_name: string | null;
   /** Primary media identifier. */
   primary_media_id: string | null;
+  /** Parent scene identifier when the clip belongs to a scene. */
+  scene_id?: string | null;
+  /** Ordered clip workflow identifiers when the tile is a scene. */
+  clip_ids?: string[] | null;
+  /** Normalized variant history entries for this tile or scene clip. */
+  variants?: SnapshotVariantItem[];
   /** Character personality notes. */
   personality_notes: string | null;
   /** Assigned voice name or identifier. */
@@ -639,6 +663,8 @@ export interface GenerationConfig {
   duration?: string | null;
   /** Video resolution label. */
   resolution?: string | null;
+  /** Explicit flag marking an asset or scene clip edit operation. */
+  edit?: boolean | null;
 }
 
 /** Request payload for `sceneOp`. */
@@ -846,9 +872,14 @@ export interface FlowMcpRuntime {
   /** Clicks the upload trigger button or accepts upload consent dialogs. */
   uploadUiAction: (action: string) => boolean;
   /** Opens the asset editor via Angular Router or grid tile UI controls. */
-  openEditAsset: (assetId: string, mediaUrl: string | null, primaryMediaId: string | null) => Promise<unknown>;
+  openEditAsset: (
+    assetId: string,
+    mediaUrl: string | null,
+    primaryMediaId: string | null,
+    sceneId?: string | null,
+  ) => Promise<unknown>;
   /** Locates the enabled generation submit button and returns its viewport click point. */
-  submitGeneration: () => Promise<unknown>;
+  submitGeneration: (explicitEdit?: boolean | null) => Promise<unknown>;
   /** Creates Flow scenes and adds clips. */
   sceneOp: (req: SceneOpRequest) => Promise<unknown>;
   /** Applies video trim timestamps or drives the scene builder extend workflow. */

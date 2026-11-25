@@ -112,6 +112,9 @@ pub(crate) struct SceneParams {
     /// Source asset match string for edit jobs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) edit_from: Option<String>,
+    /// Explicit flag marking an asset or scene clip edit context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) edit: Option<bool>,
     /// Character role key in `character_looks` whose saved look `flow_generate` appends to prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) character_role: Option<String>,

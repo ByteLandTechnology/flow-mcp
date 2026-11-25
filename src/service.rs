@@ -20,8 +20,9 @@ use crate::db::{
     FlowDb, effective_mime_type,
 };
 use crate::download;
+use crate::edit::{self, EditParams};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
-use crate::generation::{self, EditParams, GenerateParams};
+use crate::generation::{self, GenerateParams};
 use crate::media_files;
 use crate::project::{self, ProjectsParams};
 use crate::queue::{JobQueue, JobResult, JobRunner, JobView, SceneParams, WaitParams};
@@ -94,8 +95,7 @@ impl FlowService {
                         )
                         .await?
                     } else if let Some(ref edit_from) = scene.edit_from {
-                        generation::run_edit(&engine, &db, edit_from, &scene.prompt, on_progress)
-                            .await?
+                        edit::run_edit(&engine, &db, edit_from, &scene.prompt, on_progress).await?
                     } else if scene.character.is_some() {
                         let is_edit = scene.character_edit.unwrap_or(false);
                         characters::create_or_update_character_job(
@@ -199,6 +199,7 @@ impl FlowService {
         let scene = SceneParams {
             prompt: req.prompt,
             edit_from: Some(req.r#match),
+            edit: Some(true),
             ..Default::default()
         };
         Ok(self.queue.enqueue(scene).await)

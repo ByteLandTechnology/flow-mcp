@@ -5,6 +5,7 @@
 
 import { readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, hoverProbe, isVisibleEnabled, setNativeValue } from "./dom";
+import { buildPromptPayload } from "./edit_builds";
 import { runtimeState } from "./state";
 import type {
   NgLView,
@@ -315,6 +316,7 @@ export async function writePromptBox(
     const scanResolvedTree = (): void => {
       const defaultSeeds = [
         document.querySelector("flow-rich-text-editor"),
+        document.querySelector("flow-edit-image-prompt-box"),
         document.querySelector("flow-edit-video-prompt-box"),
         document.querySelector("flow-base-prompt-box"),
       ];
@@ -323,6 +325,7 @@ export async function writePromptBox(
         rootEl,
         rootEl.closest("flow-rich-text-editor"),
         rootEl.closest("flow-base-prompt-box"),
+        rootEl.closest("flow-edit-image-prompt-box"),
         rootEl.closest("flow-edit-video-prompt-box"),
         rootEl.closest("flow-creative-agent-prompt-box"),
         rootEl.closest("flow-applet-prompt-box"),
@@ -452,14 +455,32 @@ export async function writePromptBox(
           ? promptState.Wn
           : null;
     if (!promptState || !applyFn) return false;
-    const segments = [{ type: "text", content }];
-    applyFn.call(promptState, { Oe: segments, Te: segments });
+    applyFn.call(promptState, buildPromptPayload(content));
     return true;
+  };
+  const promptStateMatches = (): boolean => {
+    if (typeof promptState?.prompt?.content !== "function") return true;
+    try {
+      const raw = promptState.prompt.content();
+      if (!raw || typeof raw !== "object") return true;
+      const segs =
+        readOwn(raw, "kf") ?? readOwn(raw, "Te") ?? readOwn(raw, "Oe");
+      if (!Array.isArray(segs)) return true;
+      if (segs.some((s) => readOwn(s, "type") === "mention")) return true;
+      const joined = segs
+        .map((s) => String(readOwn(s, "content") ?? ""))
+        .join("")
+        .trim();
+      const target = text.trim();
+      return target.length === 0 ? joined.length === 0 : joined === target;
+    } catch {
+      return true;
+    }
   };
   const isPromptPopulated = (): boolean => {
     const empty = readPromptEmpty();
-    if (empty !== null) return empty === false;
-    return hasValidator() ? isPromptValid() : false;
+    if (empty !== null) return empty === false && promptStateMatches();
+    return hasValidator() ? isPromptValid() && promptStateMatches() : false;
   };
   const isSynced = (): boolean =>
     opts.strictSync && (readPromptEmpty() !== null || hasValidator())
