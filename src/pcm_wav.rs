@@ -6,10 +6,14 @@
 use anyhow::{Result, bail};
 use std::path::Path;
 
-/// Output sample rate in hertz for Google Flow case `11` PCM audio.
+use crate::media_files::{
+    has_non_wav_disposition_extension, is_recognized_media_magic, mime_essence,
+};
+
+/// Output sample rate in hertz for Google Flow 24 kHz PCM audio.
 const PCM_SAMPLE_RATE: u32 = 24_000;
 
-/// Channel count for Google Flow case `11` mono PCM audio.
+/// Channel count for Google Flow mono PCM audio.
 const PCM_CHANNELS: u16 = 1;
 
 /// Sample width in bits for signed 16-bit little-endian PCM audio.
@@ -23,6 +27,28 @@ const PCM_BYTE_RATE: u32 = PCM_SAMPLE_RATE * (PCM_BLOCK_ALIGN as u32);
 
 /// Fixed byte length of a standard canonical RIFF WAVE header.
 const WAV_HEADER_LEN: usize = 44;
+
+/// Returns `true` when `ct` positively identifies raw unframed PCM audio bytes.
+pub(crate) fn is_pcm_content_type(ct: Option<&str>) -> bool {
+    matches!(
+        mime_essence(ct).as_str(),
+        "audio/pcm" | "audio/x-pcm" | "audio/l16" | "audio/x-l16" | "audio/raw" | "audio/x-raw"
+    )
+}
+
+/// Returns `true` when `ct` explicitly declares a non-PCM media or container MIME type.
+fn is_non_pcm_content_type(ct: Option<&str>) -> bool {
+    let essence = mime_essence(ct);
+    if essence.is_empty()
+        || matches!(
+            essence.as_str(),
+            "application/octet-stream" | "binary/octet-stream"
+        )
+    {
+        return false;
+    }
+    !is_pcm_content_type(ct)
+}
 
 /// Returns `true` when `bytes` begins with HTML, XML, playlist, XSSI, or JSON error text.
 fn is_text_or_playlist_prefix(bytes: &[u8]) -> bool {
@@ -55,37 +81,6 @@ fn is_text_or_playlist_prefix(bytes: &[u8]) -> bool {
     false
 }
 
-/// Returns `true` when `hdr` starts with a recognized image, audio, or video container header.
-fn is_known_media_container(hdr: &[u8]) -> bool {
-    let is_jpeg = hdr.starts_with(&[0xFF, 0xD8, 0xFF]);
-    let is_png = hdr.starts_with(b"\x89PNG\r\n\x1a\n");
-    let is_gif = hdr.starts_with(b"GIF87a") || hdr.starts_with(b"GIF89a");
-    let is_riff = hdr.len() >= 12
-        && &hdr[0..4] == b"RIFF"
-        && matches!(&hdr[8..12], b"WAVE" | b"WEBP" | b"AVI ");
-    let is_iso_bmff = hdr.len() >= 8
-        && matches!(
-            &hdr[4..8],
-            b"ftyp" | b"styp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip"
-        );
-    let is_flac = hdr.starts_with(b"fLaC");
-    let is_ogg = hdr.starts_with(b"OggS");
-    let is_aiff =
-        hdr.len() >= 12 && &hdr[0..4] == b"FORM" && matches!(&hdr[8..12], b"AIFF" | b"AIFC");
-    let is_id3 = hdr.starts_with(b"ID3");
-    let is_webm = hdr.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]);
-    is_jpeg
-        || is_png
-        || is_gif
-        || is_riff
-        || is_iso_bmff
-        || is_flac
-        || is_ogg
-        || is_aiff
-        || is_id3
-        || is_webm
-}
-
 /// Builds a 44-byte canonical RIFF WAVE header for `pcm_byte_len` bytes of 24 kHz 16-bit mono PCM.
 fn build_riff_wave_header(pcm_byte_len: u32) -> [u8; WAV_HEADER_LEN] {
     let riff_size = 36u32.saturating_add(pcm_byte_len);
@@ -106,16 +101,21 @@ fn build_riff_wave_header(pcm_byte_len: u32) -> [u8; WAV_HEADER_LEN] {
     hdr
 }
 
-/// Frames raw non-text PCM bytes at `path` into a 24 kHz 16-bit mono RIFF WAVE file when needed.
+/// Frames raw non-text PCM bytes at `path` into a 24 kHz 16-bit mono RIFF WAVE file while preserving compressed formats.
 pub(crate) async fn frame_raw_pcm_file(
     path: &Path,
     ct: Option<String>,
+    disposition: Option<&str>,
 ) -> Result<(Option<String>, u64)> {
     let bytes = tokio::fs::read(path).await?;
     if bytes.is_empty() {
         bail!("Media URL returned empty body");
     }
-    if is_text_or_playlist_prefix(&bytes) || is_known_media_container(&bytes) {
+    if is_non_pcm_content_type(ct.as_deref())
+        || has_non_wav_disposition_extension(disposition)
+        || is_text_or_playlist_prefix(&bytes)
+        || is_recognized_media_magic(&bytes)
+    {
         return Ok((ct, bytes.len() as u64));
     }
 

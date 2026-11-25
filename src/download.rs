@@ -64,7 +64,7 @@ struct ResolvedMediaUrls {
     urls: Vec<String>,
     /// Media family from the `as29s` wire message when present.
     media_kind: Option<String>,
-    /// True when `as29s` case `11` flagged raw 24 kHz PCM audio bytes.
+    /// True when wire metadata or custom voice state positively indicates raw PCM audio.
     pcm_audio: bool,
 }
 
@@ -137,8 +137,10 @@ async fn stream_http_to_temp(
     if size_bytes == 0 {
         anyhow::bail!("Media URL returned empty body");
     }
-    let (effective_ct, framed_size) = if pcm_audio && expected_kind == "audio" {
-        crate::pcm_wav::frame_raw_pcm_file(temp_path, raw_ct).await?
+    let should_frame_pcm = expected_kind == "audio"
+        && (pcm_audio || crate::pcm_wav::is_pcm_content_type(raw_ct.as_deref()));
+    let (effective_ct, framed_size) = if should_frame_pcm {
+        crate::pcm_wav::frame_raw_pcm_file(temp_path, raw_ct, disp.as_deref()).await?
     } else {
         (raw_ct, size_bytes)
     };
@@ -178,8 +180,10 @@ async fn fetch_via_browser_to_temp(
         .map(str::to_string);
     let size_bytes = bytes.len() as u64;
     tokio::fs::write(temp_path, &bytes).await?;
-    let (effective_ct, framed_size) = if pcm_audio && expected_kind == "audio" {
-        crate::pcm_wav::frame_raw_pcm_file(temp_path, raw_ct).await?
+    let should_frame_pcm = expected_kind == "audio"
+        && (pcm_audio || crate::pcm_wav::is_pcm_content_type(raw_ct.as_deref()));
+    let (effective_ct, framed_size) = if should_frame_pcm {
+        crate::pcm_wav::frame_raw_pcm_file(temp_path, raw_ct, disp.as_deref()).await?
     } else {
         (raw_ct, size_bytes)
     };
@@ -698,7 +702,7 @@ pub(crate) async fn download_resolved_asset(
                     {
                         effective_kind = "audio".to_string();
                     }
-                    pcm_audio |= fresh.pcm_audio;
+                    pcm_audio = target.pcm_audio || fresh.pcm_audio;
                     let mut fresh_candidates = fresh.urls;
                     if let Some(ref raw_fallback) = fallback_url {
                         push_fife_candidates(&mut fresh_candidates, raw_fallback, &effective_kind);

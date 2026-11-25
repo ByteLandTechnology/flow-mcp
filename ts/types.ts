@@ -494,7 +494,7 @@ export interface CachedMediaInfo {
   candidates: string[];
   /** Media kind from the wire response when known. */
   media_kind?: "video" | "image" | "audio";
-  /** True when `as29s` case `11` returned raw 24 kHz PCM audio bytes. */
+  /** True when wire metadata, URL parameters, or custom voice state positively indicate raw PCM audio. */
   pcm_audio?: boolean;
   /** Epoch timestamp in milliseconds when the entry entered the cache. */
   cached_at?: number;
@@ -550,7 +550,7 @@ export interface SnapshotAssetItem {
   variant_ids?: string[];
   /** Cached wire media family hint (`video`, `image`, or `audio`) when known. */
   media_kind_hint?: "video" | "image" | "audio" | null;
-  /** True when cached media resolution flagged raw 24 kHz PCM audio bytes. */
+  /** True when cached media resolution positively indicates raw PCM audio bytes. */
   pcm_audio?: boolean;
   /** Character personality notes. */
   personality_notes: string | null;

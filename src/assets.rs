@@ -66,7 +66,7 @@ pub(crate) struct FlowAsset {
     /// Internal media family hint cached from `as29s` resolution.
     #[serde(default, skip_serializing)]
     pub(crate) media_kind_hint: Option<String>,
-    /// Internal flag set when `as29s` case `11` returned raw 24 kHz PCM bytes.
+    /// Internal flag set when wire metadata or custom voice state positively indicates raw PCM audio.
     #[serde(default, skip_serializing)]
     pub(crate) pcm_audio: bool,
     /// Character personality notes or introduction text.

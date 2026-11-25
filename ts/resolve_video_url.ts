@@ -5,12 +5,19 @@
 
 import { fifeEnv as getFifeEnv } from "./dom";
 import { readBuildLabel } from "./frontend_builds";
-import { getFreshCachedMedia, isExpiredSignedUrl } from "./media_variants";
+import {
+  cleanMediaIdKey,
+  getFreshCachedMedia,
+  isExpiredSignedUrl,
+} from "./media_variants";
 import { runtimeState } from "./state";
 import type { ResolvedMediaResult } from "./types";
 
 /** Media family in an `as29s` wire message. */
 type ResolvedMediaKind = "video" | "image" | "audio";
+
+/** Audio encoding classification derived from wire metadata or URL parameters. */
+type AudioFormatSignal = "pcm" | "compressed" | null;
 
 /** URL and kind state that `extractFromProto` collects from `as29s` responses. */
 interface MediaExtractState {
@@ -28,8 +35,222 @@ interface MediaExtractState {
   unsignedCandidates: string[];
   /** Media family from the wire message. */
   mediaKind: ResolvedMediaKind | null;
-  /** True when case `11` audio resolved raw 24 kHz PCM bytes. */
+  /** True when wire metadata, URL parameters, or custom voice state positively indicate raw PCM audio. */
   pcmAudio: boolean;
+}
+
+/** Compressed or containerized audio file extensions that exclude raw PCM framing. */
+const COMPRESSED_AUDIO_EXTS = new Set([
+  "mp3",
+  "m4a",
+  "aac",
+  "ogg",
+  "opus",
+  "flac",
+  "wav",
+  "webm",
+  "mp4",
+  "aif",
+  "aiff",
+]);
+
+/** Raw PCM file extensions that positively indicate unframed PCM samples. */
+const RAW_PCM_AUDIO_EXTS = new Set(["pcm", "raw", "s16le", "l16"]);
+
+/** Classifies a MIME or codec token into `"pcm"`, `"compressed"`, or `null`. */
+function classifyAudioTokenFormat(
+  raw: unknown,
+  allowBareCodec: boolean,
+): AudioFormatSignal {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed || /^https?:\/\//i.test(trimmed)) return null;
+  if (trimmed.includes("/")) {
+    const essence = trimmed.split(";")[0].trim().toLowerCase();
+    if (/^audio\/(?:x-)?(?:pcm|l16|raw)$/.test(essence)) {
+      return "pcm";
+    }
+    if (
+      /^(?:audio\/[a-z0-9.+-]+|application\/ogg|video\/(?:mp4|webm|ogg))$/.test(
+        essence,
+      )
+    ) {
+      return "compressed";
+    }
+    return null;
+  }
+  const lower = trimmed.toLowerCase();
+  if (/^(?:linear16|pcm_s16le|pcm_s16|s16le)$/.test(lower)) {
+    return "pcm";
+  }
+  if (!allowBareCodec) return null;
+  if (lower === "pcm" || lower === "l16" || lower === "raw") {
+    return "pcm";
+  }
+  if (
+    COMPRESSED_AUDIO_EXTS.has(lower) ||
+    lower === "mpeg" ||
+    lower === "vorbis" ||
+    lower === "wave"
+  ) {
+    return "compressed";
+  }
+  return null;
+}
+
+/** Extracts a lowercase file extension from a leaf filename or path segment when present. */
+function extractLeafExtension(leaf: string): string | null {
+  const clean = leaf.trim().replace(/^["']+|["']+$/g, "");
+  const dot = clean.lastIndexOf(".");
+  if (dot <= 0 || dot === clean.length - 1) return null;
+  return clean.slice(dot + 1).toLowerCase();
+}
+
+/** Classifies a candidate audio URL into `"pcm"`, `"compressed"`, or `null`. */
+function classifyAudioUrlFormat(rawUrl: string): AudioFormatSignal {
+  const trimmed = rawUrl.trim();
+  if (/^data:/i.test(trimmed)) {
+    const header = trimmed.slice(5).split(",")[0] ?? "";
+    return classifyAudioTokenFormat(header, false);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  let sawPcm = false;
+  for (const [key, val] of parsed.searchParams.entries()) {
+    const lowerKey = key.toLowerCase();
+    if (
+      lowerKey === "response-content-type" ||
+      lowerKey === "content-type" ||
+      lowerKey === "ctype" ||
+      lowerKey === "mime" ||
+      lowerKey === "mime_type" ||
+      lowerKey === "mimetype" ||
+      lowerKey === "format" ||
+      lowerKey === "encoding" ||
+      lowerKey === "codec"
+    ) {
+      const sig = classifyAudioTokenFormat(val, true);
+      if (sig === "compressed") return "compressed";
+      if (sig === "pcm") sawPcm = true;
+    } else if (lowerKey === "response-content-disposition") {
+      const match = /filename\*?=(?:UTF-8'')?([^;]+)/i.exec(val);
+      let rawName = match ? match[1].trim() : val;
+      if (match) {
+        try {
+          rawName = decodeURIComponent(rawName);
+        } catch {
+          // Keep undecoded filename when percent-decoding fails.
+        }
+      }
+      const ext = extractLeafExtension(rawName);
+      if (ext && COMPRESSED_AUDIO_EXTS.has(ext)) return "compressed";
+      if (ext && RAW_PCM_AUDIO_EXTS.has(ext)) sawPcm = true;
+    }
+  }
+  const rawLeaf = parsed.pathname.split("/").pop() ?? "";
+  const cleanLeaf = rawLeaf.replace(/=[^/]*$/, "");
+  let decodedLeaf = cleanLeaf;
+  try {
+    decodedLeaf = decodeURIComponent(cleanLeaf);
+  } catch {
+    // Keep undecoded path leaf when percent-decoding fails.
+  }
+  const pathExt = extractLeafExtension(decodedLeaf);
+  if (pathExt && COMPRESSED_AUDIO_EXTS.has(pathExt)) return "compressed";
+  if (pathExt && RAW_PCM_AUDIO_EXTS.has(pathExt)) sawPcm = true;
+  return sawPcm ? "pcm" : null;
+}
+
+/** Returns true when `mediaKey` matches a custom `VOICE` asset or character `voiceMediaId` in the bound store. */
+function isRegisteredCustomVoiceMedia(mediaKey: string): boolean {
+  const clean = cleanMediaIdKey(mediaKey);
+  if (!clean) return false;
+  const tiles = runtimeState.store?.getTileMap();
+  if (!(tiles instanceof Map)) return false;
+  for (const tile of tiles.values()) {
+    if (!tile || typeof tile !== "object") continue;
+    const ttype = String(tile.type ?? "").toUpperCase();
+    if (ttype === "VOICE") {
+      if (
+        cleanMediaIdKey(tile.id) === clean ||
+        cleanMediaIdKey(tile.primaryMediaId) === clean
+      ) {
+        return true;
+      }
+    } else if (
+      ttype === "CHARACTER" &&
+      cleanMediaIdKey(tile.voiceMediaId) === clean
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Returns true only when `proto`, `audio`, URLs, or custom voice state positively indicate raw PCM audio. */
+function hasPositiveCase11PcmSignal(
+  cacheKey: string,
+  proto: unknown,
+  audio: unknown,
+  urls: readonly string[],
+): boolean {
+  let positivePcm = false;
+  for (const url of urls) {
+    const urlSig = classifyAudioUrlFormat(url);
+    if (urlSig === "compressed") return false;
+    if (urlSig === "pcm") positivePcm = true;
+  }
+
+  const protoFormatSig = classifyAudioTokenFormat(jspbField(proto, 2), true);
+  if (protoFormatSig === "compressed") return false;
+  if (protoFormatSig === "pcm") positivePcm = true;
+
+  const a1 = jspbField(audio, 1);
+  const a2 = jspbField(audio, 2);
+  const a5 = jspbField(audio, 5);
+  const a6 = jspbField(audio, 6);
+  const protoMeta = jspbField(proto, 6);
+  for (const branch of [protoMeta, audio, a1, a2, a5, a6]) {
+    if (!isJspbMessage(branch)) continue;
+    for (let idx = 1; idx <= 16; idx += 1) {
+      const sig = classifyAudioTokenFormat(jspbField(branch, idx), false);
+      if (sig === "compressed") return false;
+      if (sig === "pcm") positivePcm = true;
+    }
+  }
+
+  const rawProtoId =
+    typeof jspbField(proto, 1) === "string"
+      ? String(jspbField(proto, 1)).trim()
+      : "";
+  const isPreset =
+    jspbField(a1, 3) === true ||
+    /^voices\//i.test(rawProtoId) ||
+    /^voices\//i.test(cacheKey);
+  if (!isPreset) {
+    const basePresetVoice = jspbField(a1, 5);
+    const sampleDialogue = jspbField(a1, 7);
+    const voiceLabels = jspbField(a1, 12);
+    const hasVoiceSynthesisFields =
+      (typeof basePresetVoice === "string" &&
+        basePresetVoice.trim().length > 0) ||
+      (typeof sampleDialogue === "string" &&
+        sampleDialogue.trim().length > 0) ||
+      (Array.isArray(voiceLabels) && voiceLabels.length > 0);
+    if (
+      hasVoiceSynthesisFields ||
+      isRegisteredCustomVoiceMedia(cacheKey) ||
+      (rawProtoId !== "" && isRegisteredCustomVoiceMedia(rawProtoId))
+    ) {
+      positivePcm = true;
+    }
+  }
+
+  return positivePcm;
 }
 
 /** Returns true when `val` is a plain sparse JSPB field map object. */
@@ -324,10 +545,10 @@ export async function resolveVideoUrl(
           !(a6Case1 && isSignedUrl(a6Case1)),
       );
 
-    const a1 = jspbField(audio, 1);
+      const a1 = jspbField(audio, 1);
       const a2 = jspbField(audio, 2);
       const a5 = jspbField(audio, 5);
-      let addedCase11Audio = false;
+      const case11Urls: string[] = [];
       for (const rawAudio of [
         a6Case2,
         a6Case3,
@@ -357,24 +578,27 @@ export async function resolveVideoUrl(
         if (!direct) continue;
         if (isSignedUrl(direct)) {
           if (recordSigned(state, direct)) {
-            addedCase11Audio = true;
+            pushCandidate(case11Urls, direct);
           }
         } else {
           const rewritten = proxyActive
             ? rewriteFifeUrl(direct, null, true) || direct
             : direct;
           pushCandidate(state.unsignedCandidates, rewritten);
+          pushCandidate(case11Urls, rewritten);
           if (rewritten !== direct) {
             pushCandidate(state.unsignedCandidates, direct);
+            pushCandidate(case11Urls, direct);
           }
           state.unsignedDownloadUrl ||= rewritten;
           state.unsignedStreamUrl ||= rewritten;
-          addedCase11Audio = true;
         }
       }
-      if (addedCase11Audio) {
+      if (case11Urls.length > 0) {
         state.mediaKind ||= "audio";
-        state.pcmAudio = true;
+        if (hasPositiveCase11PcmSignal(cacheKey, proto, audio, case11Urls)) {
+          state.pcmAudio = true;
+        }
       } else if (hasExtractedUrls(state)) {
         state.mediaKind ||= "audio";
       }
