@@ -684,9 +684,26 @@ pub(crate) async fn run_edit(
         let _ = ensure_project_workspace_root(engine).await;
         anyhow::bail!("Flow cannot edit '{}': {}", label, alert);
     }
+    if let Some(sel_err) = open_res
+        .get("selection_error")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        let _ = ensure_project_workspace_root(engine).await;
+        anyhow::bail!("Flow cannot select clip '{}': {}", label, sel_err);
+    }
     let is_editor_open = |res: &serde_json::Value| {
-        res.get("opened").and_then(|v| v.as_bool()) == Some(true)
-            && res.get("has_textbox").and_then(|v| v.as_bool()) == Some(true)
+        if res.get("opened").and_then(|v| v.as_bool()) != Some(true)
+            || res.get("has_textbox").and_then(|v| v.as_bool()) != Some(true)
+            || res.get("selection_error").is_some()
+        {
+            return false;
+        }
+        if target.scene_id.is_some() || res.get("scene_id").and_then(|v| v.as_str()).is_some() {
+            return res.get("selected_clip_id").and_then(|v| v.as_str())
+                == Some(target.id.as_str());
+        }
+        true
     };
     let mut opened_in_ui = is_editor_open(&open_res);
 
@@ -705,6 +722,14 @@ pub(crate) async fn run_edit(
         {
             let _ = ensure_project_workspace_root(engine).await;
             anyhow::bail!("Flow cannot edit '{}': {}", label, alert);
+        }
+        if let Some(sel_err) = open_res
+            .get("selection_error")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let _ = ensure_project_workspace_root(engine).await;
+            anyhow::bail!("Flow cannot select clip '{}': {}", label, sel_err);
         }
         opened_in_ui = is_editor_open(&open_res);
     } else if opened_in_ui {

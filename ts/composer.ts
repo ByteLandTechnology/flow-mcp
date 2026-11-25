@@ -525,3 +525,42 @@ export async function closeSettingsAndMenus(): Promise<void> {
     await delay(50);
   }
 }
+
+/** Returns true when `el` is connected, visible on screen, and outside non-composer panels. */
+export function isVisibleOutsideNonComposer(
+  el: Element | null | undefined,
+): el is HTMLElement {
+  if (!(el instanceof HTMLElement) || !el.isConnected) return false;
+  if (el.closest('[hidden], [aria-hidden="true"]')) return false;
+  if (el.closest(NON_COMPOSER_PANELS)) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  return el.getClientRects().length > 0;
+}
+
+/** Reads a blocking `.too-long-overlay` or composer alert message from the active editor view. */
+export function readComposerAlert(includePageAlerts: boolean): string | null {
+  const primaryAlerts = Array.from(
+    document.querySelectorAll(
+      `.too-long-overlay, flow-edit-video-prompt-box [role="alert"], flow-edit-image-prompt-box [role="alert"]`,
+    ),
+  );
+  for (const el of primaryAlerts) {
+    if (!isVisibleOutsideNonComposer(el)) continue;
+    const msg = elText(el).replace(/\s+/g, " ").trim();
+    if (msg) return msg;
+  }
+  if (!includePageAlerts) return null;
+  const pageAlerts = Array.from(
+    document.querySelectorAll(
+      'flow-editor-page [role="alert"], flow-scene-builder [role="alert"], flow-alert-dialog [role="dialog"], flow-alert-dialog',
+    ),
+  );
+  for (const el of pageAlerts) {
+    if (!isVisibleOutsideNonComposer(el)) continue;
+    const msg = elText(el).replace(/\s+/g, " ").trim();
+    if (msg) return msg;
+  }
+  return null;
+}
+

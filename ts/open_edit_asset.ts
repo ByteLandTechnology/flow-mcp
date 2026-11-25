@@ -9,214 +9,24 @@ import {
   navigateSpa,
   readOwn,
   resolveLView,
+  withLViewMapCapture,
   type NgContextCarrier,
 } from "./angular";
 import {
-  EDIT_PROMPT_BOX_SELECTOR,
   findTextbox,
   NON_COMPOSER_PANELS,
+  readComposerAlert,
 } from "./composer";
 import { delay, elText, isVisibleEnabled } from "./dom";
-import { sceneContents } from "./scene_tiles";
+import {
+  collectSceneClipElements,
+  ensureSceneBuilderLViewMap,
+  readComponentInput,
+  sceneContents,
+  selectSceneClip,
+  verifySelectedSceneClipInBuilder,
+} from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
-
-/** Returns true when `el` is connected, visible on screen, and outside non-composer panels. */
-function isVisibleOutsideNonComposer(el: Element | null | undefined): el is HTMLElement {
-  if (!(el instanceof HTMLElement) || !el.isConnected) return false;
-  if (el.closest('[hidden], [aria-hidden="true"]')) return false;
-  if (el.closest(NON_COMPOSER_PANELS)) return false;
-  const style = window.getComputedStyle(el);
-  if (style.display === "none" || style.visibility === "hidden") return false;
-  return el.getClientRects().length > 0;
-}
-
-/** Reads a blocking `.too-long-overlay` or composer alert message from the active editor view. */
-function readComposerAlert(includePageAlerts: boolean): string | null {
-  const primaryAlerts = Array.from(
-    document.querySelectorAll(
-      `.too-long-overlay, flow-edit-video-prompt-box [role="alert"], flow-edit-image-prompt-box [role="alert"]`,
-    ),
-  );
-  for (const el of primaryAlerts) {
-    if (!isVisibleOutsideNonComposer(el)) continue;
-    const msg = elText(el).replace(/\s+/g, " ").trim();
-    if (msg) return msg;
-  }
-  if (!includePageAlerts) return null;
-  const pageAlerts = Array.from(
-    document.querySelectorAll(
-      'flow-editor-page [role="alert"], flow-scene-builder [role="alert"], flow-alert-dialog [role="dialog"], flow-alert-dialog',
-    ),
-  );
-  for (const el of pageAlerts) {
-    if (!isVisibleOutsideNonComposer(el)) continue;
-    const msg = elText(el).replace(/\s+/g, " ").trim();
-    if (msg) return msg;
-  }
-  return null;
-}
-
-/** Checks whether an Angular context slot matches the target clip identifier. */
-function objectMatchesClip(
-  item: unknown,
-  idStr: string,
-  primaryStr: string,
-): boolean {
-  if (!item || typeof item !== "object" || item instanceof Node) return false;
-  const rawType = String(readOwn(item, "type") || "").toUpperCase();
-  if (rawType === "SCENE") return false;
-  const wf = String(readOwn(item, "workflowId") || "").trim();
-  if (idStr && wf === idStr) return true;
-  const pmid = String(readOwn(item, "primaryMediaId") || "").trim();
-  if (primaryStr && pmid === primaryStr) return true;
-  const id = String(readOwn(item, "id") || "").trim();
-  return Boolean(idStr && id === idStr);
-}
-
-/** Checks whether a DOM node in `flow-scene-builder` represents the target clip. */
-function elementMatchesSceneClip(
-  el: Element,
-  idStr: string,
-  primaryStr: string,
-  mediaUrl: string | null,
-): boolean {
-  for (const attr of [
-    "data-workflow-id",
-    "data-clip-id",
-    "data-asset-id",
-    "data-id",
-    "id",
-  ]) {
-    const val = (el.getAttribute(attr) || "").trim();
-    if (val && (val === idStr || (primaryStr && val === primaryStr))) {
-      return true;
-    }
-  }
-  if (mediaUrl) {
-    const mediaNodes = [
-      ...(el.matches("img[src], video[src], source[src]") ? [el] : []),
-      ...Array.from(el.querySelectorAll("img[src], video[src], source[src]")),
-    ];
-    if (
-      mediaNodes.length === 1 &&
-      (() => {
-        const src = mediaNodes[0].getAttribute("src") || "";
-        return Boolean(
-          src &&
-            (src === mediaUrl ||
-              mediaUrl.includes(src) ||
-              src.includes(mediaUrl)),
-        );
-      })()
-    ) {
-      return true;
-    }
-  }
-  const lv = resolveLView(el) ?? (el as NgContextCarrier).__ngContext__;
-  if (Array.isArray(lv)) {
-    for (const slot of lv) {
-      if (objectMatchesClip(slot, idStr, primaryStr)) return true;
-    }
-  }
-  return false;
-}
-
-/** Selects the target clip in `flow-scene-builder` and opens clip edit mode when needed. */
-async function selectSceneClip(
-  sb: ParentNode,
-  idStr: string,
-  primaryStr: string,
-  mediaUrl: string | null,
-  clipIndex: number,
-): Promise<void> {
-  for (let i = 0; i < 25; i += 1) {
-    if (
-      sb.querySelector(
-        'flow-scene-timeline, [class*="clip"], [data-testid*="clip"], video',
-      )
-    ) {
-      break;
-    }
-    await delay(100);
-  }
-  const searchRoot = sb.querySelector("flow-scene-timeline") || sb;
-  const candidates = Array.from(searchRoot.querySelectorAll("*")).filter(
-    (el): el is HTMLElement =>
-      isVisibleOutsideNonComposer(el) && !el.closest(EDIT_PROMPT_BOX_SELECTOR),
-  );
-  const directMatches = candidates.filter((el) =>
-    elementMatchesSceneClip(el, idStr, primaryStr, mediaUrl),
-  );
-  let targetClip: HTMLElement | null =
-    directMatches.find(
-      (el) => !directMatches.some((other) => other !== el && el.contains(other)),
-    ) ??
-    directMatches[0] ??
-    null;
-
-  if (!targetClip && clipIndex >= 0) {
-    const timeline = sb.querySelector("flow-scene-timeline");
-    if (timeline) {
-      const rawItems = Array.from(
-        timeline.querySelectorAll(
-          '[data-clip-index], [data-testid*="clip"], [class*="timeline-clip"], [class*="clip-item"], [class*="clip-card"]',
-        ),
-      ).filter(isVisibleOutsideNonComposer);
-      const topItems = rawItems.filter(
-        (el) => !rawItems.some((other) => other !== el && other.contains(el)),
-      );
-      if (clipIndex < topItems.length) {
-        targetClip = topItems[clipIndex];
-      } else {
-        const directChildren = Array.from(timeline.children).filter(
-          isVisibleOutsideNonComposer,
-        );
-        if (clipIndex < directChildren.length) {
-          targetClip = directChildren[clipIndex];
-        }
-      }
-    }
-  }
-
-  if (!targetClip && !findTextbox(true)) {
-    const fallback = sb.querySelector(
-      '[class*="clip"], [data-testid*="clip"], video',
-    );
-    if (isVisibleOutsideNonComposer(fallback)) {
-      targetClip = fallback;
-    }
-  }
-
-  if (targetClip) {
-    targetClip.click();
-    await delay(250);
-  }
-
-  if (readComposerAlert(false)) return;
-
-  if (
-    !findTextbox(true) ||
-    Boolean(document.querySelector(".is-extend-mode, .extend-composing"))
-  ) {
-    const editTrigger = Array.from(
-      sb.querySelectorAll('button, [role="button"], [role="tab"]'),
-    ).find((b): b is HTMLElement => {
-      if (!isVisibleEnabled(b) || b.closest(NON_COMPOSER_PANELS)) return false;
-      const lbl = (
-        b.getAttribute("aria-label") ||
-        elText(b) ||
-        b.getAttribute("title") ||
-        ""
-      ).trim();
-      if (/done editing|delete|split|download/i.test(lbl)) return false;
-      return /^(?:edit(?:\s+(?:clip|video))?)$/i.test(lbl);
-    });
-    if (editTrigger) {
-      editTrigger.click();
-      await delay(300);
-    }
-  }
-}
 
 /** Navigates to `/edit/<id>` or `/scene/<scene_id>` and confirms edit composer readiness. */
 export async function openEditAsset(
@@ -230,7 +40,6 @@ export async function openEditAsset(
   const candidateIds = Array.from(new Set([idStr, primaryStr].filter(Boolean)));
 
   let resolvedSceneId = sceneId ? String(sceneId).trim() || null : null;
-  let clipIndex = -1;
   const tileMap = runtimeState.store?.getTileMap?.();
   if (tileMap instanceof Map && idStr) {
     const directTile = tileMap.get(idStr);
@@ -286,7 +95,6 @@ export async function openEditAsset(
         );
         if (idx >= 0 || history.has(idStr)) {
           if (!resolvedSceneId && stId) resolvedSceneId = stId;
-          if (idx >= 0) clipIndex = idx;
           break;
         }
       }
@@ -312,7 +120,9 @@ export async function openEditAsset(
       }
     }
     if (!hasSceneBuilder && router) {
-      await navigateSpa(router, ["/project", pid, "scene", resolvedSceneId]);
+      await withLViewMapCapture(async () => {
+        await navigateSpa(router, ["/project", pid, "scene", resolvedSceneId]);
+      });
       for (let i = 0; i < 60; i += 1) {
         if (
           (location.pathname || "").includes(targetPath) &&
@@ -326,10 +136,35 @@ export async function openEditAsset(
     }
     if (hasSceneBuilder) {
       const sb = document.querySelector("flow-scene-builder") || document;
-      await selectSceneClip(sb, idStr, primaryStr, mediaUrl, clipIndex);
+      const selection = await selectSceneClip(sb, idStr, primaryStr);
+      if (!selection.ok) {
+        clearStore();
+        return {
+          opened: false,
+          error: selection.error,
+          selection_error: selection.detail,
+          method: "spa_router",
+          view: "scene_builder",
+          scene_id: resolvedSceneId,
+          has_textbox: false,
+        };
+      }
       for (let i = 0; i < 25; i += 1) {
         if (readComposerAlert(false) || findTextbox(true)) break;
         await delay(100);
+      }
+      const postCheck = verifySelectedSceneClipInBuilder(sb, idStr, primaryStr);
+      if (!postCheck.ok) {
+        clearStore();
+        return {
+          opened: false,
+          error: postCheck.error,
+          selection_error: postCheck.detail,
+          method: "spa_router",
+          view: "scene_builder",
+          scene_id: resolvedSceneId,
+          has_textbox: false,
+        };
       }
       clearStore();
       const hasTextbox = Boolean(findTextbox(true));
@@ -342,6 +177,7 @@ export async function openEditAsset(
           method: "spa_router",
           view: "scene_builder",
           scene_id: resolvedSceneId,
+          selected_clip_id: postCheck.selectedClipId,
           has_textbox: false,
         };
       }
@@ -351,6 +187,7 @@ export async function openEditAsset(
         method: "spa_router",
         view: "scene_builder",
         scene_id: resolvedSceneId,
+        selected_clip_id: postCheck.selectedClipId,
         has_textbox: hasTextbox,
       };
     }
@@ -384,7 +221,9 @@ export async function openEditAsset(
             document.querySelector("flow-scene-builder"))
         )
       ) {
-        await navigateSpa(router, ["/project", pid, "edit", candId]);
+        await withLViewMapCapture(async () => {
+          await navigateSpa(router, ["/project", pid, "edit", candId]);
+        });
       }
       let viewKind: string | null = null;
       const waitTicks = router ? 60 : 30;
@@ -404,16 +243,87 @@ export async function openEditAsset(
         if (readComposerAlert(false) || findTextbox(true)) break;
         await delay(100);
       }
-      if (
-        !readComposerAlert(false) &&
-        viewKind === "scene_builder" &&
-        !findTextbox(true)
-      ) {
-        const sb = document.querySelector("flow-scene-builder") || document;
-        await selectSceneClip(sb, idStr, primaryStr, mediaUrl, clipIndex);
-        for (let i = 0; i < 20; i += 1) {
-          if (readComposerAlert(false) || findTextbox(true)) break;
-          await delay(100);
+      let selectedClipId: string | undefined;
+      if (viewKind === "scene_builder") {
+        const sbEl = document.querySelector("flow-scene-builder");
+        const sbNode: ParentNode = sbEl || document;
+        await ensureSceneBuilderLViewMap(sbNode);
+        let singleVideoMatch = false;
+        if (sbEl) {
+          const rawCtx = (sbEl as NgContextCarrier).__ngContext__;
+          const sbLv =
+            resolveLView(sbEl) ?? (Array.isArray(rawCtx) ? rawCtx : null);
+          const sbSlots: unknown[] = Array.isArray(sbLv) ? sbLv : [sbEl];
+          for (const slot of sbSlots) {
+            if (!slot || typeof slot !== "object" || slot instanceof Node) {
+              continue;
+            }
+            const wfInput = readComponentInput(slot, "workflowId");
+            if (
+              wfInput.found &&
+              typeof wfInput.value === "string" &&
+              wfInput.value.trim()
+            ) {
+              const wfVal = wfInput.value.trim();
+              if (wfVal !== candId && wfVal !== idStr && wfVal !== primaryStr) {
+                clearStore();
+                return {
+                  opened: false,
+                  error: "scene_clip_selection_mismatch",
+                  selection_error: `Video editor targets workflow '${wfVal}' instead of '${idStr || candId}'.`,
+                  method: "spa_router",
+                  view: viewKind,
+                  has_textbox: false,
+                };
+              }
+              singleVideoMatch = true;
+              selectedClipId = idStr || candId;
+              break;
+            }
+          }
+        }
+        const hasTimelineOrClips =
+          Boolean(sbNode.querySelector("flow-scene-timeline")) ||
+          collectSceneClipElements(sbNode).length > 0;
+        if (!singleVideoMatch && (hasTimelineOrClips || !findTextbox(true))) {
+          const selection = await selectSceneClip(
+            sbNode,
+            idStr || candId,
+            primaryStr,
+          );
+          if (!selection.ok) {
+            clearStore();
+            return {
+              opened: false,
+              error: selection.error,
+              selection_error: selection.detail,
+              method: "spa_router",
+              view: viewKind,
+              has_textbox: false,
+            };
+          }
+          selectedClipId = selection.selectedClipId;
+          for (let i = 0; i < 20; i += 1) {
+            if (readComposerAlert(false) || findTextbox(true)) break;
+            await delay(100);
+          }
+          const postCheck = verifySelectedSceneClipInBuilder(
+            sbNode,
+            idStr || candId,
+            primaryStr,
+          );
+          if (!postCheck.ok) {
+            clearStore();
+            return {
+              opened: false,
+              error: postCheck.error,
+              selection_error: postCheck.detail,
+              method: "spa_router",
+              view: viewKind,
+              has_textbox: false,
+            };
+          }
+          selectedClipId = postCheck.selectedClipId;
         }
       }
 
@@ -427,6 +337,7 @@ export async function openEditAsset(
           alert,
           method: "spa_router",
           view: viewKind,
+          selected_clip_id: selectedClipId,
           has_textbox: false,
         };
       }
@@ -436,6 +347,7 @@ export async function openEditAsset(
           opened: true,
           method: "spa_router",
           view: viewKind,
+          selected_clip_id: selectedClipId,
           has_textbox: true,
         };
       }
@@ -532,6 +444,43 @@ export async function openEditAsset(
           if (readComposerAlert(false) || findTextbox(true)) break;
           await delay(100);
         }
+        let uiSelectedClipId: string | undefined;
+        const uiSb = document.querySelector("flow-scene-builder");
+        if (
+          uiSb &&
+          (Boolean(uiSb.querySelector("flow-scene-timeline")) ||
+            collectSceneClipElements(uiSb).length > 0)
+        ) {
+          const uiSelection = await selectSceneClip(uiSb, idStr, primaryStr);
+          if (!uiSelection.ok) {
+            clearStore();
+            return {
+              opened: false,
+              error: uiSelection.error,
+              selection_error: uiSelection.detail,
+              method: "ui_edit",
+              view: "scene_builder",
+              has_textbox: false,
+            };
+          }
+          const uiPostCheck = verifySelectedSceneClipInBuilder(
+            uiSb,
+            idStr,
+            primaryStr,
+          );
+          if (!uiPostCheck.ok) {
+            clearStore();
+            return {
+              opened: false,
+              error: uiPostCheck.error,
+              selection_error: uiPostCheck.detail,
+              method: "ui_edit",
+              view: "scene_builder",
+              has_textbox: false,
+            };
+          }
+          uiSelectedClipId = uiPostCheck.selectedClipId;
+        }
         const hasTextbox = Boolean(findTextbox(true));
         const alert = readComposerAlert(!hasTextbox);
         if (alert) {
@@ -541,12 +490,18 @@ export async function openEditAsset(
             error: "edit_alert",
             alert,
             method: "ui_edit",
+            selected_clip_id: uiSelectedClipId,
             has_textbox: false,
           };
         }
         if (hasTextbox) {
           clearStore();
-          return { opened: true, method: "ui_edit", has_textbox: true };
+          return {
+            opened: true,
+            method: "ui_edit",
+            selected_clip_id: uiSelectedClipId,
+            has_textbox: true,
+          };
         }
       }
     }
