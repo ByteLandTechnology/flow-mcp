@@ -19,32 +19,10 @@ use crate::config::{
 };
 use crate::cookies::{has_google_auth_cookies, read_cookies_file};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::project_route::{is_flow_origin_host, is_workspace_flow_route, split_flow_path};
 
 /// Maximum number of `/about` passive SSO redirect attempts during session promotion.
 const MAX_ABOUT_SSO_RETRIES: usize = 2;
-
-/// Exact or segment-prefix non-workspace routes from the live Flow route table.
-const NON_WORKSPACE_SEGMENT_PREFIXES: [&str; 19] = [
-    "/unsupported-country",
-    "/unsupported-browser",
-    "/unavailable",
-    "/age-restricted",
-    "/privacy",
-    "/credits-terms",
-    "/about",
-    "/flow/about",
-    "/academy",
-    "/shared/tool",
-    "/shared",
-    "/flow/shared/tool",
-    "/flow/shared",
-    "/tools/flow/shared/tool",
-    "/tools/flow/shared",
-    "/404",
-    "/login",
-    "/tools/flow/about",
-    "/tools/flow/login",
-];
 
 /// Parameters for `flow_login`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -69,76 +47,35 @@ fn has_segment_prefix(path: &str, prefix: &str) -> bool {
             && path.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 
-/// Normalizes a URL path to lowercase without trailing slashes, preserving `/`.
-fn normalize_flow_path(raw: &str) -> String {
-    let lower = raw.trim().to_ascii_lowercase();
-    let with_slash = if lower.starts_with('/') {
-        lower
-    } else {
-        format!("/{lower}")
-    };
-    let trimmed = with_slash.trim_end_matches('/');
-    if trimmed.is_empty() {
-        "/".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// Strips an optional `/fx` prefix from a normalized path.
-fn strip_fx_prefix(clean_path: &str) -> &str {
-    if clean_path == "/fx" {
-        "/"
-    } else if let Some(rest) = clean_path.strip_prefix("/fx/") {
-        &clean_path[3..3 + 1 + rest.len()]
-    } else {
-        clean_path
-    }
-}
-
-/// Returns `true` when `clean_path` matches any of the 17 non-workspace Flow routes.
-fn is_non_workspace_flow_path(clean_path: &str) -> bool {
-    let rel = strip_fx_prefix(clean_path);
-    if rel == "/flow" {
-        return true;
-    }
-    NON_WORKSPACE_SEGMENT_PREFIXES
-        .iter()
-        .any(|prefix| has_segment_prefix(rel, prefix))
-}
-
 /// Returns true when the URL targets a Google Flow host.
 pub(crate) fn is_flow_host_url(raw: &str) -> bool {
     Url::parse(raw).is_ok_and(|url| {
-        matches!(url.scheme(), "http" | "https")
-            && crate::project_route::is_flow_origin_host(url.host_str())
+        matches!(url.scheme(), "http" | "https") && is_flow_origin_host(url.host_str())
     })
 }
 
-/// Returns `true` when `raw` points to a Google Flow workspace host and route.
+/// Returns `true` when `raw` points to a Google Flow workspace host and allowlisted route.
 pub(crate) fn is_signed_in_flow_url(raw: &str) -> bool {
     let Ok(parsed) = Url::parse(raw) else {
         return false;
     };
-    if parsed.scheme() != "https" && parsed.scheme() != "http" {
+    if !matches!(parsed.scheme(), "http" | "https") || !is_flow_origin_host(parsed.host_str()) {
         return false;
     }
-    let Some(host) = parsed.host_str().map(|h| h.to_ascii_lowercase()) else {
-        return false;
-    };
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
     let on_labs = host == "labs.google" || host.ends_with(".labs.google");
-    if host != "flow.google.com" && !on_labs {
+    let stripped = split_flow_path(parsed.path());
+    if on_labs && !stripped.has_labs_flow_prefix {
         return false;
     }
-    let clean_path = normalize_flow_path(parsed.path());
-    if on_labs && !has_segment_prefix(&clean_path, "/fx/tools/flow") {
-        return false;
-    }
-    !is_non_workspace_flow_path(&clean_path)
+    is_workspace_flow_route(&stripped.route)
 }
 
 /// Evaluates `checkAuth` once in the active page, retrying brief context resets during navigation.
 async fn eval_check_auth_once(engine: &ChromeEngine) -> Option<Value> {
+    let _ = engine
+        .bind_angular_views("aisandbox-root, app-root, router-outlet")
+        .await;
     for _ in 0..3 {
         match engine.call_flow_async("checkAuth", json!([])).await {
             Ok(v) => return Some(v),
@@ -225,21 +162,16 @@ fn signed_in_login_result(mode: &str, count: usize, url: String) -> Value {
     })
 }
 
-/// Returns `true` when `url` points to a Google Flow `/about` landing route.
+/// Returns `true` when `url` points to a Google Flow `/about` landing route under any supported prefix.
 pub(crate) fn is_about_landing_url(url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
         return url.contains("flow.google.com/about") || url.contains("/fx/about");
     };
-    let Some(host) = parsed.host_str().map(|h| h.to_ascii_lowercase()) else {
-        return false;
-    };
-    let on_flow =
-        host == "flow.google.com" || host == "labs.google" || host.ends_with(".labs.google");
-    if !on_flow {
+    if !matches!(parsed.scheme(), "http" | "https") || !is_flow_origin_host(parsed.host_str()) {
         return false;
     }
-    let clean = normalize_flow_path(parsed.path());
-    let rel = strip_fx_prefix(&clean);
+    let stripped = split_flow_path(parsed.path());
+    let rel = stripped.route.as_str();
     rel == "/flow"
         || has_segment_prefix(rel, "/about")
         || has_segment_prefix(rel, "/flow/about")
@@ -311,15 +243,28 @@ async fn finalize_promoted_login(engine: &ChromeEngine, start_url: &str) -> Resu
             }
             continue;
         }
-        if is_signed_in_flow_url(&cur)
-            && let Some(count) = check_fully_signed_in(engine).await
-        {
-            let final_url = engine.current_url().await.unwrap_or_default();
-            return Ok(Some(signed_in_login_result(
-                "interactive-chrome",
-                count,
-                final_url,
-            )));
+        if is_flow_host_url(&cur) && !is_signed_in_flow_url(&cur) {
+            break;
+        }
+        if is_signed_in_flow_url(&cur) && !cur.contains("accounts.google.com") {
+            let cookies = engine.flow_cookies().await.unwrap_or_default();
+            if has_google_auth_cookies(&cookies) {
+                let auth = check_page_auth(engine, true).await;
+                if auth.get("signed_in").and_then(Value::as_bool) == Some(true) {
+                    let final_url = engine.current_url().await.unwrap_or_default();
+                    return Ok(Some(signed_in_login_result(
+                        "interactive-chrome",
+                        cookies.len(),
+                        final_url,
+                    )));
+                }
+                if matches!(
+                    auth.get("reason").and_then(Value::as_str),
+                    Some("unsupported_country" | "age_restricted" | "unavailable")
+                ) {
+                    break;
+                }
+            }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -339,7 +284,7 @@ async fn login_with_chrome(
         remove_cookies_file();
         engine.launch_interactive_login(FLOW_SSO_URL, true).await?;
     } else if engine.has_login_chrome().await {
-        if let Some(st) = engine.poll_login_chrome().await? {
+        if !wait_for_login && let Some(st) = engine.poll_login_chrome().await? {
             if let Some(rejected) = st.rejected_url {
                 engine.shutdown().await;
                 anyhow::bail!(
@@ -347,17 +292,13 @@ async fn login_with_chrome(
                     rejected
                 );
             }
-            if st.exited || st.has_google_auth_cookies {
-                if let Some(res) = finalize_promoted_login(engine, FLOW_URL).await? {
+            if st.exited {
+                let target_url = st.flow_url.as_deref().unwrap_or(FLOW_URL);
+                if let Some(res) = finalize_promoted_login(engine, target_url).await? {
                     return Ok(res);
                 }
-                if st.exited {
-                    anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
-                }
+                engine.launch_interactive_login(FLOW_SSO_URL, false).await?;
             }
-        }
-        if !engine.has_login_chrome().await {
-            engine.launch_interactive_login(FLOW_SSO_URL, false).await?;
         }
     } else {
         if has_persisted_session() || engine.has_page().await {
@@ -374,7 +315,7 @@ async fn login_with_chrome(
     if !wait_for_login {
         let st = engine.poll_login_chrome().await?;
         let url = st
-            .and_then(|s| s.rejected_url)
+            .and_then(|s| s.rejected_url.or(s.flow_url))
             .unwrap_or_else(|| FLOW_SSO_URL.to_string());
         return Ok(json!({
             "ok": true,
@@ -391,6 +332,9 @@ async fn login_with_chrome(
 
     let clamped_secs = timeout_secs.clamp(15, 3600);
     let deadline = Instant::now() + Duration::from_secs(clamped_secs);
+    let mut ready_polls = 0usize;
+    let mut ready_url: Option<String> = None;
+    let mut last_flow_url: Option<String> = None;
 
     loop {
         let Some(st) = engine.poll_login_chrome().await? else {
@@ -405,23 +349,43 @@ async fn login_with_chrome(
             );
         }
 
-        if st.exited || st.has_google_auth_cookies {
-            if st.has_google_auth_cookies && !st.exited {
-                tokio::time::sleep(Duration::from_secs(4)).await;
+        if let Some(observed) = st.flow_url.as_ref() {
+            last_flow_url = Some(observed.clone());
+        }
+
+        if st.has_google_auth_cookies {
+            if ready_url.as_deref() == st.flow_url.as_deref() {
+                ready_polls += 1;
+            } else {
+                ready_url = st.flow_url.clone();
+                ready_polls = 1;
             }
-            if let Some(res) = finalize_promoted_login(engine, FLOW_URL).await? {
+        } else {
+            ready_polls = 0;
+            ready_url = None;
+        }
+
+        if st.exited || ready_polls >= 2 {
+            let target_url = st
+                .flow_url
+                .as_deref()
+                .or(last_flow_url.as_deref())
+                .unwrap_or(FLOW_URL);
+            if let Some(res) = finalize_promoted_login(engine, target_url).await? {
                 return Ok(res);
             }
             if st.exited {
                 anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
             }
+            engine.launch_interactive_login(FLOW_SSO_URL, false).await?;
             anyhow::bail!(
                 "Google Sign-In wrote authentication cookies, but workspace verification did not succeed. Run flow_login again."
             );
         }
 
         if Instant::now() >= deadline {
-            if let Ok(Some(res)) = finalize_promoted_login(engine, FLOW_URL).await {
+            let target_url = last_flow_url.as_deref().unwrap_or(FLOW_URL);
+            if let Ok(Some(res)) = finalize_promoted_login(engine, target_url).await {
                 return Ok(res);
             }
             engine.shutdown().await;
@@ -488,10 +452,15 @@ pub(crate) async fn handle_login(engine: &ChromeEngine, req: LoginParams) -> Res
             if engine.has_login_chrome().await
                 && let Some(st) = engine.poll_login_chrome().await?
             {
-                if st.exited || st.has_google_auth_cookies {
+                if st.exited {
                     promotion_attempted = true;
-                    let _ = finalize_promoted_login(engine, FLOW_URL).await;
+                    let target_url = st.flow_url.as_deref().unwrap_or(FLOW_URL);
+                    let _ = finalize_promoted_login(engine, target_url).await;
                 } else {
+                    let url = st
+                        .rejected_url
+                        .or(st.flow_url)
+                        .unwrap_or_else(|| FLOW_SSO_URL.to_string());
                     return Ok(json!({
                         "ok": true,
                         "action": "status",
@@ -501,7 +470,7 @@ pub(crate) async fn handle_login(engine: &ChromeEngine, req: LoginParams) -> Res
                         "cdpEndpoint": Value::Null,
                         "cookiesSaved": cookies_path().is_file(),
                         "profileDir": chrome_profile_dir().to_string_lossy(),
-                        "url": st.rejected_url.unwrap_or_else(|| FLOW_SSO_URL.to_string()),
+                        "url": url,
                         "signedIn": false,
                     }));
                 }

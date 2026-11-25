@@ -20,6 +20,10 @@ export interface WizGlobalData {
   eptZe?: string;
   /** Encoded FIFE host configuration string. */
   TSDtV?: string;
+  /** Active Google account index rendered by the server. */
+  QrtxK?: string;
+  /** Delegated or organization page identifier for batchexecute calls. */
+  S06Grb?: string;
 }
 
 /** Angular Router subset used for in-app navigation. */
@@ -30,6 +34,48 @@ export interface AngularRouter {
   location: unknown;
   /** Router configuration options. */
   options: unknown;
+}
+
+/** State snapshot stored on one cached query entry in `QueryCache`. */
+export interface AngularQueryState {
+  /** Settlement status (`pending`, `success`, or `error`). */
+  status?: string;
+  /** Active network status (`fetching`, `paused`, or `idle`). */
+  fetchStatus?: string;
+  /** Decoded response payload or protobuf message instance. */
+  data?: unknown;
+  /** Terminal error reported by the last failed fetch. */
+  error?: unknown;
+  /** Intermediate failure reason recorded while retries remain active. */
+  failureReason?: unknown;
+}
+
+/** Cached query entry managed by Angular's `QueryCache`. */
+export interface AngularQueryEntry {
+  /** Unminified query key array. */
+  queryKey?: readonly unknown[];
+  /** Serialized query key hash string. */
+  queryHash?: string;
+  /** Live query state snapshot. */
+  state?: AngularQueryState;
+}
+
+/** Subset of TanStack `QueryCache` exposed on Angular's `QueryClient`. */
+export interface AngularQueryCache {
+  /** Finds a single cached query matching `queryKey`. */
+  find?: (filters: { queryKey: readonly unknown[]; exact?: boolean }) => AngularQueryEntry | undefined;
+  /** Looks up a cached query by its serialized `queryHash`. */
+  get?: (queryHash: string) => AngularQueryEntry | undefined;
+  /** Lists all cached query entries. */
+  getAll?: () => AngularQueryEntry[];
+  /** Underlying hash-keyed query registry map. */
+  queries?: Map<string, AngularQueryEntry>;
+}
+
+/** Subset of Angular's injected `QueryClient` holding `queryCache`. */
+export interface AngularQueryClient {
+  /** Active query cache instance. */
+  queryCache: AngularQueryCache;
 }
 
 /** Destroyable Angular component or service lifecycle handle. */

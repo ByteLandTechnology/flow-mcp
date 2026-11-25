@@ -7,11 +7,19 @@ use url::Url;
 
 use crate::config::FLOW_URL;
 
-/// Extracts the `/project/<id>` segment from a Flow project URL.
+/// Extracts the `/project/<id>` segment from a Flow workspace URL or path.
 pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
+    if url.contains("://") && !crate::auth::is_signed_in_flow_url(url) {
+        return None;
+    }
     let path = url.split(['?', '#']).next()?;
-    let (_, project) = path.split_once("/project/")?;
-    let id = project.split('/').next()?.trim();
+    let stripped = split_flow_path(path);
+    if !stripped.route.starts_with("/project/") || !is_workspace_flow_route(&stripped.route) {
+        return None;
+    }
+    let prefix_count = stripped.prefix.split('/').filter(|s| !s.is_empty()).count();
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let id = segs.get(prefix_count + 1)?.trim();
     (!id.is_empty()).then(|| id.to_string())
 }
 
@@ -25,43 +33,136 @@ pub(crate) fn is_flow_origin_host(host: Option<&str>) -> bool {
         || h.to_ascii_lowercase().ends_with(".labs.google")
 }
 
-/// Extracts the active route prefix before `/project/` from a Flow URL path.
-fn flow_route_prefix(path: &str) -> String {
-    if let Some((before, _)) = path.split_once("/project/") {
-        return before.trim_end_matches('/').to_string();
-    }
+/// Parsed components of a Google Flow URL path after stripping active prefixes.
+pub(crate) struct StrippedFlowPath {
+    /// Active route prefix starting with `/` when present, preserving original case.
+    pub(crate) prefix: String,
+    /// Normalized lowercase route path starting with `/` without trailing slashes.
+    pub(crate) route: String,
+    /// True when `/fx/tools/flow` appears in the stripped prefix segments.
+    pub(crate) has_labs_flow_prefix: bool,
+}
+
+/// Returns `true` when `seg` is a reserved Flow top-level segment rather than an organization slug.
+fn is_reserved_flow_segment(seg: &str) -> bool {
+    matches!(
+        seg.to_ascii_lowercase().as_str(),
+        "project"
+            | "projects"
+            | "search"
+            | "changelogs"
+            | "about"
+            | "shared"
+            | "flow"
+            | "tools"
+            | "fx"
+            | "u"
+            | "unsupported-country"
+            | "unsupported-browser"
+            | "unavailable"
+            | "age-restricted"
+            | "privacy"
+            | "credits-terms"
+            | "academy"
+            | "404"
+            | "login"
+            | "debug"
+    )
+}
+
+/// Strips `/fx/tools/flow`, `/fx`, `/u/<digits>`, and `/<org>/global` prefixes from `path`.
+pub(crate) fn split_flow_path(path: &str) -> StrippedFlowPath {
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let mut prefix = Vec::new();
+    let mut has_labs_flow_prefix = false;
     let mut i = 0;
     while i < segs.len() {
-        if segs[i..].starts_with(&["fx", "tools", "flow"]) {
-            prefix.extend_from_slice(&["fx", "tools", "flow"]);
+        if segs.len() >= i + 3
+            && segs[i].eq_ignore_ascii_case("fx")
+            && segs[i + 1].eq_ignore_ascii_case("tools")
+            && segs[i + 2].eq_ignore_ascii_case("flow")
+        {
+            has_labs_flow_prefix = true;
+            prefix.extend_from_slice(&segs[i..i + 3]);
             i += 3;
+        } else if segs[i].eq_ignore_ascii_case("fx") {
+            prefix.push(segs[i]);
+            i += 1;
         } else if i + 1 < segs.len()
-            && segs[i] == "u"
-            && !segs[i + 1].is_empty()
-            && segs[i + 1].bytes().all(|b| b.is_ascii_digit())
+            && ((segs[i].eq_ignore_ascii_case("u")
+                && !segs[i + 1].is_empty()
+                && segs[i + 1].bytes().all(|b| b.is_ascii_digit()))
+                || (segs[i + 1].eq_ignore_ascii_case("global")
+                    && !is_reserved_flow_segment(segs[i])))
         {
-            prefix.extend_from_slice(&["u", segs[i + 1]]);
-            i += 2;
-        } else if i + 1 < segs.len()
-            && segs[i + 1] == "global"
-            && !matches!(
-                segs[i],
-                "project" | "projects" | "about" | "shared" | "flow" | "tools" | "fx" | "u"
-            )
-        {
-            prefix.extend_from_slice(&[segs[i], "global"]);
+            prefix.extend_from_slice(&segs[i..i + 2]);
             i += 2;
         } else {
             break;
         }
     }
-    if prefix.is_empty() {
+    let prefix_str = if prefix.is_empty() {
         String::new()
     } else {
         format!("/{}", prefix.join("/"))
+    };
+    let route = if i >= segs.len() {
+        "/".to_string()
+    } else {
+        format!("/{}", segs[i..].join("/")).to_ascii_lowercase()
+    };
+    StrippedFlowPath {
+        prefix: prefix_str,
+        route,
+        has_labs_flow_prefix,
     }
+}
+
+/// Returns `true` when lowercase segments after `/project/<id>` match a recognized Flow project subroute.
+fn is_project_subroute_segments(segs: &[&str]) -> bool {
+    match segs {
+        ["character" | "tools" | "create-tool" | "trash" | "chat"] => true,
+        [
+            "character" | "scene" | "edit" | "tool" | "collection" | "chat",
+            id,
+        ] => !id.is_empty(),
+        ["collection", id, "character"] | ["trash", "collection", id] => !id.is_empty(),
+        _ => false,
+    }
+}
+
+/// Returns `true` when a prefix-stripped lowercase `route` is a recognized Flow workspace path.
+pub(crate) fn is_workspace_flow_route(route: &str) -> bool {
+    if matches!(route, "/" | "/projects" | "/search" | "/changelogs") {
+        return true;
+    }
+    let Some(rest) = route.strip_prefix("/project/") else {
+        return false;
+    };
+    let segs: Vec<&str> = rest.split('/').collect();
+    let Some((&project_id, sub)) = segs.split_first() else {
+        return false;
+    };
+    !project_id.is_empty() && (sub.is_empty() || is_project_subroute_segments(sub))
+}
+
+/// Returns `true` when `url` points to a non-grid subroute inside `/project/<id>`.
+pub(crate) fn is_project_subroute_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let stripped = split_flow_path(path);
+    let Some(rest) = stripped.route.strip_prefix("/project/") else {
+        return false;
+    };
+    let segs: Vec<&str> = rest.split('/').collect();
+    let Some((&project_id, sub)) = segs.split_first() else {
+        return false;
+    };
+    !project_id.is_empty() && is_project_subroute_segments(sub)
+}
+
+/// Extracts the active route prefix from a Flow URL path.
+fn flow_route_prefix(path: &str) -> String {
+    split_flow_path(path).prefix
 }
 
 /// Builds a Google Flow `/project/<id>` or subroute URL with active prefixes, `hl=en`, and `authuser`.

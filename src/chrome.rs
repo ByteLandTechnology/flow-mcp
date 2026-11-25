@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::cdp::{CdpConnection, fetch_json_version};
 use crate::config::{chrome_profile_dir, cli_chrome_path, configured_cdp_port};
-use crate::cookies::is_google_auth_cookie_pair;
+use crate::cookies::{cookie_domain_matches, is_google_auth_cookie_pair};
 use crate::instance::{acquire_instance_lock, stop_orphan_chrome};
 use crate::platform::{create_private_dir_all, focus_process, interrupt_process};
 
@@ -53,7 +53,9 @@ impl Drop for LoginChrome {
 pub(crate) struct LoginProfileProbe {
     /// Google Accounts rejection URL observed in profile history.
     pub(crate) rejected_url: Option<String>,
-    /// True when core Google Sign-In cookies were written since launch.
+    /// Latest signed-in Google Flow workspace URL observed in profile history.
+    pub(crate) flow_url: Option<String>,
+    /// True when Google auth cookies, Flow-origin cookies, and a workspace history URL exist.
     pub(crate) has_google_auth_cookies: bool,
 }
 
@@ -328,48 +330,74 @@ fn copy_sqlite_files_to_scratch(
     Some(dst)
 }
 
-/// Inspects a scratch copy of Chrome's `History` SQLite database for Google Accounts rejection URLs.
+/// Inspects a scratch copy of Chrome's `History` SQLite database for rejection and workspace URLs.
 fn probe_history_db(scratch_history: &Path, min_webkit_us: i64, probe: &mut LoginProfileProbe) {
     let Ok(conn) = rusqlite::Connection::open(scratch_history) else {
         return;
     };
     let Ok(mut stmt) = conn.prepare(
-        "SELECT url FROM urls WHERE last_visit_time >= ?1 ORDER BY last_visit_time DESC, id DESC LIMIT 25",
+        "SELECT url FROM urls WHERE last_visit_time >= ?1 ORDER BY last_visit_time DESC, id DESC LIMIT 50",
     ) else {
         return;
     };
     let Ok(rows) = stmt.query_map([min_webkit_us], |row| row.get::<_, String>(0)) else {
         return;
     };
+    let mut flow_checked = false;
     for url in rows.flatten() {
         if url.contains("accounts.google.com/v3/signin/rejected") {
-            probe.rejected_url = Some(url);
+            if !flow_checked {
+                probe.rejected_url = Some(url);
+                probe.flow_url = None;
+            }
             return;
+        }
+        if !flow_checked && crate::auth::is_flow_host_url(&url) {
+            if url.to_ascii_lowercase().contains("/fx/api/auth/") {
+                continue;
+            }
+            flow_checked = true;
+            if crate::auth::is_signed_in_flow_url(&url) {
+                probe.flow_url = Some(url);
+            }
         }
     }
 }
 
-/// Returns `true` when a scratch copy of Chrome's `Cookies` database holds Google auth cookies.
-fn probe_cookies_db(scratch_cookies: &Path, min_webkit_us: i64) -> bool {
+/// Inspects a scratch copy of Chrome's `Cookies` database for `.google.com` and Flow-origin cookies.
+fn probe_cookies_db(scratch_cookies: &Path, min_webkit_us: i64) -> (bool, bool) {
     let Ok(conn) = rusqlite::Connection::open(scratch_cookies) else {
-        return false;
+        return (false, false);
     };
     let Ok(mut stmt) =
         conn.prepare("SELECT host_key, name FROM cookies WHERE last_update_utc >= ?1")
     else {
-        return false;
+        return (false, false);
     };
     let Ok(rows) = stmt.query_map([min_webkit_us], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     }) else {
-        return false;
+        return (false, false);
     };
-    for pair in rows.flatten() {
-        if is_google_auth_cookie_pair(&pair.0, &pair.1) {
-            return true;
+    let mut has_google_cookie = false;
+    let mut has_flow_cookie = false;
+    for (host, name) in rows.flatten() {
+        let clean_host = host.trim().trim_start_matches('.');
+        if clean_host.eq_ignore_ascii_case("google.com") && is_google_auth_cookie_pair(&host, &name)
+        {
+            has_google_cookie = true;
+        }
+        if !name.trim().is_empty()
+            && (cookie_domain_matches(&host, "flow.google.com")
+                || cookie_domain_matches(&host, "labs.google"))
+        {
+            has_flow_cookie = true;
+        }
+        if has_google_cookie && has_flow_cookie {
+            break;
         }
     }
-    false
+    (has_google_cookie, has_flow_cookie)
 }
 
 /// Inspects Chrome `History` and `Cookies` files for entries updated since `started_at`.
@@ -403,15 +431,22 @@ pub(crate) async fn inspect_login_profile(
             dir.join("Default").join("Cookies"),
             dir.join("Default").join("Network").join("Cookies"),
         ];
+        let mut has_google_cookie = false;
+        let mut has_flow_cookie = false;
         for (idx, src) in cookie_candidates.iter().enumerate() {
             let base = format!("Cookies_{idx}");
             if let Some(scratch_cookies) = copy_sqlite_files_to_scratch(src, scratch.path(), &base)
-                && probe_cookies_db(&scratch_cookies, min_webkit_us)
             {
-                probe.has_google_auth_cookies = true;
-                break;
+                let (google_hit, flow_hit) = probe_cookies_db(&scratch_cookies, min_webkit_us);
+                has_google_cookie |= google_hit;
+                has_flow_cookie |= flow_hit;
+                if has_google_cookie && has_flow_cookie {
+                    break;
+                }
             }
         }
+        probe.has_google_auth_cookies =
+            has_google_cookie && has_flow_cookie && probe.flow_url.is_some();
 
         probe
     })
