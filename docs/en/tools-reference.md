@@ -200,7 +200,7 @@ Queue a Veo video or Imagen image generation job on `JobQueue`. Returns a `JobVi
 | :--- | :--- | :--- | :--- |
 | `prompt` | `string` | Yes | Text prompt that `flow-mcp` sends to Google Flow. |
 | `mode` | `string` | No | `"video"` (default) or `"image"`. |
-| `model` | `string` | No | Model override. Defaults to `"Veo 3.1 Lite"` (`video`) or `"Nano Banana 2"` (`image`), and maps legacy slugs such as `"veo-3.1-fast"`. |
+| `model` | `string` | No | Model override. Defaults to `"Veo 3.1 Lite"` (`"Veo 3.1 Fast"` on legacy builds) for `video` or `"Nano Banana 2"` for `image`. |
 | `aspect` | `string` | No | Aspect ratio: `"16:9"` (default), `"9:16"`, or `"1:1"` (`image` mode only). |
 | `count` | `integer` | No | Output batch count in `1..=4`. Default `2`. |
 | `frames` | `string[]` | No | Local reference or keyframe image paths to upload before submission. |

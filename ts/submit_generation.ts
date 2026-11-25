@@ -11,8 +11,9 @@ import {
   findPromptBoxHost,
 } from "./composer";
 import { delay, elText, isVisibleEnabled } from "./dom";
+import { verifyComposerGenerationState } from "./generation_state";
 import { runtimeState } from "./state";
-import type { NgLView } from "./types";
+import type { GenerationConfig, NgLView } from "./types";
 
 /** Inspects `Qa.oc.all()` for loading or `Rp`-disabled attachments before submit. */
 function inspectPromptAttachments(onEditPage: boolean): {
@@ -90,7 +91,7 @@ function readCandidateValidatorReason(cand: unknown): string {
 }
 
 /** Finds the enabled Start generation button, uncovers it if needed, and returns its viewport point. */
-export async function submitGeneration(): Promise<unknown> {
+export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown> {
   const isVisible = (b: Element | null | undefined): b is HTMLElement =>
     Boolean(b instanceof HTMLElement && b.getClientRects().length > 0);
 
@@ -226,6 +227,12 @@ export async function submitGeneration(): Promise<unknown> {
         await delay(100);
         continue;
       }
+      if (!onEditPage) {
+        const stateCheck = verifyComposerGenerationState(cfg);
+        if (!stateCheck.ok) {
+          return stateCheck;
+        }
+      }
       return await prepareTarget(exact, "aria_start_generation");
     }
     const warning = checkWarning();
@@ -346,5 +353,11 @@ export async function submitGeneration(): Promise<unknown> {
     return b.tagName === "BUTTON" && /\barrow_forward\b/i.test(label);
   });
   if (!createBtn) return { ok: false, error: "submit_button_not_found" };
+  if (!onEditPage) {
+    const stateCheck = verifyComposerGenerationState(cfg);
+    if (!stateCheck.ok) {
+      return stateCheck;
+    }
+  }
   return await prepareTarget(createBtn, "fallback_button");
 }

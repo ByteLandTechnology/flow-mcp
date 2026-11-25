@@ -34,7 +34,7 @@ pub(crate) struct GenerateParams {
     pub(crate) prompt: String,
     /// Generation mode: "video" (default) or "image".
     pub(crate) mode: Option<String>,
-    /// Model name override (defaults to "Veo 3.1 Lite" for video or "Nano Banana 2" for image; maps legacy slugs such as "veo-3.1-fast").
+    /// Model family override (defaults to "Veo 3.1 Lite", or "Veo 3.1 Fast" on legacy builds, for video and "Nano Banana 2" for image).
     pub(crate) model: Option<String>,
     /// Output aspect ratio: "16:9" (default), "9:16", or "1:1" (image mode only).
     pub(crate) aspect: Option<String>,
@@ -93,23 +93,30 @@ struct NormalizedControls {
     mode: &'static str,
     /// Canonical aspect ratio label.
     aspect: String,
-    /// Live `Select model family` display name or caller override.
-    model: String,
+    /// Explicit model family display name or caller override when specified.
+    model: Option<String>,
+    /// Ordered default model family candidates when `model` is omitted.
+    default_models: &'static [&'static str],
     /// Normalized video mode (`Some("ingredients")` or `Some("frames")`) for video runs.
     video_type: Option<&'static str>,
     /// Clamped batch output count in `1..=4`.
     count: u32,
 }
 
-/// Maps legacy model slugs and defaults to live `Select model family` display names.
-fn normalize_model_name(raw: Option<&str>, mode: &str) -> String {
+/// Returns ordered default `Select model family` names for `mode` when `model` is omitted.
+fn default_model_families(mode: &str) -> &'static [&'static str] {
+    if mode == "image" {
+        &["Nano Banana 2"]
+    } else {
+        &["Veo 3.1 Lite", "Veo 3.1 Fast"]
+    }
+}
+
+/// Normalizes an explicit model identifier to its canonical family name without cross-family substitution.
+fn normalize_explicit_model(raw: Option<&str>) -> Option<String> {
     let trimmed = raw.map(str::trim).unwrap_or("");
     if trimmed.is_empty() {
-        return if mode == "image" {
-            "Nano Banana 2".to_string()
-        } else {
-            "Veo 3.1 Lite".to_string()
-        };
+        return None;
     }
     let key = trimmed
         .split(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '_' | '.'))
@@ -117,20 +124,25 @@ fn normalize_model_name(raw: Option<&str>, mode: &str) -> String {
         .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>()
         .join("_");
-    match key.as_str() {
-        "veo_3_1_fast" | "veo_3_1_lite" => "Veo 3.1 Lite".to_string(),
-        "veo_3_1" | "veo_3_1_quality" => "Veo 3.1".to_string(),
-        "veo_3_fast" => "Veo 3 Fast".to_string(),
-        "veo_3" => "Veo 3".to_string(),
-        "veo_2" | "veo_2_fast" | "veo_2_quality" => "Veo 2".to_string(),
-        "gemini_omni" | "macaron_cookie" => "Gemini Omni".to_string(),
-        "nano_banana" => "Nano Banana".to_string(),
-        "nano_banana_2" => "Nano Banana 2".to_string(),
-        "nano_banana_pro" => "Nano Banana Pro".to_string(),
-        "imagen_3" => "Imagen 3".to_string(),
-        "imagen_4" => "Imagen 4".to_string(),
-        _ => trimmed.to_string(),
-    }
+    let canonical = match key.as_str() {
+        "veo_3_1_fast" => "Veo 3.1 Fast",
+        "veo_3_1_lite" => "Veo 3.1 Lite",
+        "veo_3_1" => "Veo 3.1",
+        "veo_3_1_quality" => "Veo 3.1 Quality",
+        "veo_3_fast" => "Veo 3 Fast",
+        "veo_3" => "Veo 3",
+        "veo_2" => "Veo 2",
+        "veo_2_fast" => "Veo 2 Fast",
+        "veo_2_quality" => "Veo 2 Quality",
+        "gemini_omni" | "macaron_cookie" => "Gemini Omni",
+        "nano_banana" => "Nano Banana",
+        "nano_banana_2" => "Nano Banana 2",
+        "nano_banana_pro" => "Nano Banana Pro",
+        "imagen_3" => "Imagen 3",
+        "imagen_4" => "Imagen 4",
+        _ => return Some(trimmed.to_string()),
+    };
+    Some(canonical.to_string())
 }
 
 /// Normalizes generation parameters and rejects invalid video aspect, character, and frame combinations.
@@ -208,7 +220,8 @@ fn resolve_generation_controls(scene: &SceneParams) -> Result<NormalizedControls
     Ok(NormalizedControls {
         mode,
         aspect: aspect.to_string(),
-        model: normalize_model_name(scene.model.as_deref(), mode),
+        model: normalize_explicit_model(scene.model.as_deref()),
+        default_models: default_model_families(mode),
         video_type,
         count: scene.count.unwrap_or(2).clamp(1, 4),
     })
@@ -226,6 +239,11 @@ async fn apply_generation_controls(
         "mode": controls.mode,
         "aspect": controls.aspect,
         "model": controls.model,
+        "default_models": if controls.model.is_none() {
+            Some(controls.default_models)
+        } else {
+            None
+        },
         "count": controls.count,
         "prompt": scene.prompt,
         "asset_ids": scene.asset_ids,
@@ -249,7 +267,7 @@ async fn apply_generation_controls(
     }
 
     let res = engine
-        .call_flow_async("attachIngredients", json!([cfg]))
+        .call_flow_async("attachIngredients", json!([cfg.clone()]))
         .await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
@@ -310,13 +328,16 @@ async fn apply_generation_controls(
     }
 
     let mut submit_res = engine
-        .call_flow_async("submitGeneration", json!([]))
+        .call_flow_async("submitGeneration", json!([cfg]))
         .await?;
     if submit_res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let err = submit_res
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
+        if matches!(err, "unsupported_model" | "unsupported_aspect_ratio") {
+            anyhow::bail!("Failed to configure Flow generation UI: {err}");
+        }
         let detail = submit_res
             .get("detail")
             .and_then(|v| v.as_str())

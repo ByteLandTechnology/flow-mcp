@@ -14,163 +14,18 @@ import {
   settingsOpen,
 } from "./composer";
 import { delay, elText, hoverProbe, isVisibleEnabled } from "./dom";
+import {
+  escapeRegex,
+  readModelOptions,
+  resolveCandidateModelSpecs,
+  resolveExpectedAspect,
+  resolvePromptState,
+  verifyAspectState,
+  verifyModelSpec,
+} from "./generation_state";
+import type { ModelMatcher } from "./generation_state";
 import { runtimeState } from "./state";
-import type { GenerationConfig, NgLView, PromptStateController } from "./types";
-
-/** Aspect ratio label-to-enum table matching `SKb` / `_.OE` in Google Flow. */
-const SKB_ASPECT_RATIO_MAP: Readonly<Record<string, string>> = {
-  "8:1": "LANDSCAPE_8_1",
-  "4:1": "LANDSCAPE_4_1",
-  "21:9": "ULTRAWIDE",
-  "16:9": "LANDSCAPE",
-  "3:2": "LANDSCAPE_3_2",
-  "4:3": "LANDSCAPE_4_3",
-  "5:4": "LANDSCAPE_5_4",
-  "1:1": "SQUARE",
-  "4:5": "PORTRAIT_4_5",
-  "3:4": "PORTRAIT_3_4",
-  "2:3": "PORTRAIT_2_3",
-  "9:16": "PORTRAIT",
-  "1:4": "PORTRAIT_1_4",
-  "1:8": "PORTRAIT_1_8",
-};
-
-/** Reverse lookup of valid `SKb` aspect ratio enum values. */
-const SKB_ASPECT_ENUM_VALUES: ReadonlySet<string> = new Set(
-  Object.values(SKB_ASPECT_RATIO_MAP),
-);
-
-/** Canonical display name and family ID pair for known Google Flow models. */
-interface ModelFamilyAlias {
-  /** Primary label rendered in `Select model family`. */
-  readonly displayName: string;
-  /** Family ID stored on `Qa.model` (`hg` / `ala`). */
-  readonly hg: string;
-}
-
-/** Legacy model slugs and family IDs mapped to live `Select model family` names. */
-const MODEL_FAMILY_ALIASES: Readonly<Record<string, ModelFamilyAlias>> = {
-  veo_3_1_fast: { displayName: "Veo 3.1 Lite", hg: "veo_3_1_lite" },
-  veo_3_1_lite: { displayName: "Veo 3.1 Lite", hg: "veo_3_1_lite" },
-  veo_3_1: { displayName: "Veo 3.1", hg: "veo_3_1" },
-  veo_3_1_quality: { displayName: "Veo 3.1", hg: "veo_3_1" },
-  veo_3_fast: { displayName: "Veo 3 Fast", hg: "veo_3_fast" },
-  veo_3: { displayName: "Veo 3", hg: "veo_3" },
-  veo_2: { displayName: "Veo 2", hg: "veo_2" },
-  veo_2_fast: { displayName: "Veo 2", hg: "veo_2" },
-  veo_2_quality: { displayName: "Veo 2", hg: "veo_2" },
-  gemini_omni: { displayName: "Gemini Omni", hg: "macaron_cookie" },
-  macaron_cookie: { displayName: "Gemini Omni", hg: "macaron_cookie" },
-  nano_banana: { displayName: "Nano Banana", hg: "nano_banana" },
-  nano_banana_2: { displayName: "Nano Banana 2", hg: "nano_banana_2" },
-  nano_banana_pro: { displayName: "Nano Banana Pro", hg: "nano_banana_pro" },
-  imagen_3: { displayName: "Imagen 3", hg: "imagen_3" },
-  imagen_4: { displayName: "Imagen 4", hg: "imagen_4" },
-};
-
-/** Escapes regular expression metacharacters in literal labels. */
-function escapeRegex(s: unknown): string {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Normalizes a model string into an underscore-separated lookup key. */
-function modelAliasKey(raw: string): string {
-  return raw
-    .trim()
-    .split(/[\s\-_.]+/)
-    .filter(Boolean)
-    .map((part) => part.toLowerCase())
-    .join("_");
-}
-
-/** Builds anchored `^...$` matchers for model `displayName` and `hg` values. */
-function buildModelMatchers(rawModel: string): {
-  displayName: string;
-  expectedHg: string | null;
-  labelRe: RegExp;
-  hgRe: RegExp;
-} {
-  const trimmed = rawModel.trim();
-  const alias = MODEL_FAMILY_ALIASES[modelAliasKey(trimmed)];
-  const displayName = alias ? alias.displayName : trimmed;
-  const flexLabel = escapeRegex(displayName).replace(/[-_\s]+/g, "[\\s\\-_]*");
-  const labelRe = new RegExp(`^${flexLabel}$`, "i");
-  const hgPattern = alias
-    ? `^${escapeRegex(alias.hg)}$`
-    : `^(?:${flexLabel}|${escapeRegex(modelAliasKey(trimmed))})$`;
-  return {
-    displayName,
-    expectedHg: alias ? alias.hg : null,
-    labelRe,
-    hgRe: new RegExp(hgPattern, "i"),
-  };
-}
-
-/** Resolves a requested aspect ratio string against `SKb` (`SKB_ASPECT_RATIO_MAP`). */
-function resolveExpectedAspect(rawAspect: string): {
-  enumValue: string | null;
-  toggleRe: RegExp;
-} {
-  const trimmed = rawAspect.trim();
-  const direct = SKB_ASPECT_RATIO_MAP[trimmed];
-  if (direct) {
-    const toggleRe =
-      trimmed === "16:9"
-        ? /^(?:16:9|landscape)$/i
-        : trimmed === "9:16"
-          ? /^(?:9:16|portrait)$/i
-          : trimmed === "1:1"
-            ? /^(?:1:1|square)$/i
-            : new RegExp(`^(?:${escapeRegex(trimmed)}|${escapeRegex(direct)})$`, "i");
-    return { enumValue: direct, toggleRe };
-  }
-  const upper = trimmed.toUpperCase();
-  if (upper === "LANDSCAPE") {
-    return { enumValue: "LANDSCAPE", toggleRe: /^(?:16:9|landscape)$/i };
-  }
-  if (upper === "PORTRAIT") {
-    return { enumValue: "PORTRAIT", toggleRe: /^(?:9:16|portrait)$/i };
-  }
-  if (upper === "SQUARE") {
-    return { enumValue: "SQUARE", toggleRe: /^(?:1:1|square)$/i };
-  }
-  if (SKB_ASPECT_ENUM_VALUES.has(upper)) {
-    const pair = Object.entries(SKB_ASPECT_RATIO_MAP).find(([, v]) => v === upper);
-    const lbl = pair ? pair[0] : trimmed;
-    return {
-      enumValue: upper,
-      toggleRe: new RegExp(`^(?:${escapeRegex(lbl)}|${escapeRegex(upper)})$`, "i"),
-    };
-  }
-  return {
-    enumValue: null,
-    toggleRe: new RegExp(`^${escapeRegex(trimmed)}$`, "i"),
-  };
-}
-
-/** Resolves the active `PromptStateController` (`Qa`) from the project composer. */
-function resolvePromptState(): PromptStateController | null {
-  const projPage = findProjectPageInstance();
-  const liveUx = findLiveBasePromptBox(false, findPromptBoxHost(projPage));
-  return liveUx?.Qa ?? projPage?.Qa ?? runtimeState.promptState ?? null;
-}
-
-/** Reads the model picker option array from `Qa.model.Wqa()` or `Qa.model.Yqa()`. */
-function readModelOptions(qa: PromptStateController | null): ReadonlyArray<{
-  readonly hg?: string;
-  readonly displayName?: string;
-  readonly isDisabled?: boolean;
-}> | null {
-  const opts = qa?.model?.Wqa?.() ?? qa?.model?.Yqa?.();
-  return Array.isArray(opts) ? opts : null;
-}
-
-/** Reads the active model family identifier from `Qa.model.ala()` or `Qa.model.cla()`. */
-function readActiveModelId(qa: PromptStateController | null): string {
-  const id =
-    qa?.model?.ala?.() ?? qa?.model?.cla?.() ?? qa?.model?.family?.()?.id ?? "";
-  return typeof id === "string" ? id.trim() : "";
-}
+import type { GenerationConfig, NgLView } from "./types";
 
 /** Walks up from `tb` to locate the enclosing composer panel container. */
 function findComposerRoot(tb: Element | null): ParentNode {
@@ -389,8 +244,9 @@ async function setLengthSlider(secs: number, scopeRoot: ParentNode): Promise<boo
 
 /** Ensures `runtimeState.ngLViewMap` is populated via non-destructive hover or settings probes. */
 async function ensureLViewCapture(allowSettingsClick = false): Promise<void> {
-  const hasLViewMap = (): boolean => runtimeState.ngLViewMap instanceof Map;
-  if (hasLViewMap()) {
+  const hasLiveQa = (): boolean =>
+    runtimeState.ngLViewMap instanceof Map && resolvePromptState() !== null;
+  if (hasLiveQa()) {
     return;
   }
   await withLViewMapCapture(async () => {
@@ -401,7 +257,7 @@ async function ensureLViewCapture(allowSettingsClick = false): Promise<void> {
     const tipEls = (visible.length > 0 ? visible : all).slice(0, 12);
     await hoverProbe(tipEls, 60);
   });
-  if (hasLViewMap()) {
+  if (hasLiveQa()) {
     return;
   }
   if (allowSettingsClick) {
@@ -558,62 +414,104 @@ export async function setupGeneration(
       // Optional resolution control may be unavailable.
     }
 
-    const rawModel = cfg.model != null ? String(cfg.model).trim() : "";
-    const modelSpec = rawModel ? buildModelMatchers(rawModel) : null;
+    const candidateSpecs = resolveCandidateModelSpecs(cfg, wantImageMode);
+    let targetSpec: ModelMatcher | null = null;
     let hadModelPickerItems = false;
     let clickedModelItem = false;
     try {
-      if (modelSpec) {
-        const preQa = resolvePromptState();
-        const preOptions = readModelOptions(preQa);
-        const matchedOption = preOptions?.find((opt) => {
-          const disp = String(opt?.displayName || "").trim();
-          const hg = String(opt?.hg || "").trim();
-          return modelSpec.labelRe.test(disp) || modelSpec.hgRe.test(hg);
-        });
-        const exactDisplay = String(matchedOption?.displayName || "").trim();
-        const menuRe = exactDisplay
-          ? new RegExp(`^${escapeRegex(exactDisplay)}$`, "i")
-          : modelSpec.labelRe;
-        const familyBtn = document.querySelector(
-          'button[aria-label="Select model family"]',
-        );
-        if (isVisibleEnabled(familyBtn)) {
-          familyBtn.click();
-          let pickerPane: Element | null = null;
-          for (let w = 0; w < 8; w += 1) {
-            await delay(50);
-            pickerPane =
-              document.querySelector(".flow-model-picker-panel") ||
-              Array.from(document.querySelectorAll(".cdk-overlay-pane"))
-                .reverse()
-                .find(
-                  (p) =>
-                    !p.querySelector(".mdc-tooltip") && !p.contains(familyBtn),
-                ) ||
-              null;
-            if (pickerPane) break;
+      const preQa = resolvePromptState();
+      const preOptions = readModelOptions(preQa);
+      let exactDisplay = "";
+      if (preOptions !== null) {
+        for (const spec of candidateSpecs) {
+          const hit = preOptions.find((opt) => {
+            if (opt?.isDisabled === true) return false;
+            const disp = String(opt?.displayName || "").trim();
+            const hg = String(opt?.hg || "").trim();
+            return spec.labelRe.test(disp) || spec.hgRe.test(hg);
+          });
+          if (hit) {
+            targetSpec = spec;
+            exactDisplay = String(hit.displayName || "").trim();
+            break;
           }
-          if (pickerPane) {
-            hadModelPickerItems =
-              pickerPane.querySelectorAll(
-                'flow-menu-item, .model-select-option, [role="menuitem"], [role="option"]',
-              ).length > 0;
-            clickedModelItem =
-              clickByText(menuRe, pickerPane, false) ||
-              (menuRe !== modelSpec.labelRe &&
-                clickByText(modelSpec.labelRe, pickerPane, false)) ||
-              clickByText(modelSpec.hgRe, pickerPane, false);
-          }
-          await delay(120);
-          await closeModelMenu();
-        } else if (
-          clickByText(menuRe, settingsScope(), false) ||
-          clickByText(modelSpec.hgRe, settingsScope(), false)
-        ) {
-          clickedModelItem = true;
-          await delay(120);
         }
+        if (!targetSpec) {
+          if (settingsOpen()) {
+            await closeSettingsAndMenus();
+          }
+          return { ok: false, error: "unsupported_model" };
+        }
+      }
+      const specsToTry = targetSpec ? [targetSpec] : candidateSpecs;
+      const familyBtn = document.querySelector(
+        'button[aria-label="Select model family"]',
+      );
+      if (isVisibleEnabled(familyBtn)) {
+        familyBtn.click();
+        let pickerPane: Element | null = null;
+        for (let w = 0; w < 8; w += 1) {
+          await delay(50);
+          pickerPane =
+            document.querySelector(".flow-model-picker-panel") ||
+            Array.from(document.querySelectorAll(".cdk-overlay-pane"))
+              .reverse()
+              .find(
+                (p) =>
+                  !p.querySelector(".mdc-tooltip") && !p.contains(familyBtn),
+              ) ||
+            null;
+          if (pickerPane) break;
+        }
+        if (pickerPane) {
+          hadModelPickerItems =
+            pickerPane.querySelectorAll(
+              'flow-menu-item, .model-select-option, [role="menuitem"], [role="option"]',
+            ).length > 0;
+          for (const spec of specsToTry) {
+            const menuRe =
+              spec === targetSpec && exactDisplay
+                ? new RegExp(`^${escapeRegex(exactDisplay)}$`, "i")
+                : spec.labelRe;
+            if (
+              clickByText(menuRe, pickerPane, false) ||
+              (menuRe !== spec.labelRe &&
+                clickByText(spec.labelRe, pickerPane, false)) ||
+              clickByText(spec.hgRe, pickerPane, false)
+            ) {
+              targetSpec = spec;
+              clickedModelItem = true;
+              break;
+            }
+          }
+        }
+        await delay(120);
+        await closeModelMenu();
+      } else {
+        for (const spec of specsToTry) {
+          const menuRe =
+            spec === targetSpec && exactDisplay
+              ? new RegExp(`^${escapeRegex(exactDisplay)}$`, "i")
+              : spec.labelRe;
+          if (
+            clickByText(menuRe, settingsScope(), false) ||
+            clickByText(spec.hgRe, settingsScope(), false)
+          ) {
+            targetSpec = spec;
+            clickedModelItem = true;
+            await delay(120);
+            break;
+          }
+        }
+      }
+      if (!targetSpec) {
+        const postTryQa = resolvePromptState();
+        targetSpec =
+          candidateSpecs.find((spec) =>
+            verifyModelSpec(postTryQa, wantImageMode, spec),
+          ) ??
+          candidateSpecs[0] ??
+          null;
       }
     } catch {
       // Optional model selector may differ by mode.
@@ -621,7 +519,7 @@ export async function setupGeneration(
 
     try {
       // Some models show the resolution toggle and the length slider only after the model changes.
-      if (!wantImageMode && modelSpec) {
+      if (!wantImageMode && targetSpec) {
         if (cfg.resolution) {
           const rRe = new RegExp(escapeRegex(String(cfg.resolution).trim()), "i");
           if (clickInsideGroup("Video resolution", rRe, settingsScope())) {
@@ -733,58 +631,30 @@ export async function setupGeneration(
     }
 
     const verifiedQa = resolvePromptState();
-    if (aspectSpec?.enumValue && typeof verifiedQa?.config?.aspectRatio === "function") {
-      const actualAspect = String(verifiedQa.config.aspectRatio() || "").trim();
-      if (actualAspect && actualAspect !== aspectSpec.enumValue) {
-        if (settingsOpen()) {
-          await closeSettingsAndMenus();
-        }
-        return { ok: false, error: "unsupported_aspect_ratio" };
+    if (aspectSpec && !verifyAspectState(verifiedQa, wantImageMode, aspectSpec)) {
+      if (settingsOpen()) {
+        await closeSettingsAndMenus();
       }
+      return { ok: false, error: "unsupported_aspect_ratio" };
     }
 
-    if (modelSpec) {
-      const postOptions = readModelOptions(verifiedQa);
-      const activeId = readActiveModelId(verifiedQa);
-      const activeFamilyName = String(
-        verifiedQa?.model?.family?.()?.displayName || "",
-      ).trim();
-      let modelVerified = true;
-      if (postOptions && postOptions.length > 0) {
-        const matchedOpt = postOptions.find((opt) => {
-          const disp = String(opt?.displayName || "").trim();
-          const hg = String(opt?.hg || "").trim();
-          return modelSpec.labelRe.test(disp) || modelSpec.hgRe.test(hg);
-        });
-        if (!matchedOpt || matchedOpt.isDisabled === true) {
-          modelVerified = false;
-        } else if (activeId) {
-          const targetHg = String(matchedOpt.hg || "").trim();
-          if (
-            targetHg
-              ? activeId !== targetHg
-              : !modelSpec.hgRe.test(activeId) && !modelSpec.labelRe.test(activeId)
-          ) {
-            modelVerified = false;
-          }
-        }
-      } else if (activeId) {
-        if (
-          !modelSpec.hgRe.test(activeId) &&
-          !modelSpec.labelRe.test(activeId) &&
-          !(activeFamilyName && modelSpec.labelRe.test(activeFamilyName))
-        ) {
-          modelVerified = false;
-        }
-      } else if (hadModelPickerItems && !clickedModelItem) {
-        modelVerified = false;
+    const pickerRejected = hadModelPickerItems && !clickedModelItem;
+    if (
+      pickerRejected ||
+      !targetSpec ||
+      !verifyModelSpec(verifiedQa, wantImageMode, targetSpec)
+    ) {
+      if (settingsOpen()) {
+        await closeSettingsAndMenus();
       }
-      if (!modelVerified) {
-        if (settingsOpen()) {
-          await closeSettingsAndMenus();
-        }
-        return { ok: false, error: "unsupported_model" };
+      return { ok: false, error: "unsupported_model" };
+    }
+
+    if (!aspectSpec && !verifyAspectState(verifiedQa, wantImageMode, null)) {
+      if (settingsOpen()) {
+        await closeSettingsAndMenus();
       }
+      return { ok: false, error: "unsupported_aspect_ratio" };
     }
 
     if (settingsOpen()) {

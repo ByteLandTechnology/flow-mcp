@@ -200,7 +200,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `prompt` | `string` | 是 | `flow-mcp` 发送给 Google Flow 的文本提示词。 |
 | `mode` | `string` | 否 | `"video"`（默认）或 `"image"`。 |
-| `model` | `string` | 否 | 模型覆盖。默认为 `"Veo 3.1 Lite"`（`video`）或 `"Nano Banana 2"`（`image`），并映射 `"veo-3.1-fast"` 等旧标识。 |
+| `model` | `string` | 否 | 模型覆盖。`video` 默认为 `"Veo 3.1 Lite"`（旧版构建为 `"Veo 3.1 Fast"`），`image` 默认为 `"Nano Banana 2"`。 |
 | `aspect` | `string` | 否 | 画面比例：`"16:9"`（默认）、`"9:16"` 或 `"1:1"`（仅限 `image` 模式）。 |
 | `count` | `integer` | 否 | 输出批次数量，范围 `1..=4`。默认 `2`。 |
 | `frames` | `string[]` | 否 | 提交前上传的本地参考图像或关键帧路径。 |

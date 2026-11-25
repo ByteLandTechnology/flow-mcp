@@ -200,7 +200,7 @@ Google Flow でキャラクターボイスピッカーを開き、リスト全�
 | :--- | :--- | :--- | :--- |
 | `prompt` | `string` | はい | `flow-mcp` が Google Flow へ送信するテキストプロンプト。 |
 | `mode` | `string` | いいえ | `"video"`（既定）または `"image"`。 |
-| `model` | `string` | いいえ | モデル上書き。既定は `"Veo 3.1 Lite"`（`video`）または `"Nano Banana 2"`（`image`）で、`"veo-3.1-fast"` などの旧スラッグも対応します。 |
+| `model` | `string` | いいえ | モデル上書き。既定は `video` で `"Veo 3.1 Lite"`（旧ビルドでは `"Veo 3.1 Fast"`）、`image` で `"Nano Banana 2"` です。 |
 | `aspect` | `string` | いいえ | アスペクト比：`"16:9"`（既定）、`"9:16"`、または `"1:1"`（`image` モードのみ）。 |
 | `count` | `integer` | いいえ | 出力バッチ数（`1..=4`）。既定は `2`。 |
 | `frames` | `string[]` | いいえ | 送信前にアップロードするローカル参照またはキーフレーム画像パス。 |
