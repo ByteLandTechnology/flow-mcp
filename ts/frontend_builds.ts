@@ -831,12 +831,42 @@ const LEGACY_CHARACTER_CREATE: CharacterCreateFormat = {
 /** Editable project title format of earlier builds. */
 const LEGACY_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "tJa", stateSignal: "state" };
 
+/** Character preview format of build `20261120.00_p0` used as the default fallback. */
+const NOVEMBER_20_CHARACTER_PREVIEW: CharacterPreviewFormat = {
+  lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma",
+  source: "Gza", busy: "mB", footerBusy: "Zh", pickerAssets: "xZ", pickerSelect: "Qda",
+};
+
+/** Character voice form format of build `20261120.00_p0` used as the default fallback. */
+const NOVEMBER_20_CHARACTER_VOICE: CharacterVoiceFormat = {
+  lifecycle: "Ba", destroyed: "Va", voiceMap: "o_", selectedVoice: "A3",
+  selectedRecord: "Pua", changeEmitter: "Pea", busy: "yb", emptyMap: true,
+};
+
+/** Character creation format of build `20261120.00_p0` used as the default fallback. */
+const NOVEMBER_20_CHARACTER_CREATE: CharacterCreateFormat = {
+  lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM"],
+  collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
+};
+
+/** Editable project title format of build `20261120.00_p0` used as the default fallback. */
+const NOVEMBER_20_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "HSa", stateSignal: "state" };
+
+/** Voice confirmation format of build `20261120.00_p0` used as the default fallback. */
+const NOVEMBER_20_VOICE_CONFIRMATION: VoiceConfirmationFormat = {
+  editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
+  previewSaved: "MK", pickerSelection: "Qn",
+};
+
 /** Request formats by exact build label. Include only verified operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
     legacy: true,
     projectStore: NOVEMBER_17_STORE,
+    characterPreview: LEGACY_CHARACTER_PREVIEW,
+    characterVoice: LEGACY_CHARACTER_VOICE,
     characterCreate: { ...LEGACY_CHARACTER_CREATE, lifecycle: "Ca", destroyed: "Wa" },
+    projectTitle: LEGACY_PROJECT_TITLE,
     operations: {
       collection_write: { tileId: "Uc", tileChange: "df", moveTarget: "Sj", moveTiles: "Bb" },
       asset_trash_store: {
@@ -852,8 +882,10 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
   ["boq_labs-ai-sandbox-frontend_20261118.14_p0", {
     projectStore: NOVEMBER_18_STORE,
+    characterPreview: LEGACY_CHARACTER_PREVIEW,
     characterCreate: { ...LEGACY_CHARACTER_CREATE, lifecycle: "Ba", destroyed: "Va" },
     characterVoice: { ...LEGACY_CHARACTER_VOICE, lifecycle: "Ba", destroyed: "Va" },
+    projectTitle: LEGACY_PROJECT_TITLE,
     operations: {
       collection_write: { tileId: "Vc", tileChange: "jf", moveTarget: "Wj", moveTiles: "Ab" },
       asset_trash_store: {
@@ -870,23 +902,11 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261120.00_p0", {
     projectStore: NOVEMBER_20_STORE,
     snapshot: NOVEMBER_20_SNAPSHOT,
-    voiceConfirmation: {
-      editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
-      previewSaved: "MK", pickerSelection: "Qn",
-    },
-    characterPreview: {
-      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma",
-      source: "Gza", busy: "mB", footerBusy: "Zh", pickerAssets: "xZ", pickerSelect: "Qda",
-    },
-    characterVoice: {
-      lifecycle: "Ba", destroyed: "Va", voiceMap: "o_", selectedVoice: "A3",
-      selectedRecord: "Pua", changeEmitter: "Pea", busy: "yb", emptyMap: true,
-    },
-    characterCreate: {
-      lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM"],
-      collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
-    },
-    projectTitle: { saveEmitter: "HSa", stateSignal: "state" },
+    voiceConfirmation: NOVEMBER_20_VOICE_CONFIRMATION,
+    characterPreview: NOVEMBER_20_CHARACTER_PREVIEW,
+    characterVoice: NOVEMBER_20_CHARACTER_VOICE,
+    characterCreate: NOVEMBER_20_CHARACTER_CREATE,
+    projectTitle: NOVEMBER_20_PROJECT_TITLE,
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
@@ -904,6 +924,11 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
 ]);
 
+/** Verified project store formats ordered from newest to oldest for read-only discovery. */
+const CASCADED_PROJECT_STORES: readonly ProjectStoreFormat[] = Array.from(
+  new Set(Array.from(VERIFIED_BUILDS.values(), (b) => b.projectStore).reverse()),
+);
+
 /** Returns the exact label published by the active page. */
 export function readBuildLabel(): string | null {
   const label = window.WIZ_global_data?.cfb2h;
@@ -920,10 +945,30 @@ export function activeProjectStoreFormat(): ProjectStoreFormat | undefined {
   return frontendBuild(readBuildLabel())?.projectStore;
 }
 
+/** Returns candidate store layouts from newest to oldest when the active build is unverified. */
+export function projectStoreFormats(): readonly ProjectStoreFormat[] {
+  const verified = activeProjectStoreFormat();
+  return verified ? [verified] : CASCADED_PROJECT_STORES;
+}
+
+/** Returns candidate Angular `LContext` view property names, defaulting to `20261120.00_p0` first. */
+export function lContextViewFields(): readonly string[] {
+  const verified = activeProjectStoreFormat();
+  if (verified) return [verified.lContextView];
+  return Array.from(
+    new Set([NOVEMBER_20_STORE.lContextView, ...CASCADED_PROJECT_STORES.map((s) => s.lContextView)]),
+  );
+}
+
+/** Returns the scene clip and history field names, defaulting to `20261120.00_p0`. */
+export function sceneTileFormat(): NonNullable<ProjectStoreFormat["scene"]> {
+  return activeProjectStoreFormat()?.scene ?? { clips: "Uc", history: "Cg" };
+}
+
 /** Adds the native fields used by the verified project store mutator. */
 export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
   const build = frontendBuild(readBuildLabel());
-  const format = build?.projectStore.mutations;
+  const format = build ? build.projectStore.mutations : NOVEMBER_20_STORE.mutations;
   if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
     const change = payload.Ve as Record<string, unknown>;
     if (format) {
@@ -956,25 +1001,36 @@ export function withMutationAliases(payload: Record<string, unknown>): Record<st
 
 /** Returns the character preview field mapping for the active build. */
 export function characterPreviewFormat(): CharacterPreviewFormat {
-  return frontendBuild(readBuildLabel())?.characterPreview ?? LEGACY_CHARACTER_PREVIEW;
+  const build = frontendBuild(readBuildLabel());
+  return build ? (build.characterPreview ?? LEGACY_CHARACTER_PREVIEW) : NOVEMBER_20_CHARACTER_PREVIEW;
 }
 
 /** Returns the character voice form mapping for the active build. */
 export function characterVoiceFormat(): CharacterVoiceFormat {
-  return frontendBuild(readBuildLabel())?.characterVoice ?? LEGACY_CHARACTER_VOICE;
+  const build = frontendBuild(readBuildLabel());
+  return build ? (build.characterVoice ?? LEGACY_CHARACTER_VOICE) : NOVEMBER_20_CHARACTER_VOICE;
 }
 
 /** Returns the character creation and store lifecycle mapping for the active build. */
 export function characterCreateFormat(): CharacterCreateFormat {
-  return frontendBuild(readBuildLabel())?.characterCreate ?? LEGACY_CHARACTER_CREATE;
+  const build = frontendBuild(readBuildLabel());
+  return build ? (build.characterCreate ?? LEGACY_CHARACTER_CREATE) : NOVEMBER_20_CHARACTER_CREATE;
 }
 
 /** Returns the editable project title mapping for the active build. */
 export function projectTitleFormat(): ProjectTitleFormat {
-  return frontendBuild(readBuildLabel())?.projectTitle ?? LEGACY_PROJECT_TITLE;
+  const build = frontendBuild(readBuildLabel());
+  return build ? (build.projectTitle ?? LEGACY_PROJECT_TITLE) : NOVEMBER_20_PROJECT_TITLE;
 }
 
-/** Returns the verified snapshot field descriptors for the active build. */
+/** Returns the voice confirmation mapping for the active build, defaulting to `20261120.00_p0` on unknown builds. */
+export function voiceConfirmationFormat(): VoiceConfirmationFormat | undefined {
+  const build = frontendBuild(readBuildLabel());
+  return build ? build.voiceConfirmation : NOVEMBER_20_VOICE_CONFIRMATION;
+}
+
+/** Returns the snapshot field descriptors for the active build, defaulting to `20261120.00_p0` on unknown builds. */
 export function snapshotFormat(): SnapshotFormat | undefined {
-  return frontendBuild(readBuildLabel())?.snapshot;
+  const build = frontendBuild(readBuildLabel());
+  return build ? build.snapshot : NOVEMBER_20_SNAPSHOT;
 }

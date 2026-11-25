@@ -3,10 +3,25 @@
 
 // Locate project tiles in the page, read their state from the bound store, and dispatch page view and text control actions.
 
-import { collectionIdOf, delay, dismissOverlay, isTrashedTile, legacyTile } from "./dom";
+import {
+  readOwn,
+  resolveLView,
+  withLViewMapCapture,
+  type NgContextCarrier,
+} from "./angular";
+import {
+  collectionIdOf,
+  delay,
+  dismissOverlay,
+  elText,
+  hoverProbe,
+  isTrashedTile,
+  isVisibleEnabled,
+  legacyTile,
+} from "./dom";
 import { openView, readText, readView, selectText } from "./page_view";
 import { runtimeState } from "./state";
-import type { FlowTile, TileDomOpRequest, ViewportPoint } from "./types";
+import type { FlowTile, NgLView, TileDomOpRequest, ViewportPoint } from "./types";
 
 /** Returns the media IDs that the page can show for the store tile `raw`. */
 function mediaIdsOf(raw: FlowTile | null | undefined): string[] {
@@ -33,6 +48,123 @@ function mediaIsShared(
     if (mediaIdsOf(other).some((m) => mediaIds.includes(m))) return true;
   }
   return false;
+}
+
+/** Captures the Angular `LView` map from rendered grid containers when numeric contexts are active. */
+async function ensureGridLViewMap(): Promise<void> {
+  if (runtimeState.ngLViewMap instanceof Map) return;
+  const containers = Array.from(
+    document.querySelectorAll<HTMLElement>("flow-grid-tile-container"),
+  );
+  const needsMap = containers.some(
+    (el) => typeof (el as NgContextCarrier).__ngContext__ === "number",
+  );
+  if (!needsMap) return;
+  const probes: Element[] = [];
+  for (const el of containers.slice(0, 4)) {
+    probes.push(el);
+    const btn = el.querySelector("button, [mattooltip]");
+    if (btn) probes.push(btn);
+  }
+  await withLViewMapCapture(() => hoverProbe(probes, 20));
+}
+
+/** Returns true when `cand` is a single tile record whose identifier matches `id` or `target`. */
+function objectMatchesTile(cand: unknown, id: string, target: FlowTile): boolean {
+  if (cand === target) return true;
+  if (
+    !cand ||
+    typeof cand !== "object" ||
+    cand instanceof Node ||
+    cand instanceof Map ||
+    cand instanceof Set ||
+    cand instanceof Error ||
+    Array.isArray(cand)
+  ) {
+    return false;
+  }
+  const candId = readOwn(cand, "id");
+  return candId !== undefined && candId !== null && String(candId) === id;
+}
+
+/** Returns true when one `LView` slot or component input signal binds `id`. */
+function slotMatchesTile(slot: unknown, id: string, target: FlowTile): boolean {
+  if (objectMatchesTile(slot, id, target)) return true;
+  if (
+    !slot ||
+    typeof slot !== "object" ||
+    slot instanceof Node ||
+    slot instanceof Map ||
+    slot instanceof Set ||
+    slot instanceof Error ||
+    Array.isArray(slot)
+  ) {
+    return false;
+  }
+  for (const key of Object.getOwnPropertyNames(slot)) {
+    const desc = Object.getOwnPropertyDescriptor(slot, key);
+    if (!desc || !("value" in desc)) continue;
+    const val: unknown = desc.value;
+    if (objectMatchesTile(val, id, target)) return true;
+    if (typeof val === "function" && val.length === 0) {
+      try {
+        if (objectMatchesTile(val.call(slot), id, target)) return true;
+      } catch {
+        // Ignore unset Angular required input signals or stateful methods.
+      }
+    }
+  }
+  return false;
+}
+
+/** Returns true when `view` belongs exclusively to `container` rather than the whole grid. */
+function isSingleTileView(view: NgLView, container: HTMLElement): boolean {
+  const hasOtherContainer = view.some(
+    (s) => s instanceof Element && s.tagName === "FLOW-GRID-TILE-CONTAINER" && s !== container,
+  );
+  if (hasOtherContainer) return false;
+  const root = view[0];
+  if (root instanceof Element) {
+    if (container.contains(root)) return true;
+    return (
+      root.contains(container) &&
+      root.querySelectorAll("flow-grid-tile-container").length <= 1
+    );
+  }
+  return view.some((s) => s === container || (s instanceof Node && container.contains(s)));
+}
+
+/** Returns true when `container`'s scoped Angular `LView` slots bind tile `id`. */
+function containerMatchesTile(container: HTMLElement, id: string, target: FlowTile): boolean {
+  const views = new Set<NgLView>();
+  const addHostView = (el: Element, checkParent: boolean): void => {
+    const lv = resolveLView(el);
+    if (!Array.isArray(lv)) return;
+    views.add(lv);
+    if (!checkParent) return;
+    for (const parent of [lv[3], lv[15]]) {
+      if (Array.isArray(parent) && isSingleTileView(parent, container)) {
+        views.add(parent);
+      }
+    }
+  };
+  addHostView(container, true);
+  for (const child of Array.from(container.querySelectorAll("*")).slice(0, 24)) {
+    if (child.tagName.includes("-") || "__ngContext__" in child) {
+      addHostView(child, false);
+    }
+  }
+  for (const lv of views) {
+    if (lv.some((slot) => slotMatchesTile(slot, id, target))) return true;
+  }
+  return false;
+}
+
+/** Returns rendered `flow-grid-tile-container` elements whose `LView` slots match `id`. */
+function findContainersByLView(id: string, target: FlowTile): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>("flow-grid-tile-container"),
+  ).filter((el) => containerMatchesTile(el, id, target));
 }
 
 /** Returns the rendered grid tiles that show one of `mediaIds`. */
@@ -108,17 +240,46 @@ async function locateContainer(find: () => HTMLElement[]): Promise<Record<string
   };
 }
 
-/** Finds the tile of `id` in the page by its media ID. */
+/** Finds the tile of `id` in the page by its Angular `LView` binding or media ID. */
 async function locateTile(id: string): Promise<Record<string, unknown>> {
   const tileMap = runtimeState.store?.getTileMap?.();
   if (!(tileMap instanceof Map)) return { ok: false, error: "store_not_bound" };
-  const mediaIds = mediaIdsOf(tileMap.get(id));
-  if (mediaIds.length === 0) return { ok: false, error: "tile_media_id_unknown" };
-  // The page has no tile ID. A media ID that two tiles show cannot identify one tile.
-  if (mediaIsShared(tileMap, id, mediaIds)) {
+  const target = tileMap.get(id);
+  if (!target) return { ok: false, error: "tile_not_found" };
+  await ensureGridLViewMap();
+  const mediaIds = mediaIdsOf(target);
+  const sharedMedia = mediaIds.length > 0 && mediaIsShared(tileMap, id, mediaIds);
+  const find = (): HTMLElement[] => {
+    const byLView = findContainersByLView(id, target);
+    if (byLView.length > 0) return byLView;
+    if (mediaIds.length > 0 && !sharedMedia) return findContainers(mediaIds);
+    return [];
+  };
+  const located = await locateContainer(find);
+  if (located.ok !== true && located.error === "tile_not_rendered" && sharedMedia) {
     return { ok: false, error: "tile_media_ambiguous" };
   }
-  return locateContainer(() => findContainers(mediaIds));
+  return located;
+}
+
+/** Finds the confirm button of an open trash dialog and returns its viewport point. */
+function confirmTrashDialog(): Record<string, unknown> {
+  const dialogs = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[role="dialog"], [role="alertdialog"], mat-dialog-container',
+    ),
+  ).filter((el) => el.getClientRects().length > 0);
+  const pattern =
+    /^(?:(?:delete|delete_forever|warning)\s+)?(?:move(?: all contents)? to trash|delete)$/i;
+  for (const dialog of dialogs) {
+    for (const btn of Array.from(dialog.querySelectorAll("button"))) {
+      if (!isVisibleEnabled(btn)) continue;
+      if (pattern.test(elText(btn))) {
+        return { ok: true, point: centerOf(btn) };
+      }
+    }
+  }
+  return { ok: false, error: "dialog_confirm_not_found" };
 }
 
 /** Returns `present`, `trashed`, or `gone` for the store tile `id`, with its name and its collection ID while it is present. */
@@ -147,6 +308,7 @@ export async function tileDomOp(req: TileDomOpRequest): Promise<unknown> {
   if (action === "open_view") return openView(id);
   if (action === "text_select") return selectText();
   if (action === "text_value") return readText();
+  if (action === "confirm_dialog") return confirmTrashDialog();
   if (action === "dismiss") {
     await dismissOverlay();
     return { ok: true };

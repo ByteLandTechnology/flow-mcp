@@ -211,7 +211,18 @@ async fn trash_in_view(engine: &ChromeEngine, id: &str) -> Result<bool> {
     if !click_tile_menu_item(engine, id, TRASH_MENU_ITEM).await? {
         return Ok(false);
     }
-    if wait_trashed(engine, id, 40).await {
+    if wait_trashed(engine, id, 6).await {
+        return Ok(true);
+    }
+    let confirm = page_op(engine, json!({ "action": "confirm_dialog" })).await?;
+    if is_ok(&confirm)
+        && let Some(point) = confirm.get("point")
+        && engine.click_point(point).await?
+        && wait_trashed(engine, id, 36).await
+    {
+        return Ok(true);
+    }
+    if wait_trashed(engine, id, 34).await {
         return Ok(true);
     }
     // The page can show a dialog after the click. Close it before the caller sends the store mutation.

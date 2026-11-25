@@ -5,7 +5,11 @@
 
 import { buildProjectUrl, findRouter, navigateSpa, readOwn } from "./angular";
 import { clickButtonByRegex, delay, isVisibleEnabled, setNativeValue } from "./dom";
-import { activeProjectStoreFormat, characterCreateFormat } from "./frontend_builds";
+import {
+  activeProjectStoreFormat,
+  characterCreateFormat,
+  readBuildLabel,
+} from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
 import type { CharacterOpRequest } from "./types";
 
@@ -88,10 +92,6 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     return { ok: true, closed, in_workspace: inWorkspace };
   }
 
-  if (!activeProjectStoreFormat()) {
-    clearStore();
-    return { ok: false, error: "unsupported_front_end" };
-  }
   if (helper && !helper.isCurrent()) clearStore();
   const activeHelper = runtimeState.store;
   const projectMatch = /\/project\/([^/?#]+)/.exec(location.pathname || "");
@@ -99,6 +99,9 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
   let charId = req?.character_id ? String(req.character_id).trim() : null;
 
   if (action === "create") {
+    if (!activeProjectStoreFormat()) {
+      return { ok: false, error: "unsupported_front_end", build: readBuildLabel() };
+    }
     if (!activeHelper) {
       return { ok: false, error: "store_not_bound" };
     }
@@ -252,7 +255,7 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     for (let i = 0; i < 50; i++) {
       if (
         document.querySelector(
-          'flow-character-form, flow-character-image-preview, input[aria-label="Character name"]',
+          'flow-character-form, flow-character-image-preview, input[aria-label="Character name"], textarea[aria-label="Character personality"]',
         )
       ) {
         break;
@@ -264,15 +267,16 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
     if (req?.name) {
       const nameStr = String(req.name).trim();
       const nameInput = document.querySelector(
-        'input[aria-label="Character name"]',
+        'input[aria-label="Character name"], flow-character-form input[type="text"], flow-character-form input:not([type])',
       );
       if (nameInput instanceof HTMLInputElement) {
         nameInput.focus();
         setNativeValue(nameInput, nameStr, true);
+        nameInput.dispatchEvent(new Event("blur", { bubbles: true }));
         applied.push("ui_name");
         await delay(150);
       }
-      if (charId && activeHelper?.rename) {
+      if (activeProjectStoreFormat() && charId && activeHelper?.rename) {
         try {
           await activeHelper.rename(charId, nameStr);
           applied.push("store_name");
@@ -282,6 +286,30 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
             error: err instanceof Error ? err.message : String(err ?? "rename_failed"),
           };
         }
+      } else if (!applied.includes("ui_name")) {
+        return { ok: false, error: "character_name_input_not_found" };
+      }
+    }
+
+    if (req?.bio !== undefined && req?.bio !== null) {
+      const bioStr = String(req.bio);
+      const bioInput = document.querySelector(
+        'textarea[aria-label="Character personality"], flow-character-form textarea, input[aria-label="Character personality"]',
+      );
+      if (
+        bioInput instanceof HTMLTextAreaElement ||
+        bioInput instanceof HTMLInputElement
+      ) {
+        bioInput.focus();
+        setNativeValue(bioInput, bioStr, true);
+        bioInput.dispatchEvent(new Event("blur", { bubbles: true }));
+        await delay(200);
+        if ((bioInput.value ?? "") !== bioStr) {
+          return { ok: false, error: "character_bio_input_mismatch" };
+        }
+        applied.push("ui_bio");
+      } else {
+        return { ok: false, error: "character_bio_input_not_found" };
       }
     }
 

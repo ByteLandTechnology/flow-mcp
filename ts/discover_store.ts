@@ -5,7 +5,6 @@
 
 import { isNgLViewMap, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, hoverProbe } from "./dom";
-import { activeProjectStoreFormat } from "./frontend_builds";
 import {
   clearProjectStore,
   currentProjectStore,
@@ -119,12 +118,8 @@ async function captureStoreDuring(
   return selectProjectStoreCandidate(candidates) ?? null;
 }
 
-/** Binds the verified project store from DOM contexts or transient Angular view activity. */
+/** Binds the project store from DOM contexts or transient Angular view activity. */
 export async function discoverStore(): Promise<DiscoverStoreResult> {
-  if (!activeProjectStoreFormat()) {
-    clearProjectStore();
-    return { bound: false, newlyDiscovered: false, error: "unsupported_front_end" };
-  }
   const projectId = projectInRoute();
   if (!projectId) {
     clearProjectStore();

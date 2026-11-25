@@ -681,6 +681,8 @@ export interface CharacterOpRequest {
   character_id?: string | null;
   /** Character display name. */
   name?: string | null;
+  /** Optional character personality notes updated in the character form. */
+  bio?: string | null;
   /** Optional voice name triggering editor navigation after create. */
   voice?: string | null;
   /** Optional project reference asset IDs triggering editor navigation after create. */
@@ -757,7 +759,7 @@ export interface LocatePointRequest {
 
 /** Request for `tileDomOp`. */
 export interface TileDomOpRequest {
-  /** `locate`, `state`, `view`, `open_view`, `text_select`, `text_value`, or `dismiss`. */
+  /** `locate`, `state`, `view`, `open_view`, `text_select`, `text_value`, `confirm_dialog`, or `dismiss`. */
   action: string;
   /** Store tile ID for `locate` and `state`, or the collection ID for `open_view` (empty for the main grid). */
   id?: string;

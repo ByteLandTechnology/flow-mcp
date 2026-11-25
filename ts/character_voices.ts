@@ -3,7 +3,7 @@
 
 // List and assign Google Flow character voices inside the character editor.
 
-import { readOwn, startMapCapture, type NgContextCarrier } from "./angular";
+import { readOwn, resolveLView, startMapCapture, type NgContextCarrier } from "./angular";
 import { VOICE_ICON_WORDS, voicePane } from "./character_extra";
 import {
   clickButtonByRegex,
@@ -118,13 +118,14 @@ export async function characterVoiceOp(
       };
       return walk(rootLv, 0);
     };
-    const formNg = (form as NgContextCarrier).__ngContext__;
+    const formLv = resolveLView(form);
     const direct =
-      scanLView(formNg, isExactComp) || scanLView(formNg, isFormComp);
+      scanLView(formLv, isExactComp) || scanLView(formLv, isFormComp);
     if (direct) {
       formComponents.set(form, direct);
       return direct;
     }
+    const formNg = (form as NgContextCarrier).__ngContext__;
     if (typeof formNg !== "number" || probedForms.has(form)) {
       return null;
     }

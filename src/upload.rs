@@ -44,29 +44,54 @@ pub(crate) async fn local_upload_paths(files: &[String], label: &str) -> Result<
     Ok(paths)
 }
 
-/// Uploads files to the pinned project and returns the saved assets.
-pub(crate) async fn upload_project_files(engine: &ChromeEngine, files: &[String]) -> Result<Value> {
-    crate::project::ensure_project_workspace_root(engine).await?;
-    let project = ProjectStoreSession::open(engine).await?;
-    let has_video = files.iter().any(|file| {
+/// Returns true when `files` contains at least one video path.
+fn has_video_file(files: &[String]) -> bool {
+    files.iter().any(|file| {
         mime_guess::from_path(file)
             .first()
             .is_some_and(|mime| mime.type_() == mime_guess::mime::VIDEO)
-    });
-    if has_video && eval_value(engine, "document.hidden").await? == Value::Bool(true) {
+    })
+}
+
+/// Returns true when a direct upload error occurred before any upload RPC was sent.
+fn should_fallback_to_menu_upload(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}");
+    !msg.contains("outcome_unknown")
+        && (msg.contains("unsupported_front_end")
+            || msg.contains("collection_store_not_bound")
+            || msg.contains("ambiguous_collection_store")
+            || msg.contains("project_upload_page_not_ready"))
+}
+
+/// Uploads files to the pinned project and falls back to the workspace upload menu on unverified builds.
+pub(crate) async fn upload_project_files(engine: &ChromeEngine, files: &[String]) -> Result<Value> {
+    crate::project::ensure_project_workspace_root(engine).await?;
+    if has_video_file(files) && eval_value(engine, "document.hidden").await? == Value::Bool(true) {
         // Chrome can leave a video in the loading state while its tab is hidden.
         engine.cdp_call("Page.bringToFront", json!({})).await?;
     }
-    engine
-        .upload_files_to("window.__flowMcp.stageMediaFiles()", files)
-        .await?;
-    project
-        .call(
-            "projectUpload",
-            json!(files.len()),
-            Some("upload local media"),
-        )
-        .await
+    match ProjectStoreSession::open(engine).await {
+        Ok(project) => {
+            engine
+                .upload_files_to("window.__flowMcp.stageMediaFiles()", files)
+                .await?;
+            match project
+                .call(
+                    "projectUpload",
+                    json!(files.len()),
+                    Some("upload local media"),
+                )
+                .await
+            {
+                Ok(res) => return Ok(res),
+                Err(err) if !should_fallback_to_menu_upload(&err) => return Err(err),
+                Err(_) => {}
+            }
+        }
+        Err(err) if !should_fallback_to_menu_upload(&err) => return Err(err),
+        Err(_) => {}
+    }
+    upload_project_files_through_menu(engine, files).await
 }
 
 /// Script that keeps the next file input that the page clicks in `window.__fmUploadInput`.
@@ -271,6 +296,61 @@ const LIBRARY_UPLOAD_ITEM: &str = "Upload";
 async fn project_tile_ids(engine: &ChromeEngine) -> Result<HashSet<String>> {
     let snap = crate::assets::list_assets_with_project(engine).await?;
     Ok(snap.assets.into_iter().map(|a| a.id).collect())
+}
+
+/// Uploads `files` (images and videos) through the workspace library menu and returns the new assets.
+async fn upload_project_files_through_menu(
+    engine: &ChromeEngine,
+    files: &[String],
+) -> Result<Value> {
+    let initial = crate::assets::list_assets_with_project(engine).await?;
+    let initial_project_id = initial.project_id;
+    let before: HashSet<String> = initial.assets.into_iter().map(|a| a.id).collect();
+    upload_through_menu(engine, LIBRARY_MEDIA_MENU, LIBRARY_UPLOAD_ITEM, files).await?;
+    let mut ready_count = 0usize;
+    for _ in 0..90 {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        let _ = engine
+            .call_flow_js("uploadUiAction", json!(["accept_consent"]))
+            .await;
+        let snap = crate::assets::list_assets_with_project(engine).await?;
+        let mut ready = Vec::new();
+        for asset in snap.assets {
+            if before.contains(&asset.id) || !matches!(asset.kind.as_str(), "image" | "video") {
+                continue;
+            }
+            if let Some(detail) = asset.media_error.as_deref() {
+                anyhow::bail!("Flow rejected uploaded media '{}': {detail}", asset.name);
+            }
+            if matches!(
+                asset.media_status.as_deref(),
+                Some("failed" | "canceled" | "UPLOAD_FAILED")
+            ) {
+                anyhow::bail!("Flow failed to process uploaded media '{}'", asset.name);
+            }
+            if asset.url.is_some() {
+                ready.push(json!({
+                    "id": asset.id,
+                    "primary_media_id": asset.primary_media_id,
+                    "name": asset.name,
+                    "kind": asset.kind,
+                }));
+            }
+        }
+        ready_count = ready.len();
+        if ready_count >= files.len() {
+            return Ok(json!({
+                "project_id": snap.project_id.or(initial_project_id),
+                "count": ready.len(),
+                "assets": ready,
+            }));
+        }
+    }
+    anyhow::bail!(
+        "Uploaded {} of {} files into the Flow library within 90 seconds",
+        ready_count,
+        files.len()
+    )
 }
 
 /// Uploads `files` into the project library, accepts the upload consent dialog, and returns the new image asset IDs.

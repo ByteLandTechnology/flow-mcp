@@ -11,7 +11,7 @@ import {
   normalizeFlowMediaUrl,
   readMediaUrl,
 } from "./dom";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { frontendBuild, lContextViewFields, readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
@@ -86,9 +86,11 @@ export function resolveLView(elOrCtx: unknown): NgLView | null {
   if (raw && typeof raw === "object") {
     const lView = readOwn(raw, "lView");
     if (Array.isArray(lView)) return lView;
-    const contextField = frontendBuild(readBuildLabel())?.projectStore.lContextView;
-    const verifiedView = contextField ? readOwn(raw, contextField) : undefined;
-    return Array.isArray(verifiedView) ? verifiedView : null;
+    for (const contextField of lContextViewFields()) {
+      const candidateView = readOwn(raw, contextField);
+      if (Array.isArray(candidateView)) return candidateView;
+    }
+    return null;
   }
   return null;
 }
@@ -438,7 +440,8 @@ export async function createScene(
   workflowIds: string[],
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
   const before = new Set(sceneIds(getMap()));
-  const resultField = frontendBuild(readBuildLabel())?.projectStore.mutations?.sceneCreated ?? "VWa";
+  const build = frontendBuild(readBuildLabel());
+  const resultField = (build ? build.projectStore.mutations?.sceneCreated : undefined) ?? "t6a";
   let confirmedId: string | undefined;
   let failure: string | undefined;
   const completion = {
@@ -457,7 +460,7 @@ export async function createScene(
     De: completion,
     ve: completion,
   })).then((response) => {
-    completion.resolve(readOwn(response, resultField));
+    completion.resolve(readOwn(response, resultField) ?? readOwn(response, "VWa"));
   }, completion.reject);
 
   while (performance.now() < deadline) {

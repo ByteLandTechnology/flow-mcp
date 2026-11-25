@@ -7,11 +7,13 @@ import {
   buildProjectUrl,
   readOwn,
   resolveLView,
+  withLViewMapCapture,
   withMapCapture,
   type NgContextCarrier,
 } from "./angular";
-import { delay, elText, setNativeValue } from "./dom";
+import { delay, elText, hoverProbe, setNativeValue } from "./dom";
 import { projectTitleFormat } from "./frontend_builds";
+import { runtimeState } from "./state";
 import type { ProjectsOpRequest } from "./types";
 
 /** Internal card descriptor captured on the Flow projects grid. */
@@ -137,9 +139,10 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         }
       }
       if (!pid) {
+        const cardLv = resolveLView(card);
         const ng = (card as NgContextCarrier).__ngContext__;
-        if (Array.isArray(ng)) {
-          pid = extractIdFromObject(ng, 0, new Set());
+        if (Array.isArray(cardLv)) {
+          pid = extractIdFromObject(cardLv, 0, new Set());
         } else if (typeof ng === "number") {
           for (const sm of seenMaps) {
             try {
@@ -347,6 +350,12 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
             (titleInput.value || "").trim() !== desired)
         ) {
           try {
+            if (
+              !(runtimeState.ngLViewMap instanceof Map) &&
+              typeof (host as NgContextCarrier).__ngContext__ === "number"
+            ) {
+              await withLViewMapCapture(() => hoverProbe([host]));
+            }
             const lv = resolveLView(host);
             if (Array.isArray(lv)) {
               const titleFormat = projectTitleFormat();
@@ -389,6 +398,22 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       await delay(150);
     }
     return { ok: false, error: "project_title_not_confirmed" };
+  }
+
+  if (action === "get_title") {
+    const titleInput = document.querySelector(
+      'flow-editable-text input, input[aria-label*="project" i], header input[type="text"]',
+    );
+    if (!(titleInput instanceof HTMLInputElement)) {
+      return { ok: false, error: "project_title_input_not_found" };
+    }
+    const host = titleInput.closest("flow-editable-text");
+    const editing = Boolean(host?.querySelector(".editable-text-container.editing"));
+    return {
+      ok: true,
+      editing,
+      title: (titleInput.value || "").trim(),
+    };
   }
 
   if (action === "delete") {

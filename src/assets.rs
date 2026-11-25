@@ -10,7 +10,7 @@ use futures_util::{StreamExt, stream};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::time::{Duration, Instant};
 
 use crate::collections::{FlowCollection, find_collection};
@@ -431,35 +431,21 @@ async fn confirm_renamed_asset(engine: &ChromeEngine, id: &str, name: &str) -> b
     false
 }
 
-/// Renames collections through the collection store and other tiles through the page or store.
+/// Renames collections through the menu or collection store and other tiles through the page or store.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
-    let collections = ProjectStoreSession::open(engine).await?;
+    ensure_flow_store(engine).await?;
+    let mut snap = read_snapshot(engine).await?;
+    let collection_list: Vec<FlowCollection> = serde_json::from_value(
+        snap.get_mut("collections")
+            .map(Value::take)
+            .unwrap_or_else(|| json!([])),
+    )?;
+    let collection_ids: HashSet<String> = collection_list.into_iter().map(|c| c.id).collect();
     let total = items.len();
     let mut renamed = Vec::new();
     let mut failed = Vec::new();
-    let mut asset_store_ready = false;
 
     'items: for (idx, entry) in items.into_iter().enumerate() {
-        match collections.is_collection(&entry.id).await {
-            Ok(false) => {}
-            Ok(true) => {
-                match collections.rename(&entry.id, &entry.name).await {
-                    Ok(result) => renamed.push(json!({
-                        "id": entry.id, "name": entry.name, "method": result["method"]
-                    })),
-                    Err(err) => failed.push(rename_error(&entry, &err)),
-                }
-                continue 'items;
-            }
-            Err(err) => {
-                failed.push(rename_error(&entry, &err));
-                continue 'items;
-            }
-        }
-        if !asset_store_ready {
-            ensure_flow_store(engine).await?;
-            asset_store_ready = true;
-        }
         // Use the rename control of the page first. The page then builds its own mutation.
         if tile_state(engine, &entry.id).await.is_present()
             && matches!(
@@ -473,6 +459,22 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
             }
             continue 'items;
         }
+        if collection_ids.contains(&entry.id) {
+            match ProjectStoreSession::open(engine).await {
+                Ok(collections) => match collections.rename(&entry.id, &entry.name).await {
+                    Ok(result) => renamed.push(json!({
+                        "id": entry.id, "name": entry.name, "method": result["method"]
+                    })),
+                    Err(err) => failed.push(rename_error(&entry, &err)),
+                },
+                Err(err) => failed.push(rename_error(&entry, &err)),
+            }
+            if idx + 1 < total {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            continue 'items;
+        }
+        ensure_flow_store(engine).await?;
         let mut ok = false;
         for attempt in 0..2 {
             let res = engine
@@ -521,12 +523,8 @@ fn rename_error(entry: &RenameEntry, err: &anyhow::Error) -> Value {
     json!({ "id": entry.id, "name": entry.name, "error": format!("{err:#}") })
 }
 
-/// Moves an asset to trash through the tile menu or the pinned project store.
-async fn invoke_trash_tile(
-    engine: &ChromeEngine,
-    session: &ProjectStoreSession<'_>,
-    id: &str,
-) -> Result<Value> {
+/// Moves an asset to trash through the tile menu first, or through the pinned project store.
+async fn invoke_trash_tile(engine: &ChromeEngine, id: &str) -> Result<Value> {
     let menu_error =
         if ensure_flow_store(engine).await.is_ok() && tile_state(engine, id).await.is_present() {
             match trash_through_menu(engine, id).await {
@@ -541,6 +539,7 @@ async fn invoke_trash_tile(
         } else {
             None
         };
+    let session = ProjectStoreSession::open(engine).await?;
     let mut result = session
         .call("trashAssetOp", json!(id), Some("trash asset"))
         .await?;
@@ -552,32 +551,40 @@ async fn invoke_trash_tile(
     Ok(result)
 }
 
-/// Moves a matching asset, character, scene, or collection to trash through the Flow store.
+/// Moves a matching asset, character, scene, or collection to trash through the menu or store.
 pub(crate) async fn trash_asset(
     engine: &ChromeEngine,
     db: &FlowDb,
     match_str: &str,
 ) -> Result<Value> {
-    let collections = ProjectStoreSession::open(engine).await?;
     let query = match_str.trim();
-    if collections.is_collection(query).await? {
+    ensure_flow_store(engine).await?;
+    let mut snap = read_snapshot(engine).await?;
+    let summaries: Vec<FlowCollection> = serde_json::from_value(
+        snap.get_mut("collections")
+            .map(Value::take)
+            .unwrap_or_else(|| json!([])),
+    )?;
+    if summaries.iter().any(|c| c.id == query) {
+        let collections = ProjectStoreSession::open(engine).await?;
         return collections.delete(query).await;
     }
 
-    let mut tiles = collections
-        .run_collections(json!({ "action": "assets" }))
-        .await?;
-    let assets: Vec<FlowAsset> = serde_json::from_value(tiles["assets"].take())?;
-    let Some(asset) = match_asset(&assets, query, true) else {
-        let summaries: Vec<FlowCollection> = serde_json::from_value(tiles["collections"].take())?;
+    let raw_assets: Vec<FlowAsset> = serde_json::from_value(
+        snap.get_mut("assets")
+            .map(Value::take)
+            .unwrap_or_else(|| json!([])),
+    )?;
+    let Some(asset) = match_asset(&raw_assets, query, true).cloned() else {
         let collection = find_collection(&summaries, query, true)?
             .with_context(|| format!("No asset or collection matches '{query}' for flow_trash"))?;
+        let collections = ProjectStoreSession::open(engine).await?;
         return collections.delete(&collection.id).await;
     };
 
     let id = &asset.id;
     let is_character = asset.kind == "character";
-    let res = invoke_trash_tile(engine, &collections, id)
+    let res = invoke_trash_tile(engine, id)
         .await
         .map_err(|err| anyhow::anyhow!("Failed to trash '{id}': {err:#}"))?;
     if is_character {

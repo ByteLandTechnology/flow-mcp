@@ -8,7 +8,7 @@ import {
   findRouter,
   navigateSpa,
   readOwn,
-  type NgContextCarrier,
+  resolveLView,
 } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
 import { clearStore } from "./state";
@@ -119,7 +119,7 @@ export async function openEditAsset(
         }
       }
     }
-    const ng = (el as NgContextCarrier).__ngContext__;
+    const ng = resolveLView(el);
     if (Array.isArray(ng)) {
       for (let i = 0; i < ng.length; i++) {
         const item = ng[i];

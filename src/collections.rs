@@ -57,14 +57,6 @@ impl ProjectStoreSession<'_> {
         Ok(serde_json::from_value(value["collections"].take())?)
     }
 
-    /// Returns true when the tile ID belongs to a collection.
-    pub(crate) async fn is_collection(&self, id: &str) -> Result<bool> {
-        let res = self
-            .run_collections(json!({ "action": "inspect", "id": id }))
-            .await?;
-        Ok(res.get("collection").and_then(Value::as_bool) == Some(true))
-    }
-
     /// Requests a verified rename for a collection ID.
     pub(crate) async fn rename(&self, id: &str, name: &str) -> Result<Value> {
         self.run_collections(json!({ "action": "rename", "id": id, "name": name }))
@@ -189,9 +181,17 @@ pub(crate) async fn handle_collections(
     engine: &ChromeEngine,
     req: CollectionsParams,
 ) -> Result<Value> {
+    if req.action == "list" {
+        let mut snap = crate::project::read_snapshot(engine).await?;
+        let collections: Vec<FlowCollection> = serde_json::from_value(
+            snap.get_mut("collections")
+                .map(Value::take)
+                .unwrap_or_else(|| json!([])),
+        )?;
+        return Ok(json!({ "collections": collections }));
+    }
     let session = ProjectStoreSession::open(engine).await?;
     match req.action.as_str() {
-        "list" => Ok(json!({ "collections": session.list().await? })),
         "create" => {
             let name = req
                 .name

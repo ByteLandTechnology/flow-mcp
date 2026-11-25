@@ -4,14 +4,14 @@
 // Read clips and workflow history from the native scene tile.
 
 import { readOwn } from "./angular";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { sceneTileFormat } from "./frontend_builds";
 import type { FlowMediaPayload, FlowTile, SceneClipItem } from "./types";
 
 /** Returns the clip list and history of a scene in the active build. */
 export function sceneContents(tile: FlowTile) {
-  const format = frontendBuild(readBuildLabel())?.projectStore.scene;
-  const clips = (format && readOwn(tile, format.clips)) ?? tile.Oc;
-  const history = (format && readOwn(tile, format.history)) ?? tile.Yf;
+  const format = sceneTileFormat();
+  const clips = readOwn(tile, format.clips) ?? readOwn(tile, "Tc") ?? tile.Oc;
+  const history = readOwn(tile, format.history) ?? readOwn(tile, "tg") ?? tile.Yf;
   const entries: Iterable<[string, FlowMediaPayload[]]> = history instanceof Map
     ? history.entries()
     : history && typeof history === "object" ? Object.entries(history) : [];
