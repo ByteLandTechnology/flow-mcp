@@ -170,13 +170,121 @@ export function withLViewMapCapture<T>(
 const routerQueryParamKeys = new WeakMap<AngularRouter, string>();
 
 /** Builds the query parameters that Google Flow routes keep across transitions. */
-function flowQueryParams(search: string = location.search): Record<string, string> {
+export function flowQueryParams(search: string = location.search): Record<string, string> {
   const params: Record<string, string> = { hl: "en" };
-  const authuser = new URLSearchParams(search).get("authuser")?.trim();
+  const qp = new URLSearchParams(search);
+  const authuser = qp.get("authuser")?.trim();
   if (authuser) {
     params.authuser = authuser;
   }
+  const pageId = qp.get("pageId")?.trim();
+  if (pageId) {
+    params.pageId = pageId;
+  }
   return params;
+}
+
+/** Reserved top-level Flow route segments that must not match `<org>` in `/<org>/global`. */
+const RESERVED_FLOW_SEGMENTS = new Set([
+  "project",
+  "projects",
+  "about",
+  "shared",
+  "flow",
+  "tools",
+  "fx",
+  "u",
+  "unsupported-country",
+  "unsupported-browser",
+  "unavailable",
+  "age-restricted",
+  "privacy",
+  "credits-terms",
+  "academy",
+  "404",
+  "login",
+  "search",
+  "changelogs",
+  "debug",
+]);
+
+/** Returns `true` when `path` equals `prefix` or begins with `prefix` plus `/`. */
+export function hasSegmentPrefix(path: string, prefix: string): boolean {
+  return path === prefix || path.startsWith(`${prefix}/`);
+}
+
+/** Normalizes a URL pathname to lowercase without trailing slashes while preserving `/`. */
+export function normalizeFlowPathname(raw: string): string {
+  const lower = (raw || "/").trim().toLowerCase();
+  const withSlash = lower.startsWith("/") ? lower : `/${lower}`;
+  const trimmed = withSlash.replace(/\/+$/, "");
+  return trimmed || "/";
+}
+
+/** Extracts the active `/fx/tools/flow`, `/u/<digits>`, and `/<org>/global` prefix from `pathname`. */
+export function flowRoutePrefix(pathname: string): string {
+  const segs = (pathname || "").split("/").filter(Boolean);
+  const prefixSegs: string[] = [];
+  let i = 0;
+  while (i < segs.length) {
+    if (
+      i + 2 < segs.length &&
+      segs[i].toLowerCase() === "fx" &&
+      segs[i + 1].toLowerCase() === "tools" &&
+      segs[i + 2].toLowerCase() === "flow"
+    ) {
+      prefixSegs.push("fx", "tools", "flow");
+      i += 3;
+    } else if (
+      i + 1 < segs.length &&
+      segs[i].toLowerCase() === "u" &&
+      /^\d+$/.test(segs[i + 1])
+    ) {
+      prefixSegs.push("u", segs[i + 1]);
+      i += 2;
+    } else if (
+      i + 1 < segs.length &&
+      segs[i + 1].toLowerCase() === "global" &&
+      !RESERVED_FLOW_SEGMENTS.has(segs[i].toLowerCase())
+    ) {
+      prefixSegs.push(segs[i], "global");
+      i += 2;
+    } else {
+      break;
+    }
+  }
+  return prefixSegs.length > 0 ? `/${prefixSegs.join("/")}` : "";
+}
+
+/** Normalizes `pathname` and strips `/fx/tools/flow`, `/u/<digits>`, `/<org>/global`, and `/fx` prefixes. */
+export function stripFlowRoutePrefix(pathname: string): string {
+  const clean = normalizeFlowPathname(pathname);
+  const prefix = flowRoutePrefix(clean);
+  const afterPrefix = prefix ? clean.slice(prefix.length) || "/" : clean;
+  if (afterPrefix === "/fx") {
+    return "/";
+  }
+  if (afterPrefix.startsWith("/fx/")) {
+    return afterPrefix.slice(3);
+  }
+  return afterPrefix;
+}
+
+/** Returns `true` when `prefix` contains the `/fx/tools/flow` host mount. */
+export function prefixHasFxToolsFlow(prefix: string): boolean {
+  const lower = prefix.toLowerCase();
+  return (
+    lower === "/fx/tools/flow" ||
+    lower.startsWith("/fx/tools/flow/") ||
+    lower.endsWith("/fx/tools/flow") ||
+    lower.includes("/fx/tools/flow/")
+  );
+}
+
+/** Extracts the `/u/<digits>` account selector from `pathname` when present. */
+export function pathAuthuser(pathname: string): string | null {
+  const match = /(?:^|\/)u\/(\d+)(?:\/|$)/i.exec(pathname || "");
+  return match ? match[1] : null;
 }
 
 /** Extracts the active route prefix before `/project/` from the current page URL. */
@@ -184,7 +292,9 @@ function activeProjectPrefix(): string {
   const path = location.pathname || "";
   const projectIdx = path.indexOf("/project/");
   if (projectIdx >= 0) {
-    return path.slice(0, projectIdx).replace(/\/+$/, "");
+    const before = path.slice(0, projectIdx);
+    const parsed = flowRoutePrefix(before);
+    return parsed || before.replace(/\/+$/, "");
   }
   const baseHref = document.head?.querySelector("base")?.getAttribute("href");
   if (baseHref) {
@@ -197,31 +307,7 @@ function activeProjectPrefix(): string {
       // Fall through to segment check.
     }
   }
-  const segs = path.split("/").filter(Boolean);
-  const prefixSegs: string[] = [];
-  let i = 0;
-  while (i < segs.length) {
-    if (
-      segs[i] === "fx" &&
-      segs[i + 1] === "tools" &&
-      segs[i + 2] === "flow"
-    ) {
-      prefixSegs.push("fx", "tools", "flow");
-      i += 3;
-    } else if (segs[i] === "u" && /^\d+$/.test(segs[i + 1] || "")) {
-      prefixSegs.push("u", segs[i + 1]);
-      i += 2;
-    } else if (
-      segs[i + 1] === "global" &&
-      !/^(?:project|projects|about|shared|flow|tools|fx|u)$/.test(segs[i])
-    ) {
-      prefixSegs.push(segs[i], "global");
-      i += 2;
-    } else {
-      break;
-    }
-  }
-  return prefixSegs.length > 0 ? `/${prefixSegs.join("/")}` : "";
+  return flowRoutePrefix(path);
 }
 
 /** Discovers the query-parameter key on `NavigationExtras` via `UrlSerializer.parse` on `router`. */

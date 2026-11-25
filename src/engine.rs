@@ -138,8 +138,8 @@ pub(crate) struct LoginPollStatus {
     pub(crate) exited: bool,
     /// Google Accounts rejection URL observed during sign-in, if any.
     pub(crate) rejected_url: Option<String>,
-    /// True when Google authentication cookies exist in the login profile.
-    pub(crate) has_google_auth_cookies: bool,
+    /// Verified Google Flow workspace URL visited after sign-in challenges, if ready.
+    pub(crate) ready_flow_url: Option<String>,
 }
 
 /// Manages the Chrome process and main page for one MCP server instance.
@@ -244,7 +244,7 @@ impl ChromeEngine {
         Ok(Some(LoginPollStatus {
             exited,
             rejected_url: probe.rejected_url,
-            has_google_auth_cookies: probe.has_google_auth_cookies,
+            ready_flow_url: probe.ready_flow_url,
         }))
     }
 

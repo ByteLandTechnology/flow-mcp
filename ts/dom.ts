@@ -471,7 +471,7 @@ export function fifeEnv(): FifeEnv {
     (locHost.endsWith(".google.com") || locHost.endsWith(".google")
       ? locHost
       : "flow.google.com");
-  const pathUserMatch = /^\/u\/(\d+)(?:\/|$)/.exec(location.pathname || "");
+  const pathUserMatch = /(?:^|\/)u\/(\d+)(?:\/|$)/i.exec(location.pathname || "");
   const searchUser = new URLSearchParams(location.search).get("authuser");
   const authuser =
     pathUserMatch && pathUserMatch[1] !== "0"

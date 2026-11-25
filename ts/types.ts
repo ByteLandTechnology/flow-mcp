@@ -10,6 +10,8 @@ export type NgLView = unknown[];
 export interface WizGlobalData {
   /** True when the server rendered an authenticated Google session. */
   awbSEf?: boolean;
+  /** True when the session belongs to an enterprise tenant that skips consumer tool checks. */
+  cPpIQe?: boolean;
   /** Signed request token for batchexecute calls. */
   SNlM0e?: string;
   /** Session identifier for batchexecute calls. */
@@ -18,6 +20,8 @@ export interface WizGlobalData {
   cfb2h?: string;
   /** Frontend data path prefix for batchexecute calls. */
   eptZe?: string;
+  /** Active Google Account index in multi-account sessions. */
+  QrtxK?: string;
   /** Encoded FIFE host configuration string. */
   TSDtV?: string;
 }

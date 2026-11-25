@@ -3,10 +3,23 @@
 
 // Verify Google Flow workspace access with route guards, Wiz tokens, and a read-only probe.
 
+import {
+  flowQueryParams,
+  flowRoutePrefix,
+  hasSegmentPrefix,
+  normalizeFlowPathname,
+  pathAuthuser,
+  prefixHasFxToolsFlow,
+  stripFlowRoutePrefix,
+} from "./angular";
+import { isJspbMessage, jspbField } from "./resolve_video_url";
 import type { AuthCheckResult } from "./types";
 
 /** Read-only `FLOW_APP_CONFIG` RPC identifier in the Flow workspace route guard. */
 const APP_CONFIG_RPC_ID = "cPZSdc";
+
+/** Read-only `CHECK_TOOL_AVAILABILITY` RPC identifier in the Flow workspace route guard. */
+const TOOL_AVAILABILITY_RPC_ID = "KV2T2d";
 
 /** Default Boq frontend data prefix when `WIZ_global_data.eptZe` is absent. */
 const DEFAULT_DATA_PREFIX = "/_/AiSandboxAngularFrontend/";
@@ -44,28 +57,9 @@ const NON_WORKSPACE_SEGMENT_PREFIXES = [
 const SIGN_IN_SELECTOR =
   'flow-landing-page, a[aria-label="Sign in" i], button[aria-label="Sign in" i], button[aria-label="Create with Google Flow" i], a[href*="accounts.google.com/ServiceLogin" i], a[href*="accounts.google.com/v3/signin" i], a[href*="accounts.google.com/InteractiveLogin" i]';
 
-/** Returns `true` when `path` equals `prefix` or begins with `prefix` plus `/`. */
-function hasSegmentPrefix(path: string, prefix: string): boolean {
-  return path === prefix || path.startsWith(`${prefix}/`);
-}
-
-/** Normalizes a URL pathname to lowercase without trailing slashes, preserving `/`. */
-function normalizePathname(raw: string): string {
-  const lower = (raw || "/").trim().toLowerCase();
-  const withSlash = lower.startsWith("/") ? lower : `/${lower}`;
-  const trimmed = withSlash.replace(/\/+$/, "");
-  return trimmed || "/";
-}
-
 /** Returns `true` when `pathname` matches any of the 17 non-workspace Flow routes. */
-function isNonWorkspaceFlowPath(pathname: string): boolean {
-  const clean = normalizePathname(pathname);
-  const rel =
-    clean === "/fx"
-      ? "/"
-      : clean.startsWith("/fx/")
-        ? clean.slice(3)
-        : clean;
+export function isNonWorkspaceFlowPath(pathname: string): boolean {
+  const rel = stripFlowRoutePrefix(pathname);
   if (rel === "/flow") {
     return true;
   }
@@ -75,14 +69,17 @@ function isNonWorkspaceFlowPath(pathname: string): boolean {
 }
 
 /** Returns `true` when `hostname` and `pathname` target an active Flow workspace route. */
-function isWorkspaceLocation(hostname: string, pathname: string): boolean {
+export function isWorkspaceLocation(
+  hostname: string,
+  pathname: string,
+): boolean {
   const host = (hostname || "").toLowerCase();
-  const clean = normalizePathname(pathname);
+  const clean = normalizeFlowPathname(pathname);
   const onLabsHost = host === "labs.google" || host.endsWith(".labs.google");
   if (host !== "flow.google.com" && !onLabsHost) {
     return false;
   }
-  if (onLabsHost && !hasSegmentPrefix(clean, "/fx/tools/flow")) {
+  if (onLabsHost && !prefixHasFxToolsFlow(flowRoutePrefix(clean))) {
     return false;
   }
   return !isNonWorkspaceFlowPath(clean);
@@ -129,9 +126,28 @@ function resolveDataPrefix(raw: string | undefined): string {
   return leading.endsWith("/") ? leading : `${leading}/`;
 }
 
-/** Inspects one `batchexecute` response body for `FLOW_APP_CONFIG` or token expiration. */
-function parseProbeEnvelope(text: string, status: number): AuthCheckResult {
-  let verifiedConfig = false;
+/** Returns `true` when a JSPB boolean field value explicitly encodes `false` or `0`. */
+function isJspbDisabledFlag(val: unknown): boolean {
+  return val === false || val === 0;
+}
+
+/** Parses an integer enum code from a JSPB field value, or `0` when absent. */
+function readJspbEnumCode(val: unknown): number {
+  if (typeof val === "number" && Number.isInteger(val)) {
+    return val;
+  }
+  if (typeof val === "string" && /^\d+$/.test(val.trim())) {
+    return Number(val.trim());
+  }
+  return 0;
+}
+
+/** Inspects one `batchexecute` response body for `cPZSdc`, `KV2T2d`, or token expiration. */
+export function parseProbeEnvelope(
+  text: string,
+  status: number,
+): AuthCheckResult {
+  let verifiedProbe = false;
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.replace(/^\)\]\}'\s*/, "").trim();
     if (!line.startsWith("[")) {
@@ -153,7 +169,10 @@ function parseProbeEnvelope(text: string, status: number): AuthCheckResult {
       if (entry[0] === "xsrf") {
         return authResult(false, false, true, status, "xsrf_expired");
       }
-      if (entry[0] !== "wrb.fr" || entry[1] !== APP_CONFIG_RPC_ID) {
+      if (
+        entry[0] !== "wrb.fr" ||
+        (entry[1] !== APP_CONFIG_RPC_ID && entry[1] !== TOOL_AVAILABILITY_RPC_ID)
+      ) {
         continue;
       }
       const rpcErr = entry[5];
@@ -172,26 +191,41 @@ function parseProbeEnvelope(text: string, status: number): AuthCheckResult {
       if (typeof entry[2] !== "string") {
         continue;
       }
-      let config: unknown;
+      let payload: unknown;
       try {
-        config = JSON.parse(entry[2]);
+        payload = JSON.parse(entry[2]);
       } catch {
         continue;
       }
-      if (Array.isArray(config)) {
-        if (config[30] === false) {
+      if (!isJspbMessage(payload)) {
+        continue;
+      }
+      if (entry[1] === APP_CONFIG_RPC_ID) {
+        if (isJspbDisabledFlag(jspbField(payload, 31))) {
           return authResult(false, true, false, status, "unsupported_country");
         }
-        if (config[31] === false) {
+        if (isJspbDisabledFlag(jspbField(payload, 32))) {
           return authResult(false, true, false, status, "age_restricted");
         }
-        verifiedConfig = true;
-      } else if (config !== null && typeof config === "object") {
-        verifiedConfig = true;
+        verifiedProbe = true;
+      } else {
+        const availability = readJspbEnumCode(jspbField(payload, 1));
+        if (availability === 7) {
+          return authResult(false, true, false, status, "age_restricted");
+        }
+        if (
+          availability === 4 ||
+          availability === 5 ||
+          availability === 6 ||
+          availability === 8
+        ) {
+          return authResult(false, true, false, status, "unavailable");
+        }
+        verifiedProbe = true;
       }
     }
   }
-  if (!verifiedConfig) {
+  if (!verifiedProbe) {
     return authResult(false, false, false, status, "missing_rpc_payload");
   }
   if (!isWorkspaceLocation(location.hostname, location.pathname)) {
@@ -228,8 +262,11 @@ export async function checkAuth(): Promise<AuthCheckResult> {
     return authResult(false, true, false, 0, "missing_wiz_token");
   }
 
+  const checkToolAvailability = wiz.cPpIQe !== true;
   const params = new URLSearchParams({
-    rpcids: APP_CONFIG_RPC_ID,
+    rpcids: checkToolAvailability
+      ? `${APP_CONFIG_RPC_ID},${TOOL_AVAILABILITY_RPC_ID}`
+      : APP_CONFIG_RPC_ID,
     "source-path": location.pathname || "/",
     hl: "en",
     rt: "c",
@@ -240,10 +277,27 @@ export async function checkAuth(): Promise<AuthCheckResult> {
   if (typeof wiz.FdrFJe === "string" && wiz.FdrFJe.trim()) {
     params.set("f.sid", wiz.FdrFJe.trim());
   }
+  const routeParams = flowQueryParams(location.search);
+  const wizUser =
+    typeof wiz.QrtxK === "string" && wiz.QrtxK.trim() && wiz.QrtxK.trim() !== "0"
+      ? wiz.QrtxK.trim()
+      : "";
+  const authuser =
+    routeParams.authuser || pathAuthuser(location.pathname) || wizUser;
+  if (authuser) {
+    params.set("authuser", authuser);
+  }
+  if (routeParams.pageId) {
+    params.set("pageId", routeParams.pageId);
+  }
 
-  const reqPayload = JSON.stringify([
-    [[APP_CONFIG_RPC_ID, "[]", null, "generic"]],
-  ]);
+  const rpcCalls: Array<[string, string, null, string]> = checkToolAvailability
+    ? [
+        [APP_CONFIG_RPC_ID, "[]", null, "1"],
+        [TOOL_AVAILABILITY_RPC_ID, "[22]", null, "2"],
+      ]
+    : [[APP_CONFIG_RPC_ID, "[]", null, "generic"]];
+  const reqPayload = JSON.stringify([rpcCalls]);
   const body = `f.req=${encodeURIComponent(reqPayload)}&at=${encodeURIComponent(xsrfToken)}`;
   const prefix = resolveDataPrefix(wiz.eptZe);
 

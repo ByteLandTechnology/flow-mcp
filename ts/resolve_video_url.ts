@@ -35,12 +35,12 @@ function isSparseMap(val: unknown): val is Record<string, unknown> {
 }
 
 /** Returns true when `val` is a JSPB message array or sparse field map. */
-function isJspbMessage(val: unknown): boolean {
+export function isJspbMessage(val: unknown): boolean {
   return Array.isArray(val) || isSparseMap(val);
 }
 
 /** Reads 1-based protobuf `fieldNumber` from a dense JSPB array or its trailing sparse map. */
-function jspbField(msg: unknown, fieldNumber: number): unknown {
+export function jspbField(msg: unknown, fieldNumber: number): unknown {
   if (fieldNumber < 1) return undefined;
   if (isSparseMap(msg)) {
     return msg[String(fieldNumber)];

@@ -53,8 +53,10 @@ impl Drop for LoginChrome {
 pub(crate) struct LoginProfileProbe {
     /// Google Accounts rejection URL observed in profile history.
     pub(crate) rejected_url: Option<String>,
-    /// True when core Google Sign-In cookies were written since launch.
+    /// True when core Google Sign-In cookies exist in the profile.
     pub(crate) has_google_auth_cookies: bool,
+    /// Verified Google Flow workspace URL visited after sign-in challenges when Google cookies exist.
+    pub(crate) ready_flow_url: Option<String>,
 }
 
 /// Sets child-process English locale environment variables when unset in the parent environment.
@@ -328,61 +330,105 @@ fn copy_sqlite_files_to_scratch(
     Some(dst)
 }
 
-/// Inspects a scratch copy of Chrome's `History` SQLite database for Google Accounts rejection URLs.
-fn probe_history_db(scratch_history: &Path, min_webkit_us: i64, probe: &mut LoginProfileProbe) {
-    let Ok(conn) = rusqlite::Connection::open(scratch_history) else {
-        return;
+/// Returns `true` when `raw` points to a Google Accounts sign-in or challenge route.
+fn is_google_accounts_challenge_url(raw: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(raw) else {
+        return raw.contains("accounts.google.com");
     };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT url FROM urls WHERE last_visit_time >= ?1 ORDER BY last_visit_time DESC, id DESC LIMIT 25",
-    ) else {
-        return;
+    let Some(host) = parsed.host_str() else {
+        return false;
     };
-    let Ok(rows) = stmt.query_map([min_webkit_us], |row| row.get::<_, String>(0)) else {
-        return;
-    };
-    for url in rows.flatten() {
-        if url.contains("accounts.google.com/v3/signin/rejected") {
-            probe.rejected_url = Some(url);
-            return;
-        }
+    if !host.eq_ignore_ascii_case("accounts.google.com") {
+        return false;
     }
+    let path = parsed.path();
+    !path.starts_with("/RotateCookiesPage")
+        && !path.starts_with("/CheckConnection")
+        && !path.starts_with("/ListAccounts")
 }
 
-/// Returns `true` when a scratch copy of Chrome's `Cookies` database holds Google auth cookies.
-fn probe_cookies_db(scratch_cookies: &Path, min_webkit_us: i64) -> bool {
+/// Inspects a scratch copy of Chrome's `History` SQLite database for rejection URLs and post-challenge Flow workspace visits.
+fn probe_history_db(
+    scratch_history: &Path,
+    min_webkit_us: i64,
+    probe: &mut LoginProfileProbe,
+) -> Option<String> {
+    let Ok(conn) = rusqlite::Connection::open(scratch_history) else {
+        return None;
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT url FROM urls WHERE last_visit_time >= ?1 ORDER BY last_visit_time DESC, id DESC LIMIT 50",
+    ) else {
+        return None;
+    };
+    let Ok(rows) = stmt.query_map([min_webkit_us], |row| row.get::<_, String>(0)) else {
+        return None;
+    };
+    let mut candidate_flow_url = None;
+    let mut decided_latest = false;
+    for url in rows.flatten() {
+        if probe.rejected_url.is_none() && url.contains("accounts.google.com/v3/signin/rejected") {
+            probe.rejected_url = Some(url.clone());
+        }
+        if !decided_latest {
+            if crate::auth::is_signed_in_flow_url(&url) {
+                candidate_flow_url = Some(url);
+                decided_latest = true;
+            } else if crate::auth::is_flow_host_url(&url) || is_google_accounts_challenge_url(&url)
+            {
+                decided_latest = true;
+            }
+        }
+    }
+    if probe.rejected_url.is_some() {
+        return None;
+    }
+    candidate_flow_url
+}
+
+/// Returns `true` when a scratch copy of Chrome's `Cookies` database holds valid Google auth cookies.
+fn probe_cookies_db(scratch_cookies: &Path, now_webkit_us: i64) -> bool {
     let Ok(conn) = rusqlite::Connection::open(scratch_cookies) else {
         return false;
     };
-    let Ok(mut stmt) =
-        conn.prepare("SELECT host_key, name FROM cookies WHERE last_update_utc >= ?1")
-    else {
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT host_key, name FROM cookies WHERE expires_utc = 0 OR expires_utc > ?1")
+        && let Ok(rows) = stmt.query_map([now_webkit_us], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+    {
+        return rows
+            .flatten()
+            .any(|(host, name)| is_google_auth_cookie_pair(&host, &name));
+    }
+    let Ok(mut stmt) = conn.prepare("SELECT host_key, name FROM cookies") else {
         return false;
     };
-    let Ok(rows) = stmt.query_map([min_webkit_us], |row| {
+    let Ok(rows) = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     }) else {
         return false;
     };
-    for pair in rows.flatten() {
-        if is_google_auth_cookie_pair(&pair.0, &pair.1) {
-            return true;
-        }
-    }
-    false
+    rows.flatten()
+        .any(|(host, name)| is_google_auth_cookie_pair(&host, &name))
 }
 
-/// Inspects Chrome `History` and `Cookies` files for entries updated since `started_at`.
+/// Inspects Chrome `History` and `Cookies` files for Google cookies and post-challenge Flow workspace visits since `started_at`.
 pub(crate) async fn inspect_login_profile(
     profile_dir: &Path,
     started_at: SystemTime,
 ) -> LoginProfileProbe {
-    const WEBKIT_EPOCH_OFFSET_SECS: i64 = 11_644_473_600;
-    let unix_secs = started_at
+    const WEBKIT_EPOCH_OFFSET_US: i64 = 11_644_473_600 * 1_000_000;
+    let started_unix_us = started_at
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX / 2))
         .unwrap_or(0);
-    let min_webkit_us = (unix_secs.saturating_sub(2) + WEBKIT_EPOCH_OFFSET_SECS) * 1_000_000;
+    let now_unix_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX / 2))
+        .unwrap_or(started_unix_us);
+    let min_webkit_us = started_unix_us.saturating_add(WEBKIT_EPOCH_OFFSET_US);
+    let now_webkit_us = now_unix_us.saturating_add(WEBKIT_EPOCH_OFFSET_US);
 
     let dir = profile_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
@@ -393,11 +439,10 @@ pub(crate) async fn inspect_login_profile(
         };
 
         let history_src = dir.join("Default").join("History");
-        if let Some(scratch_history) =
-            copy_sqlite_files_to_scratch(&history_src, scratch.path(), "History")
-        {
-            probe_history_db(&scratch_history, min_webkit_us, &mut probe);
-        }
+        let candidate_flow_url =
+            copy_sqlite_files_to_scratch(&history_src, scratch.path(), "History").and_then(
+                |scratch_history| probe_history_db(&scratch_history, min_webkit_us, &mut probe),
+            );
 
         let cookie_candidates = [
             dir.join("Default").join("Cookies"),
@@ -406,11 +451,15 @@ pub(crate) async fn inspect_login_profile(
         for (idx, src) in cookie_candidates.iter().enumerate() {
             let base = format!("Cookies_{idx}");
             if let Some(scratch_cookies) = copy_sqlite_files_to_scratch(src, scratch.path(), &base)
-                && probe_cookies_db(&scratch_cookies, min_webkit_us)
+                && probe_cookies_db(&scratch_cookies, now_webkit_us)
             {
                 probe.has_google_auth_cookies = true;
                 break;
             }
+        }
+
+        if probe.has_google_auth_cookies && probe.rejected_url.is_none() {
+            probe.ready_flow_url = candidate_flow_url;
         }
 
         probe

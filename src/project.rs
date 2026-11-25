@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::{Duration, Instant};
 
-use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redirect_sso_if_about};
+use crate::auth::{
+    check_page_auth, check_page_signed_in, is_flow_host_url, poll_login_status_url,
+    redirect_sso_if_about,
+};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
 pub(crate) use crate::project_route::{
@@ -172,6 +175,23 @@ async fn eval_project_nav(engine: &ChromeEngine, action: &str) -> Result<Value> 
 /// Reads Google Flow session state without navigation when `probe` is `true`,
 /// or opens Flow when `probe` is `false`. Reads the store without changing project routes.
 pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowStatus {
+    if let Some(login_url) = poll_login_status_url(engine, probe).await {
+        return FlowStatus {
+            signed_in: false,
+            in_project: false,
+            project: None,
+            project_id: None,
+            url: Some(login_url),
+            credits: None,
+            assets_count: None,
+            collections_count: None,
+            page_ready: false,
+            engine: ENGINE_NAME.to_string(),
+            frontend: None,
+            error: None,
+        };
+    }
+
     if !probe && !engine.has_page().await && !has_persisted_session() {
         return FlowStatus {
             signed_in: false,
