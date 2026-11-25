@@ -4,6 +4,7 @@
 // Shared DOM, event, input, and FIFE URL helpers for Flow browser modules.
 
 import { snapshotFormat } from "./frontend_builds";
+import { selectBestVideoVariant } from "./media_variants";
 import type { CharacterLookEntry, FifeEnv, FlowMediaPayload, FlowTile } from "./types";
 
 /** Reads an own data property from `o` without invoking prototype getters. */
@@ -19,6 +20,79 @@ function readMediaField(o: unknown, key: string): unknown {
 /** Returns `v` when it is an HTTP, HTTPS, blob, or data URL string. */
 export function asHttpOrDataUrl(v: unknown): string | null {
   return typeof v === "string" && /^(?:https?:|blob:|data:)/i.test(v) ? v : null;
+}
+
+/** Parses an `X-Goog-Date` value (`YYYYMMDDTHHMMSSZ` or ISO-8601) into epoch milliseconds. */
+function parseGoogDateMs(raw: string): number | null {
+  const trimmed = raw.trim();
+  const compact = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/i.exec(trimmed);
+  if (compact) {
+    const year = Number(compact[1]);
+    const month = Number(compact[2]);
+    const day = Number(compact[3]);
+    const hour = Number(compact[4]);
+    const minute = Number(compact[5]);
+    const second = Number(compact[6]);
+    if (
+      month < 1 ||
+      month > 12 ||
+      day < 1 ||
+      day > 31 ||
+      hour > 23 ||
+      minute > 59 ||
+      second > 60
+    ) {
+      return null;
+    }
+    const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const isoMs = Date.parse(trimmed);
+  return Number.isFinite(isoMs) ? isoMs : null;
+}
+
+/** Returns true when `rawUrl` carries a V4 or V2 GCS signature whose validity window has elapsed. */
+export function isExpiredSignedUrl(
+  rawUrl: string | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (typeof rawUrl !== "string" || !/^https?:\/\//i.test(rawUrl.trim())) {
+    return false;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    return false;
+  }
+  let googDate: string | null = null;
+  let googExpires: string | null = null;
+  let v2Expires: string | null = null;
+  let hasV2Sig = false;
+  for (const [k, v] of parsed.searchParams.entries()) {
+    const lower = k.toLowerCase();
+    if (lower === "x-goog-date") googDate = v;
+    else if (lower === "x-goog-expires") googExpires = v;
+    else if (lower === "expires") v2Expires = v;
+    else if (lower === "signature" || lower === "googleaccessid") hasV2Sig = true;
+  }
+  if (googDate !== null && googExpires !== null) {
+    const issuedMs = parseGoogDateMs(googDate);
+    const trimmedExp = googExpires.trim();
+    if (issuedMs === null || !/^\d+$/.test(trimmedExp)) {
+      return true;
+    }
+    const expiresSec = Number(trimmedExp);
+    if (!Number.isFinite(expiresSec)) return true;
+    return nowMs >= issuedMs + expiresSec * 1000;
+  }
+  if (hasV2Sig && v2Expires !== null) {
+    const trimmedV2 = v2Expires.trim();
+    if (!/^\d+$/.test(trimmedV2)) return true;
+    const expSec = Number(trimmedV2);
+    return !Number.isFinite(expSec) || nowMs >= expSec * 1000;
+  }
+  return false;
 }
 
 /** Reads the first direct media URL from a tile, media payload, clip, or picker item. */
@@ -242,10 +316,66 @@ export function characterLooksOf(
   return null;
 }
 
-/** Extracts the preferred look image URL and primary media ID from character tile `t`. */
+/** Reads a 1-based field from a dense or sparse serialized JSPB array. */
+function serializedProtoField(message: unknown, field: number): unknown {
+  if (!Array.isArray(message) || field < 1) return undefined;
+  const tail: unknown = message[message.length - 1];
+  if (tail && typeof tail === "object" && !Array.isArray(tail)) {
+    const mapped = readMediaField(tail, String(field));
+    if (mapped !== undefined) return mapped;
+  }
+  return message[field - 1];
+}
+
+/** Extracts the assigned custom or preset voice ID from a character tile when present. */
+function characterAssignedVoiceId(t: FlowTile): string | null {
+  const format = snapshotFormat()?.character;
+  const entity = readMediaField(t, format?.entity ?? "Rc");
+  const serialize = readMediaField(entity, "toJSON");
+  if (typeof serialize === "function") {
+    try {
+      const root: unknown = serialize.call(entity);
+      const info = serializedProtoField(
+        serializedProtoField(root, format?.entityInfoField ?? 4),
+        format?.characterInfoField ?? 3,
+      );
+      const refs = serializedProtoField(info, format?.audioReferencesField ?? 2);
+      if (Array.isArray(refs) && refs.length > 0) {
+        const first: unknown = refs[0];
+        const custom = serializedProtoField(first, format?.customVoiceField ?? 1);
+        if (typeof custom === "string" && custom.trim()) {
+          return custom.trim().replace(/^media\//i, "");
+        }
+        const preset = serializedProtoField(first, format?.presetVoiceField ?? 2);
+        if (typeof preset === "string" && preset.trim()) {
+          return preset.trim();
+        }
+      }
+    } catch {
+      // Fall through to plain tile voice fields.
+    }
+  }
+  for (const cand of [t.voiceId, t.Vo, t.voice]) {
+    if (typeof cand === "string" && cand.trim()) {
+      return cand.trim().replace(/^media\//i, "");
+    }
+    if (cand && typeof cand === "object" && !Array.isArray(cand)) {
+      const nested =
+        readMediaField(cand, "mediaId") ??
+        readMediaField(cand, "voiceId") ??
+        readMediaField(cand, "id");
+      if (typeof nested === "string" && nested.trim()) {
+        return nested.trim().replace(/^media\//i, "");
+      }
+    }
+  }
+  return null;
+}
+
+/** Extracts the preferred look image URL and primary media ID (or voice ID on look-less characters) from character tile `t`. */
 export function characterLookMedia(
   t: FlowTile | null | undefined,
-): { url: string | null; primaryMediaId: string | null } {
+): { url: string | null; primaryMediaId: string | null; isVoice?: boolean } {
   if (!t || typeof t !== "object") return { url: null, primaryMediaId: null };
   const charFmt = snapshotFormat()?.character;
   const previewRaw = (charFmt ? readMediaField(t, charFmt.previewMediaId) : undefined) ?? t.Kd;
@@ -286,9 +416,17 @@ export function characterLookMedia(
       }
     }
   }
+  const lookUrl = preferredId ? preferredUrl : fallbackUrl;
+  const lookPrimaryId = preferredId || firstPrimaryId;
+  if (!lookUrl && !lookPrimaryId && String(t.type ?? "").toUpperCase() === "CHARACTER") {
+    const voiceId = characterAssignedVoiceId(t);
+    if (voiceId) {
+      return { url: null, primaryMediaId: voiceId, isVoice: true };
+    }
+  }
   return {
-    url: preferredId ? preferredUrl : fallbackUrl,
-    primaryMediaId: preferredId || firstPrimaryId,
+    url: lookUrl,
+    primaryMediaId: lookPrimaryId,
   };
 }
 
@@ -554,15 +692,23 @@ export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
   const t = legacyTile(tile);
   if (!t) return null;
   const kind = String(t.type ?? "").toUpperCase() === "VIDEO" ? "video" : "image";
-  const videoUrl = kind === "video"
-    ? readMediaUrl(t.Fb, true) || readMediaUrl(t, true) || readMediaUrl(t.fb, true)
-    : null;
+  const nonExpired = (cand: string | null): string | null =>
+    cand && !isExpiredSignedUrl(cand) ? cand : null;
+  const variantChoice = kind === "video" ? selectBestVideoVariant(t) : null;
+  const videoUrl =
+    kind === "video"
+      ? variantChoice?.url ||
+        nonExpired(readMediaUrl(t.Fb, true)) ||
+        nonExpired(readMediaUrl(t, true)) ||
+        nonExpired(readMediaUrl(t.fb, true))
+      : null;
   const raw =
-    videoUrl || readMediaUrl(t.Fb) ||
-    readMediaUrl(t) ||
-    readMediaUrl(t.fb) ||
-    characterLookMedia(t).url ||
-    asHttpOrDataUrl(t.ue) ||
+    videoUrl ||
+    nonExpired(readMediaUrl(t.Fb)) ||
+    nonExpired(readMediaUrl(t)) ||
+    nonExpired(readMediaUrl(t.fb)) ||
+    nonExpired(characterLookMedia(t).url) ||
+    nonExpired(asHttpOrDataUrl(t.ue)) ||
     null;
   return raw ? normalizeFlowMediaUrl(raw, kind) : null;
 }

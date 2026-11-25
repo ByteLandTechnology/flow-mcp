@@ -757,26 +757,12 @@ pub(crate) async fn create_or_update_character_job(
                         .filter(|s| s.starts_with("http") || s.starts_with("data:"))
                         .map(str::to_string);
                     if media_id.is_some() || src.is_some() {
-                        let temp_asset = FlowAsset {
-                            id: media_id.clone().unwrap_or_else(|| char_id.clone()),
-                            name: persisted_name.clone(),
-                            kind: "image".to_string(),
-                            prompt: None,
-                            url: src,
-                            collection_id: None,
-                            collection_name: None,
-                            width: None,
-                            height: None,
-                            duration: None,
-                            primary_media_id: media_id,
-                            personality_notes: None,
-                            voice: None,
-                            trim_start_seconds: None,
-                            trim_end_seconds: None,
-                            media_status: None,
-                            media_error: None,
-                            created_at: None,
-                        };
+                        let temp_asset = FlowAsset::character_look(
+                            &char_id,
+                            persisted_name.clone(),
+                            src,
+                            media_id,
+                        );
                         if let Ok(rec) = download_resolved_asset(
                             engine,
                             db,

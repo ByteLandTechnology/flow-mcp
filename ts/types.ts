@@ -256,12 +256,34 @@ export interface FlowTile extends FlowMediaPayload {
   Oc?: SceneClipItem[];
   /** Scene clip workflow history lookup. */
   Yf?: Map<string, FlowMediaPayload[]> | Record<string, FlowMediaPayload[]>;
+  /** Media generation history list on image and video tiles. */
+  history?: FlowMediaPayload[];
+  /** Upscaled video variant list (`1080p` and `4K`) in build 20261120.00. */
+  yn?: FlowMediaPayload[];
   /** Tile width alias. */
   width?: number;
   /** Tile height alias. */
   height?: number;
   /** Creation time field. */
   createDate?: string;
+}
+
+/** Saved custom voice entry extracted from `PROJECT_TILES` `cj` and `lr` maps. */
+export interface CustomVoiceItem {
+  /** Voice asset identifier. */
+  id: string;
+  /** Human-readable voice display name. */
+  name: string;
+  /** Underlying audio media identifier for `as29s` resolution. */
+  mediaId: string;
+  /** Optional workflow identifier associated with the voice. */
+  workflowId: string | null;
+  /** Voice performance description or sample text. */
+  prompt: string | null;
+  /** Direct audio URL when present on the voice proto. */
+  url: string | null;
+  /** ISO creation timestamp string when known. */
+  createdAt: string | null;
 }
 
 /** Unified project store handle bound into module state. */
@@ -272,6 +294,8 @@ export interface FlowStoreHandle {
   isCurrent: () => boolean;
   /** Returns the current project tile map if available. */
   getTileMap: () => Map<string, FlowTile> | null | undefined;
+  /** Returns saved custom voices from `cj` and `lr` without altering `getTileMap()`. */
+  getCustomVoices?: () => CustomVoiceItem[];
   /** Returns true when pending store fetches have settled. */
   isReady: () => boolean;
   /** Dispatches a store mutation payload and waits for completion. */
@@ -486,6 +510,8 @@ export interface CachedMediaInfo {
   candidates: string[];
   /** Media kind from the wire response when known. */
   media_kind?: "video" | "image" | "audio";
+  /** True when `as29s` case `11` returned raw 24 kHz PCM audio requiring WAV framing. */
+  pcm_audio?: boolean;
 }
 
 /** Result returned by `checkAuth`. */
@@ -554,6 +580,16 @@ export interface SnapshotAssetItem {
   duration: number | null;
   /** ISO creation timestamp string. */
   created_at: string | null;
+  /** All known primary, history, and upscaled variant media IDs on the tile. */
+  media_ids?: string[];
+  /** Optional workflow identifier associated with a custom voice asset. */
+  workflow_id?: string | null;
+  /** True when a multi-clip or trimmed scene requires Angular `sceneExport`. */
+  requires_scene_export?: boolean;
+  /** True when cached resolution flagged raw 24 kHz PCM audio. */
+  pcm_audio?: boolean;
+  /** Underlying media family override when a tile downloads audio. */
+  media_kind?: "video" | "image" | "audio" | null;
 }
 
 /** Collection summary returned inside `StoreSnapshotResult`. */
@@ -615,6 +651,16 @@ export type ResolvedMediaResult =
       download_url: string;
       candidates: string[];
       media_kind?: "video" | "image" | "audio";
+      pcm_audio?: boolean;
+    };
+
+/** Result returned by `sceneExport`. */
+export type SceneExportResult =
+  | { ok: false; error: string }
+  | {
+      ok: true;
+      url: string;
+      contentType: string;
     };
 
 /** Configuration payload shared by `setupGeneration` and `attachIngredients`. */
@@ -832,7 +878,13 @@ export interface FlowMcpRuntime {
     request: import("./collection_ops").CollectionRequest,
   ) => Promise<unknown>;
   /** Fetches a media URL with page credentials and returns Base64 payload metadata. */
-  fetchMedia: (u: string, expectedKind: string) => Promise<FetchedMediaPayload>;
+  fetchMedia: (
+    u: string,
+    expectedKind: string,
+    framePcmWav?: boolean,
+  ) => Promise<FetchedMediaPayload>;
+  /** Exports a multi-clip or trimmed scene via Angular `KD` RPCs and returns a `blob:` URL. */
+  sceneExport: (sceneId: string, pollDelayMs?: number) => Promise<SceneExportResult>;
   /** Resolves stream and download URLs for a primary media identifier via `as29s`. */
   resolveVideoUrl: (
     primaryMediaId: string,

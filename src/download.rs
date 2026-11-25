@@ -8,6 +8,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::time::Duration;
 use url::Url;
@@ -41,6 +42,11 @@ enum DownloadSource {
     },
     /// Unsigned media URL when the asset has no media ID.
     UnsignedUrl(String),
+    /// Multi-clip or trimmed scene that exports via Angular `KD` RPCs in Chrome.
+    ExportScene {
+        /// Project scene tile ID.
+        scene_id: String,
+    },
 }
 
 /// Ordered URL candidates and media kind from `resolveVideoUrl`.
@@ -49,6 +55,8 @@ struct ResolvedMediaUrls {
     urls: Vec<String>,
     /// Media family from the `as29s` wire message when present.
     media_kind: Option<String>,
+    /// True when `as29s` case `11` returned raw 24 kHz PCM audio.
+    pcm_audio: bool,
 }
 
 /// Returns the shared HTTP client for streaming media downloads.
@@ -128,10 +136,14 @@ async fn fetch_via_browser_to_temp(
     engine: &ChromeEngine,
     media_url: &str,
     expected_kind: &str,
+    frame_pcm_wav: bool,
     temp_path: &Path,
 ) -> Result<(Option<String>, Option<String>, u64)> {
     let val = engine
-        .call_flow_async("fetchMedia", json!([media_url, expected_kind]))
+        .call_flow_async(
+            "fetchMedia",
+            json!([media_url, expected_kind, frame_pcm_wav]),
+        )
         .await?;
     let b64 = val
         .get("b64")
@@ -187,6 +199,90 @@ fn is_signed_direct_url(raw_url: &str) -> bool {
                     | "x-goog-signedheaders"
             )
         })
+}
+
+/// Converts a proleptic Gregorian UTC date into days since `1970-01-01`.
+fn civil_days_from_ymd(year: i64, month: u32, day: u32) -> i64 {
+    let y = year - i64::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let m = u64::from(month);
+    let d = u64::from(day);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + (doe as i64) - 719_468
+}
+
+/// Parses a compact `YYYYMMDDTHHMMSSZ` timestamp into Unix epoch seconds.
+fn parse_goog_date_secs(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 16 {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    if !matches!(bytes[8], b'T' | b't') || !matches!(bytes[15], b'Z' | b'z') {
+        return None;
+    }
+    let year: i64 = trimmed.get(0..4)?.parse().ok()?;
+    let month: u32 = trimmed.get(4..6)?.parse().ok()?;
+    let day: u32 = trimmed.get(6..8)?.parse().ok()?;
+    let hour: u64 = trimmed.get(9..11)?.parse().ok()?;
+    let minute: u64 = trimmed.get(11..13)?.parse().ok()?;
+    let second: u64 = trimmed.get(13..15)?.parse().ok()?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let days = civil_days_from_ymd(year, month, day);
+    let day_secs = u64::try_from(days).ok()?.checked_mul(86_400)?;
+    day_secs
+        .checked_add(hour * 3_600)
+        .and_then(|v| v.checked_add(minute * 60))
+        .and_then(|v| v.checked_add(second))
+}
+
+/// Returns `true` when `raw_url` carries a V4 or V2 GCS signature whose validity window has elapsed.
+fn is_expired_signed_url(raw_url: &str) -> bool {
+    let Ok(parsed) = Url::parse(raw_url.trim()) else {
+        return false;
+    };
+    let Ok(now_dur) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return false;
+    };
+    let now_secs = now_dur.as_secs();
+    let mut goog_date: Option<String> = None;
+    let mut goog_expires: Option<String> = None;
+    let mut v2_expires: Option<String> = None;
+    let mut has_v2_sig = false;
+    for (k, v) in parsed.query_pairs() {
+        match k.to_ascii_lowercase().as_str() {
+            "x-goog-date" => goog_date = Some(v.into_owned()),
+            "x-goog-expires" => goog_expires = Some(v.into_owned()),
+            "expires" => v2_expires = Some(v.into_owned()),
+            "signature" | "googleaccessid" => has_v2_sig = true,
+            _ => {}
+        }
+    }
+    if let (Some(date_str), Some(exp_str)) = (goog_date, goog_expires) {
+        let Some(issued_secs) = parse_goog_date_secs(&date_str) else {
+            return true;
+        };
+        let Ok(expires_secs) = exp_str.trim().parse::<u64>() else {
+            return true;
+        };
+        return now_secs >= issued_secs.saturating_add(expires_secs);
+    }
+    if has_v2_sig && let Some(v2_str) = v2_expires {
+        let Ok(exp_secs) = v2_str.trim().parse::<u64>() else {
+            return true;
+        };
+        return now_secs >= exp_secs;
+    }
+    false
 }
 
 /// Appends `raw` to `out` when it uses an allowed scheme and is not already present.
@@ -307,12 +403,17 @@ async fn query_resolved_media_urls(
         return ResolvedMediaUrls {
             urls: Vec::new(),
             media_kind: None,
+            pcm_audio: false,
         };
     };
     let media_kind = val
         .get("media_kind")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let pcm_audio = val
+        .get("pcm_audio")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let effective_kind = if media_kind.as_deref() == Some("audio") {
         "audio"
     } else {
@@ -346,17 +447,29 @@ async fn query_resolved_media_urls(
     for cand in unsigned {
         push_unique_url(&mut urls, &cand);
     }
-    ResolvedMediaUrls { urls, media_kind }
+    ResolvedMediaUrls {
+        urls,
+        media_kind,
+        pcm_audio,
+    }
 }
 
 /// Selects the [`DownloadSource`] for `target` from its pre-populated URL and media ID.
 fn select_download_source(target: &FlowAsset, label: &str) -> Result<DownloadSource> {
+    if target.kind == "scene" && target.requires_scene_export {
+        return Ok(DownloadSource::ExportScene {
+            scene_id: target.id.trim().to_string(),
+        });
+    }
     let raw_url = target
         .url
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let raw_usable = raw_url
+        .as_deref()
+        .is_some_and(|u| !(is_signed_direct_url(u) && is_expired_signed_url(u)));
     let media_id = target
         .primary_media_id
         .as_deref()
@@ -364,12 +477,14 @@ fn select_download_source(target: &FlowAsset, label: &str) -> Result<DownloadSou
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .or_else(|| {
-            (raw_url.is_none() && !matches!(target.kind.as_str(), "character" | "scene"))
+            (!raw_usable && !matches!(target.kind.as_str(), "character" | "scene"))
                 .then(|| target.id.trim().to_string())
                 .filter(|s| !s.is_empty())
         });
+    let usable_url = raw_url
+        .filter(|u| !(is_signed_direct_url(u) && is_expired_signed_url(u) && media_id.is_some()));
 
-    match (raw_url, media_id) {
+    match (usable_url, media_id) {
         (Some(url), fallback_media_id) if is_signed_direct_url(&url) => {
             Ok(DownloadSource::DirectSigned {
                 url,
@@ -385,11 +500,12 @@ fn select_download_source(target: &FlowAsset, label: &str) -> Result<DownloadSou
     }
 }
 
-/// Downloads signed URLs over HTTP first and routes authenticated URLs through `fetchMedia` or live CDP cookies.
+/// Downloads signed URLs over HTTP first (except raw PCM audio) and routes authenticated URLs through `fetchMedia`.
 async fn try_download_candidates(
     engine: &ChromeEngine,
     candidates: &[String],
     expected_kind: &str,
+    frame_pcm_wav: bool,
     temp_path: &Path,
 ) -> Result<((Option<String>, Option<String>, u64), String)> {
     let mut attempts = Vec::new();
@@ -398,16 +514,40 @@ async fn try_download_candidates(
         let is_http = lower.starts_with("http://") || lower.starts_with("https://");
         if is_http && is_signed_direct_url(cand_url) {
             let _ = tokio::fs::remove_file(temp_path).await;
+            if is_expired_signed_url(cand_url) {
+                attempts.push(format!("{} (signed URL expired)", cand_url));
+                continue;
+            }
+            if frame_pcm_wav {
+                match fetch_via_browser_to_temp(engine, cand_url, expected_kind, true, temp_path)
+                    .await
+                {
+                    Ok(res) => return Ok((res, cand_url.clone())),
+                    Err(browser_err) => {
+                        let _ = tokio::fs::remove_file(temp_path).await;
+                        attempts.push(format!("{} (browser: {})", cand_url, browser_err));
+                    }
+                }
+                continue;
+            }
             match stream_http_to_temp(engine, cand_url, expected_kind, temp_path).await {
                 Ok(res) => return Ok((res, cand_url.clone())),
                 Err(http_err) => {
                     let _ = tokio::fs::remove_file(temp_path).await;
-                    if http_err.to_string().contains(MEDIA_KIND_MISMATCH_TAG) {
+                    if http_err.to_string().contains(MEDIA_KIND_MISMATCH_TAG)
+                        || is_expired_signed_url(cand_url)
+                    {
                         attempts.push(format!("{} (HTTP: {})", cand_url, http_err));
                         continue;
                     }
-                    match fetch_via_browser_to_temp(engine, cand_url, expected_kind, temp_path)
-                        .await
+                    match fetch_via_browser_to_temp(
+                        engine,
+                        cand_url,
+                        expected_kind,
+                        false,
+                        temp_path,
+                    )
+                    .await
                     {
                         Ok(res) => return Ok((res, cand_url.clone())),
                         Err(browser_err) => {
@@ -422,11 +562,23 @@ async fn try_download_candidates(
             }
         } else if is_http {
             let _ = tokio::fs::remove_file(temp_path).await;
-            match fetch_via_browser_to_temp(engine, cand_url, expected_kind, temp_path).await {
+            match fetch_via_browser_to_temp(
+                engine,
+                cand_url,
+                expected_kind,
+                frame_pcm_wav,
+                temp_path,
+            )
+            .await
+            {
                 Ok(res) => return Ok((res, cand_url.clone())),
                 Err(browser_err) => {
                     let _ = tokio::fs::remove_file(temp_path).await;
                     if browser_err.to_string().contains(MEDIA_KIND_MISMATCH_TAG) {
+                        attempts.push(format!("{} (browser: {})", cand_url, browser_err));
+                        continue;
+                    }
+                    if frame_pcm_wav {
                         attempts.push(format!("{} (browser: {})", cand_url, browser_err));
                         continue;
                     }
@@ -444,7 +596,15 @@ async fn try_download_candidates(
             }
         } else {
             let _ = tokio::fs::remove_file(temp_path).await;
-            match fetch_via_browser_to_temp(engine, cand_url, expected_kind, temp_path).await {
+            match fetch_via_browser_to_temp(
+                engine,
+                cand_url,
+                expected_kind,
+                frame_pcm_wav,
+                temp_path,
+            )
+            .await
+            {
                 Ok(res) => return Ok((res, cand_url.clone())),
                 Err(browser_err) => {
                     let _ = tokio::fs::remove_file(temp_path).await;
@@ -454,6 +614,32 @@ async fn try_download_candidates(
         }
     }
     anyhow::bail!("{}", attempts.join(" | "))
+}
+
+/// Exports a multi-clip or trimmed scene in Chrome and writes the MP4 bytes to `temp_path`.
+async fn export_scene_via_browser(
+    engine: &ChromeEngine,
+    scene_id: &str,
+    temp_path: &Path,
+) -> Result<((Option<String>, Option<String>, u64), String)> {
+    let val = engine
+        .call_flow_async("sceneExport", json!([scene_id]))
+        .await?;
+    if val.get("ok").and_then(Value::as_bool) != Some(true) {
+        let err = val
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("scene_export_failed");
+        anyhow::bail!("{}", err);
+    }
+    let blob_url = val
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .context("Scene export returned no media URL")?;
+    let res = fetch_via_browser_to_temp(engine, blob_url, "video", false, temp_path).await?;
+    Ok((res, blob_url.to_string()))
 }
 
 /// Downloads a resolved [`FlowAsset`] into `<home>/downloads` and indexes it in SQLite.
@@ -477,39 +663,57 @@ pub(crate) async fn download_resolved_asset(
     let temp_name = format!(".flow-mcp-{}.part", &uuid::Uuid::new_v4().to_string()[..8]);
     let temp_path = stage_dir.join(temp_name);
 
-    let mut effective_kind = target.kind.clone();
+    let mut effective_kind = if target.kind == "scene" {
+        "video".to_string()
+    } else if target.kind == "character" && target.media_kind.as_deref() == Some("audio") {
+        "audio".to_string()
+    } else {
+        target.kind.clone()
+    };
+    let mut pcm_audio = target.pcm_audio;
     let download_res = match source {
+        DownloadSource::ExportScene { scene_id } => {
+            export_scene_via_browser(engine, &scene_id, &temp_path).await
+        }
         DownloadSource::DirectSigned {
             url,
             fallback_media_id,
         } => {
             let direct = std::slice::from_ref(&url);
-            match try_download_candidates(engine, direct, &effective_kind, &temp_path).await {
+            match try_download_candidates(engine, direct, &effective_kind, pcm_audio, &temp_path)
+                .await
+            {
                 Ok(res) => Ok(res),
                 Err(first_err) => {
                     if let Some(media_id) = fallback_media_id {
                         let resolved =
                             query_resolved_media_urls(engine, &media_id, &effective_kind, true)
                                 .await;
-                        if effective_kind == "image"
-                            && resolved.media_kind.as_deref() == Some("audio")
-                        {
+                        let kind_changed = matches!(effective_kind.as_str(), "image" | "character")
+                            && resolved.media_kind.as_deref() == Some("audio");
+                        if kind_changed {
                             effective_kind = "audio".to_string();
                         }
+                        let pcm_changed = !pcm_audio && resolved.pcm_audio;
+                        pcm_audio |= resolved.pcm_audio;
                         let mut extra = Vec::new();
                         for cand in resolved.urls {
-                            if cand != url {
+                            if cand != url || kind_changed || pcm_changed {
                                 push_unique_url(&mut extra, &cand);
                             }
                         }
                         if extra.is_empty() {
                             Err(first_err)
                         } else {
-                            try_download_candidates(engine, &extra, &effective_kind, &temp_path)
-                                .await
-                                .map_err(|extra_err| {
-                                    anyhow::anyhow!("{} | {}", first_err, extra_err)
-                                })
+                            try_download_candidates(
+                                engine,
+                                &extra,
+                                &effective_kind,
+                                pcm_audio,
+                                &temp_path,
+                            )
+                            .await
+                            .map_err(|extra_err| anyhow::anyhow!("{} | {}", first_err, extra_err))
                         }
                     } else {
                         Err(first_err)
@@ -523,28 +727,71 @@ pub(crate) async fn download_resolved_asset(
         } => {
             let resolved =
                 query_resolved_media_urls(engine, &media_id, &effective_kind, false).await;
-            if effective_kind == "image" && resolved.media_kind.as_deref() == Some("audio") {
+            if matches!(effective_kind.as_str(), "image" | "character")
+                && resolved.media_kind.as_deref() == Some("audio")
+            {
                 effective_kind = "audio".to_string();
             }
+            pcm_audio |= resolved.pcm_audio;
             let mut candidates = resolved.urls;
-            if let Some(raw_fallback) = fallback_url {
-                push_fife_candidates(&mut candidates, &raw_fallback, &effective_kind);
-                push_unique_url(&mut candidates, &raw_fallback);
+            if let Some(ref raw_fallback) = fallback_url
+                && !(is_signed_direct_url(raw_fallback) && is_expired_signed_url(raw_fallback))
+            {
+                push_fife_candidates(&mut candidates, raw_fallback, &effective_kind);
+                push_unique_url(&mut candidates, raw_fallback);
             }
-            if candidates.is_empty() {
+            let first_attempt = if candidates.is_empty() {
                 Err(anyhow::anyhow!(
                     "media lookup returned no URLs for media ID '{}'",
                     media_id
                 ))
             } else {
-                try_download_candidates(engine, &candidates, &effective_kind, &temp_path).await
+                try_download_candidates(engine, &candidates, &effective_kind, pcm_audio, &temp_path)
+                    .await
+            };
+            match first_attempt {
+                Ok(res) => Ok(res),
+                Err(first_err) => {
+                    let refreshed =
+                        query_resolved_media_urls(engine, &media_id, &effective_kind, true).await;
+                    let kind_changed = matches!(effective_kind.as_str(), "image" | "character")
+                        && refreshed.media_kind.as_deref() == Some("audio");
+                    if kind_changed {
+                        effective_kind = "audio".to_string();
+                    }
+                    let pcm_changed = !pcm_audio && refreshed.pcm_audio;
+                    pcm_audio |= refreshed.pcm_audio;
+                    let mut extra = Vec::new();
+                    for cand in refreshed.urls {
+                        if kind_changed
+                            || pcm_changed
+                            || !candidates.iter().any(|existing| existing == &cand)
+                        {
+                            push_unique_url(&mut extra, &cand);
+                        }
+                    }
+                    if extra.is_empty() {
+                        Err(first_err)
+                    } else {
+                        try_download_candidates(
+                            engine,
+                            &extra,
+                            &effective_kind,
+                            pcm_audio,
+                            &temp_path,
+                        )
+                        .await
+                        .map_err(|extra_err| anyhow::anyhow!("{} | {}", first_err, extra_err))
+                    }
+                }
             }
         }
         DownloadSource::UnsignedUrl(raw_url) => {
             let mut candidates = Vec::new();
             push_fife_candidates(&mut candidates, &raw_url, &effective_kind);
             push_unique_url(&mut candidates, &raw_url);
-            try_download_candidates(engine, &candidates, &effective_kind, &temp_path).await
+            try_download_candidates(engine, &candidates, &effective_kind, pcm_audio, &temp_path)
+                .await
         }
     };
 

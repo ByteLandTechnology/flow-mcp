@@ -132,6 +132,36 @@ fn extract_disposition_filename(disposition: &str) -> Option<String> {
     ext_name.or(plain_name)
 }
 
+/// Returns `true` when `ext` matches a known image, video, or audio file extension.
+fn is_allowed_media_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mp4"
+            | "webm"
+            | "mov"
+            | "m4v"
+            | "avi"
+            | "mkv"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "webp"
+            | "gif"
+            | "avif"
+            | "heic"
+            | "heif"
+            | "wav"
+            | "mp3"
+            | "m4a"
+            | "aac"
+            | "ogg"
+            | "opus"
+            | "flac"
+            | "aiff"
+            | "aif"
+    )
+}
+
 /// Picks the default file extension from `content_type` or `expected_kind`.
 fn default_extension_for_asset(expected_kind: &str, content_type: Option<&str>) -> &'static str {
     match mime_essence(content_type).as_str() {
@@ -166,7 +196,11 @@ fn default_extension_for_asset(expected_kind: &str, content_type: Option<&str>) 
                             | "flac"
                     )
                 })
-                .or_else(|| exts.first().copied())
+                .or_else(|| {
+                    exts.iter()
+                        .copied()
+                        .find(|&e| is_allowed_media_extension(e))
+                })
         })
         .unwrap_or(match expected_kind {
             "video" => "mp4",
@@ -187,7 +221,7 @@ pub(crate) fn natural_asset_filename(
         if Path::new(&name)
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| !e.is_empty())
+            .is_some_and(is_allowed_media_extension)
         {
             return name;
         }
@@ -204,7 +238,7 @@ pub(crate) fn natural_asset_filename(
         && Path::new(&clean)
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric()))
+            .is_some_and(is_allowed_media_extension)
     {
         return clean;
     }

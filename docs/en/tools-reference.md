@@ -337,8 +337,8 @@ List project assets or upload local images and videos to the active project.
 | :--- | :--- | :--- | :--- |
 | `action` | `string` | No | `list` (default) or `upload`. |
 | `files` | `string[]` | For `upload` | Local image or video paths on the server. |
-| `query` | `string` | No | Case-insensitive substring matching asset ID, name, or prompt. |
-| `kind` | `string` | No | Filter by `"image"`, `"video"`, `"audio"`, `"scene"`, `"character"`, or `"all"` (default). |
+| `query` | `string` | No | Case-insensitive substring matching asset ID, media ID, name, or prompt. |
+| `kind` | `string` | No | Filter by `"image"`, `"video"`, `"audio"` (including saved custom voices), `"scene"`, `"character"`, or `"all"` (default). |
 | `collection` | `string` | No | Filter by collection ID, name substring, `"all"`, `"none"`, or `"uncollected"`. |
 | `limit` | `integer` | No | Maximum items to return (`>= 1`). |
 | `resolve_urls` | `boolean` | No | Get missing media URLs. For image or audio requests, the tool resolves assets with an unknown media type before it applies the result limit. Default is `true`. The lookup has a 10-second limit. |
@@ -387,11 +387,11 @@ The tool checks the result of each write in a new read of the same project. The 
 
 ### `flow_download`
 
-Download a matching project media asset (image, video, audio, or character look) to `<home>/downloads` and index it in `flow-mcp.db`. Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
+Download a matching project media asset (image, video, upscaled `1080p` or `4K` variant, custom voice, character look or assigned voice, or scene) to `<home>/downloads` and index it in `flow-mcp.db`. The tool downloads untrimmed single-clip scenes directly. On verified front-end builds, the tool exports multi-clip or trimmed scenes through the scene export service of Flow (and returns `unsupported_front_end` on unverified builds). Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
 
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `match` | `string` | Yes | Exact asset ID, exact name, or case-insensitive substring matching a project asset. |
+| `match` | `string` | Yes | Exact asset ID, media or variant ID, exact name, or case-insensitive substring matching a project asset. |
 
 ### `flow_downloads`
 
