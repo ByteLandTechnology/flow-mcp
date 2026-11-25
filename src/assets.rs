@@ -28,7 +28,7 @@ const MEDIA_URL_LOOKUPS: usize = 4;
 const ASSET_LIST_URL_BUDGET: Duration = Duration::from_secs(10);
 
 /// Media asset or scene item inside a Google Flow project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct FlowAsset {
     /// Flow asset or tile ID.
     pub(crate) id: String,
@@ -78,9 +78,26 @@ pub(crate) struct FlowAsset {
     /// Internal media error payload used for generation failure detection.
     #[serde(default, skip_serializing)]
     pub(crate) media_error: Option<String>,
+    /// True when the primary media item succeeded and can resolve a direct media URL.
+    #[serde(default, skip_serializing)]
+    pub(crate) primary_ready: Option<bool>,
+    /// Ordered markers of failed or canceled workflow history items.
+    #[serde(default, skip_serializing)]
+    pub(crate) failed_history: Vec<String>,
     /// Creation timestamp (`createTime`) string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) created_at: Option<String>,
+}
+
+impl FlowAsset {
+    /// Returns `true` when `failed_history` holds more or newer failure entries than `baseline`.
+    pub(crate) fn has_new_failures(&self, baseline: &[String]) -> bool {
+        self.failed_history.len() > baseline.len()
+            || self.failed_history.iter().any(|item| {
+                self.failed_history.iter().filter(|x| *x == item).count()
+                    > baseline.iter().filter(|x| *x == item).count()
+            })
+    }
 }
 
 /// Snapshot of active project metadata and asset tiles.
@@ -166,15 +183,17 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
+        let primary_not_ready = asset.primary_ready != Some(true)
+            && (asset.media_error.is_some()
+                || matches!(
+                    asset.media_status.as_deref(),
+                    Some("pending" | "scheduled" | "failed" | "canceled")
+                ));
         if !matches!(
             asset.kind.as_str(),
             "video" | "image" | "character" | "audio"
         ) || asset.url.is_some()
-            || asset.media_error.is_some()
-            || matches!(
-                asset.media_status.as_deref(),
-                Some("pending" | "scheduled" | "failed" | "canceled")
-            )
+            || primary_not_ready
         {
             continue;
         }

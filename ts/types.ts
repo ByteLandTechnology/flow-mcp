@@ -185,7 +185,7 @@ export interface SceneClipItem {
 }
 
 /** Project tile model stored inside the Angular tile map. */
-export interface FlowTile extends FlowMediaPayload {
+export interface FlowTile extends Omit<FlowMediaPayload, "Cg"> {
   /** Tile workflow or entity identifier. */
   id?: string | number;
   /** Alias workflow identifier. */
@@ -252,10 +252,20 @@ export interface FlowTile extends FlowMediaPayload {
   trimEndSeconds?: number;
   /** Creation time alias. */
   createTime?: string;
+  /** Workflow media generation history entries on an image or video tile. */
+  history?: FlowMediaPayload[];
   /** Scene clip array. */
   Oc?: SceneClipItem[];
+  /** Scene clip array in build 20261117.10. */
+  Tc?: SceneClipItem[];
+  /** Scene clip array in build 20261120.00. */
+  Uc?: SceneClipItem[];
   /** Scene clip workflow history lookup. */
   Yf?: Map<string, FlowMediaPayload[]> | Record<string, FlowMediaPayload[]>;
+  /** Scene clip workflow history lookup in build 20261117.10. */
+  tg?: Map<string, FlowMediaPayload[]> | Record<string, FlowMediaPayload[]>;
+  /** Scene clip workflow history lookup in build 20261120.00, or legacy trim start in seconds. */
+  Cg?: number | Map<string, FlowMediaPayload[]> | Record<string, FlowMediaPayload[]>;
   /** Tile width alias. */
   width?: number;
   /** Tile height alias. */
@@ -546,6 +556,10 @@ export interface SnapshotAssetItem {
   media_status: string | null;
   /** Failure description when present. */
   media_error: string | null;
+  /** True when the primary media item succeeded and is eligible for URL resolution. */
+  primary_ready?: boolean;
+  /** Ordered identifiers of failed or canceled workflow history items. */
+  failed_history?: string[];
   /** Media width in pixels. */
   width: number | null;
   /** Media height in pixels. */

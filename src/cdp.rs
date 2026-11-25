@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::config::FLOW_URL;
 use crate::engine::NetworkResponseEvent;
 
 /// Error object returned inside a CDP JSON-RPC response frame.
@@ -348,7 +349,9 @@ fn handle_network_event(
                 .remove(req_id)
                 .unwrap_or_else(|| "GET".to_string());
 
-            if status >= 400 && is_error_body_candidate(&url) {
+            let inspect_body = is_error_body_candidate(&url)
+                && (status >= 400 || is_batchexecute_post(&req_method, status, &url));
+            if inspect_body {
                 if pending_bodies.len() > 256 {
                     pending_bodies.clear();
                 }
@@ -378,7 +381,7 @@ fn handle_network_event(
                 return;
             };
             tokio::spawn(async move {
-                let excerpt = fetch_error_excerpt(&t, &req_id_owned).await;
+                let excerpt = fetch_error_excerpt(&t, &req_id_owned, status).await;
                 let _ = tx.send(NetworkResponseEvent {
                     url,
                     method: req_method,
@@ -402,15 +405,240 @@ fn handle_network_event(
     }
 }
 
-/// Returns `true` when `url` belongs to a Flow or Google auth host worth fetching on HTTP errors.
-fn is_error_body_candidate(url: &str) -> bool {
-    url.contains("aisandbox-pa.googleapis.com")
-        || url.contains("labs.google")
-        || url.contains("recaptcha")
+/// Extracts the primary Google Flow host name from [`FLOW_URL`].
+fn flow_host() -> &'static str {
+    FLOW_URL
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split(['/', '?', '#', ':']).next())
+        .filter(|host| !host.is_empty())
+        .unwrap_or("flow.google.com")
 }
 
-/// Fetches and truncates the response body of a failed CDP HTTP request to 500 characters.
-async fn fetch_error_excerpt(transport: &CdpTransport, request_id: &str) -> Option<String> {
+/// Returns `true` when `url` belongs to a Flow or Google auth host worth inspecting for errors.
+fn is_error_body_candidate(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains(&flow_host().to_ascii_lowercase())
+        || lower.contains("aisandbox-pa.googleapis.com")
+        || lower.contains("labs.google")
+        || lower.contains("recaptcha")
+}
+
+/// Returns `true` when the request is an HTTP 200 `batchexecute` `POST` call.
+fn is_batchexecute_post(method: &str, status: u16, url: &str) -> bool {
+    status == 200 && method.eq_ignore_ascii_case("POST") && url.contains("batchexecute")
+}
+
+/// Truncates non-empty error text to at most 500 characters.
+fn truncate_excerpt(text: &str) -> Option<String> {
+    let excerpt: String = text.trim().chars().take(500).collect();
+    let trimmed = excerpt.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Extracts the first readable non-type-URL string inside a nested error payload.
+fn first_detail_text(val: &Value) -> Option<String> {
+    match val {
+        Value::String(s) => {
+            let trimmed = s.trim();
+            (!trimmed.is_empty() && !trimmed.starts_with("type.googleapis.com/"))
+                .then(|| trimmed.to_string())
+        }
+        Value::Array(items) => items.iter().find_map(first_detail_text),
+        Value::Object(map) => ["message", "reason", "detail", "error"]
+            .into_iter()
+            .find_map(|k| map.get(k).and_then(first_detail_text))
+            .or_else(|| map.values().find_map(first_detail_text)),
+        _ => None,
+    }
+}
+
+/// Formats one `wrb.fr` frame when field 5 carries a Google RPC error payload.
+fn format_wrb_error(frame: &[Value]) -> Option<String> {
+    let rpc_id = frame
+        .get(1)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let has_payload = frame.get(2).is_some_and(|v| !v.is_null());
+    let err_val = frame.get(5).filter(|v| !v.is_null())?;
+    let format_prefix = |code: Option<&str>| match (rpc_id, code) {
+        (Some(id), Some(c)) => format!("wrb.fr {id} error {c}"),
+        (Some(id), None) => format!("wrb.fr {id} error"),
+        (None, Some(c)) => format!("wrb.fr error {c}"),
+        (None, None) => "wrb.fr error".to_string(),
+    };
+    match err_val {
+        Value::Array(items) => {
+            if items.is_empty() && has_payload {
+                return None;
+            }
+            let code = items.first().and_then(|v| {
+                v.as_i64().map(|n| n.to_string()).or_else(|| {
+                    v.as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+            });
+            let direct_msg = items
+                .get(1)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let detail_msg = direct_msg.or_else(|| {
+                items
+                    .get(2..)
+                    .and_then(|rest| rest.iter().find_map(first_detail_text))
+            });
+            if has_payload && code.as_deref() == Some("0") && detail_msg.is_none() {
+                return None;
+            }
+            let prefix = format_prefix(code.as_deref());
+            Some(match detail_msg {
+                Some(msg) => format!("{prefix}: {msg}"),
+                None => prefix,
+            })
+        }
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() && has_payload {
+                return None;
+            }
+            let prefix = format_prefix(None);
+            Some(if trimmed.is_empty() {
+                prefix
+            } else {
+                format!("{prefix}: {trimmed}")
+            })
+        }
+        Value::Number(n) => {
+            if has_payload && n.as_i64() == Some(0) {
+                return None;
+            }
+            let code = n.to_string();
+            Some(format_prefix(Some(&code)))
+        }
+        Value::Bool(false) if has_payload => None,
+        other => {
+            let detail = first_detail_text(other)
+                .or_else(|| serde_json::to_string(other).ok())
+                .unwrap_or_default();
+            let prefix = format_prefix(None);
+            Some(if detail.is_empty() {
+                prefix
+            } else {
+                format!("{prefix}: {detail}")
+            })
+        }
+    }
+}
+
+/// Formats one `er` batch executor error frame into a summary string.
+fn format_er_error(frame: &[Value]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for idx in [2usize, 4, 1, 9] {
+        if let Some(val) = frame.get(idx) {
+            let piece = val
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or_else(|| val.as_i64().map(|n| n.to_string()));
+            if let Some(text) = piece
+                && !parts.contains(&text)
+            {
+                parts.push(text);
+            }
+        }
+    }
+    for idx in [5usize, 6, 10] {
+        if let Some(detail) = frame.get(idx).and_then(first_detail_text)
+            && !parts.contains(&detail)
+        {
+            parts.push(detail);
+        }
+    }
+    if parts.is_empty()
+        && let Some(rest) = frame.get(1..)
+        && let Some(fallback) = first_detail_text(&Value::Array(rest.to_vec()))
+            .or_else(|| (!rest.is_empty()).then(|| serde_json::to_string(rest).unwrap_or_default()))
+        && !fallback.is_empty()
+    {
+        parts.push(fallback);
+    }
+    if parts.is_empty() {
+        "er".to_string()
+    } else {
+        format!("er: {}", parts.join(" "))
+    }
+}
+
+/// Collects `wrb.fr` and `er` error descriptions from one parsed `batchexecute` JSON value.
+fn collect_envelope_errors(val: &Value, out: &mut Vec<String>) {
+    let Some(arr) = val.as_array() else {
+        return;
+    };
+    match arr.first().and_then(Value::as_str) {
+        Some("wrb.fr") => {
+            if let Some(err) = format_wrb_error(arr) {
+                out.push(err);
+            }
+        }
+        Some("er") => out.push(format_er_error(arr)),
+        Some(_) => {}
+        None => {
+            for item in arr {
+                collect_envelope_errors(item, out);
+            }
+        }
+    }
+}
+
+/// Parses a Google `batchexecute` response body and returns formatted `wrb.fr` or `er` errors.
+fn parse_batchexecute_error(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    let mut rest = trimmed.strip_prefix(")]}'").unwrap_or(trimmed);
+    let mut errors = Vec::new();
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            let line_end = rest.find('\n').map_or(rest.len(), |i| i + 1);
+            let digits = rest[..line_end].trim();
+            if digits.bytes().all(|b| b.is_ascii_digit()) {
+                rest = &rest[line_end..];
+                continue;
+            }
+        }
+        if rest.starts_with('[') {
+            let mut stream = serde_json::Deserializer::from_str(rest).into_iter::<Value>();
+            if let Some(Ok(parsed)) = stream.next() {
+                collect_envelope_errors(&parsed, &mut errors);
+                let consumed = stream.byte_offset();
+                if consumed > 0 {
+                    rest = &rest[consumed..];
+                    continue;
+                }
+            }
+        }
+        rest = match rest.find('\n') {
+            Some(pos) => &rest[pos + 1..],
+            None => "",
+        };
+    }
+    (!errors.is_empty()).then(|| errors.join("; "))
+}
+
+/// Fetches and truncates the error excerpt of a failed HTTP or `batchexecute` CDP response to 500 characters.
+async fn fetch_error_excerpt(
+    transport: &CdpTransport,
+    request_id: &str,
+    status: u16,
+) -> Option<String> {
     let val = transport
         .call(
             "Network.getResponseBody",
@@ -432,9 +660,14 @@ async fn fetch_error_excerpt(transport: &CdpTransport, request_id: &str) -> Opti
     } else {
         raw_body.to_string()
     };
-    let excerpt = text.chars().take(500).collect::<String>();
-    let trimmed = excerpt.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    if status == 200 {
+        let rpc_err = parse_batchexecute_error(&text)?;
+        truncate_excerpt(&rpc_err)
+    } else if let Some(rpc_err) = parse_batchexecute_error(&text) {
+        truncate_excerpt(&rpc_err)
+    } else {
+        truncate_excerpt(&text)
+    }
 }
 
 /// Returns the shared HTTP client for local Chrome CDP endpoint discovery.
