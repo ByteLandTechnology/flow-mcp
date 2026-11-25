@@ -8,10 +8,12 @@ import { cleanMediaId, findMediaContainer, isTrashedTile, legacyMedia } from "./
 import { agentAttachmentCompatibility } from "./frontend_compatibility";
 import { bindMediaUpload, uploadMediaFiles, waitForMedia } from "./project_upload";
 import type { MediaUploadExport, UploadProgress } from "./project_upload";
+import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { runtimeState } from "./state";
 import type { FlowMediaPayload, FlowTile } from "./types";
 
 /** Tile that can supply a reference in the active Flow project. */
-interface AttachmentTile extends FlowTile {
+export interface AttachmentTile extends FlowTile {
   /** Asset ID shown in the project. */
   id: string;
   /** ID of the primary image or video. */
@@ -88,7 +90,7 @@ function isMediaTile(tile: AttachmentTile): boolean {
 }
 
 /** Returns true when a media variant payload has finished generating or uploading. */
-function isReadyVariant(variant: FlowMediaPayload | undefined): boolean {
+export function isReadyVariant(variant: FlowMediaPayload | undefined): boolean {
   if (!variant || typeof variant !== "object") return true;
   const source = readOwn(variant, "source");
   const uploaded = readOwn(variant, "vp");
@@ -119,7 +121,7 @@ function findVariantByMediaId(
 }
 
 /** Resolves a tile and optional media variant matching a requested project asset or media ID. */
-function resolveRequestedAsset(
+export function resolveRequestedAsset(
   tiles: AttachmentTile[],
   requestedId: string,
 ): { tile: AttachmentTile; variant?: FlowMediaPayload; variantId?: string } | undefined {
@@ -204,6 +206,25 @@ function projectReference(
     reference.mediaId &&
     (!variantId || cleanMediaId(reference.mediaId) === cleanMediaId(variantId))
     ? reference : undefined;
+}
+
+/** Reads current project tiles synchronously from the active page or bound project store. */
+export function readProjectTiles(page?: Record<string, unknown>): AttachmentTile[] {
+  const format = frontendBuild(readBuildLabel())?.operations.agent_attachments;
+  if (page && format) {
+    const store = readOwn(page, format.store);
+    const tiles = readOwn(store, format.tiles);
+    if (typeof tiles === "function") {
+      try {
+        const list: unknown = tiles.call(store);
+        if (Array.isArray(list)) return list as AttachmentTile[];
+      } catch {
+        // Fall back to other live store signals when the page store is initializing.
+      }
+    }
+  }
+  const boundMap = runtimeState.store?.isCurrent() ? runtimeState.store.getTileMap() : null;
+  return boundMap instanceof Map ? ([...boundMap.values()] as AttachmentTile[]) : [];
 }
 
 /** Uses separate keys for character IDs and media IDs. */

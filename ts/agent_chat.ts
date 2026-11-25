@@ -15,10 +15,18 @@ import type {
   Transport,
 } from "./agent_protocol";
 import {
+  clearQuestionReplays,
+  isFailedDraftSession,
+  purgeFailedDrafts,
+  purgeSessionState,
+  reconcileQuestionReplays,
+  replayResumedQuestions,
+  submitQuestionAnswer,
+  waitForSendReadiness,
+} from "./agent_reconcile";
+import {
   agentSettingsOp,
-  resolveQueryClient,
   settingsWritePending,
-  waitForQuerySettlement,
 } from "./agent_settings";
 import type { AgentInjector } from "./agent_settings";
 import {
@@ -278,18 +286,34 @@ async function savedTurns(
   );
 }
 
-/** Waits for active `PROJECT_DETAILS` queries before reading `canSend`. */
+/** Builds the reconciliation context for session caches and send readiness. */
+function cacheContext(bound: Binding) {
+  return {
+    projectId: bound.projectId,
+    page: bound.page,
+    transportField: bound.format.transport,
+    injector: bound.injector,
+    transport: bound.transport,
+    drafts: bound.drafts,
+    canSend: bound.canSend,
+    isCurrent: () => liveBinding(bound.projectId) === bound,
+  };
+}
+
+/** Builds the reconciliation context for question answers and reconnect replays. */
+function replayContext(bound: Binding, sessionId: string) {
+  return {
+    sessionId,
+    transport: bound.transport,
+    flow: bound.flow,
+    questions: bound.questions,
+    isCurrent: () => liveBinding(bound.projectId) === bound,
+  };
+}
+
+/** Waits for active `PROJECT_DETAILS` and `USER_PROFILE` queries before reading `canSend`. */
 async function canSendReady(bound: Binding, signal?: AbortSignal): Promise<boolean> {
-  if (bound.canSend()) return true;
-  const client = resolveQueryClient(bound.injector, bound.page);
-  await waitForQuerySettlement({
-    client,
-    queryKey: ["PROJECT_DETAILS", bound.projectId],
-    ready: () => bound.canSend(),
-    canContinue: () => liveBinding(bound.projectId) === bound,
-    signal,
-  });
-  return bound.canSend();
+  return waitForSendReadiness(cacheContext(bound), signal);
 }
 
 /** Returns true if the project accepts a new Agent turn after `PROJECT_DETAILS` settles. */
@@ -357,13 +381,15 @@ async function send(
   const uploadResult = prepared?.uploaded_asset_ids.length
     ? { uploaded_asset_ids: prepared.uploaded_asset_ids }
     : {};
+  clearQuestionReplays(id);
   if (!session.persisted) {
+    purgeFailedDrafts(cacheContext(bound));
     bound.drafts.add(id);
     flow.init(transport, id, projectId);
   } else {
     loadStoredTurns(bound, id, saved);
   }
-  const number = Math.max(saved.length, local?.Vh.length ?? 0) + 1;
+  const number = saved.length + 1;
   let envelope = prepared?.message;
   if (!envelope) {
     const part = flow.finish(flow.setText(flow.mutable(flow.newPart()), text));
@@ -384,6 +410,9 @@ async function send(
       Aq: permission,
     });
   } catch {
+    if (!session.persisted && isFailedDraftSession(transport, id)) {
+      purgeSessionState(cacheContext(bound), id);
+    }
     return failure("outcome_unknown", {
       session_id: id,
       turn: number,
@@ -395,13 +424,24 @@ async function send(
   const result = conversation(bound, id, saved).find(
     (item) => item.turn === number,
   );
-  return result
-    ? { ok: true as const, ...session, turn: result, ...uploadResult }
-    : failure("agent_submission_not_observed", {
-        session_id: id,
-        turn: number,
-        ...uploadResult,
-      });
+  if (!result) {
+    if (!session.persisted && isFailedDraftSession(transport, id)) {
+      purgeSessionState(cacheContext(bound), id);
+    }
+    return failure("agent_submission_not_observed", {
+      session_id: id,
+      turn: number,
+      ...uploadResult,
+    });
+  }
+  if (
+    !session.persisted &&
+    result.status === "failed" &&
+    isFailedDraftSession(transport, id)
+  ) {
+    purgeSessionState(cacheContext(bound), id);
+  }
+  return { ok: true as const, ...session, turn: result, ...uploadResult };
 }
 
 /** Applies a decision to one action from the requested turn. */
@@ -412,11 +452,17 @@ async function respond(
   stored: StoredTurn[],
 ) {
   const id = session.session_id;
+  reconcileQuestionReplays(
+    replayContext(bound, id),
+    stored,
+    STORED_TURN_IN_PROGRESS,
+  );
   const current = conversation(bound, id, stored).at(-1);
   const action =
-    current?.turn === req.turn &&
-    current?.pending_actions.find((item) => item.action_id === req.action_id);
-  if (!action) return failure("agent_action_not_pending");
+    current && current.turn === req.turn
+      ? current.pending_actions.find((item) => item.action_id === req.action_id)
+      : undefined;
+  if (!current || !action) return failure("agent_action_not_pending");
   if (action.type === "permission") {
     const decision = req.decision && PERMISSION_DECISIONS[req.decision];
     if (!decision) return failure("invalid_agent_permission_decision");
@@ -440,12 +486,13 @@ async function respond(
   } else if (action.type === "question") {
     const answers = req.answers && questionAnswers(action, req.answers);
     if (!answers) return failure("invalid_agent_question_answers");
-    bound.questions.OA({
-      sessionId: id,
-      Ig: action.action_id,
-      Qj: answers,
-      hi: AGENT_SURFACE,
-    });
+    const submitted = await submitQuestionAnswer(
+      { ...replayContext(bound, id), turn: req.turn ?? current.turn },
+      action.action_id,
+      answers,
+    );
+    if (submitted === "project_changed") return failure("agent_project_changed");
+    if (submitted !== "ok") return failure("agent_action_not_pending");
   } else {
     const canSend = await readyToSend(bound);
     if (liveBinding(bound.projectId) !== bound)
@@ -457,6 +504,7 @@ async function respond(
       return failure("agent_turn_active_or_unavailable");
     const plan = req.decision && PLAN_DECISIONS[req.decision];
     if (!plan) return failure("invalid_agent_plan_decision");
+    clearQuestionReplays(id);
     loadStoredTurns(bound, id, stored);
     bound.flow.plan(bound.transport, {
       ua: bound.projectId,
@@ -543,6 +591,7 @@ export async function agentOp(request: AgentRequest) {
     ]);
     if (liveBinding(projectId) !== bound)
       return failure("agent_project_changed");
+    purgeFailedDrafts(cacheContext(bound));
     return {
       ok: true as const,
       project_id: projectId,
@@ -565,15 +614,19 @@ export async function agentOp(request: AgentRequest) {
     request.action === "delete_session"
   ) {
     if (transport.ha.has(id)) return failure("agent_turn_active");
-    if (!session.persisted)
-      return failure("agent_session_not_saved", { session_id: id });
     if (request.action === "rename_session") {
+      if (!session.persisted)
+        return failure("agent_session_not_saved", { session_id: id });
       const title = request.title?.trim() ?? "";
       await transport.W1(id, title, projectId);
       return { ok: true as const, ...session, title };
     }
-    await transport.yL(id);
-    transport.ka.yL(id);
+    if (session.persisted) {
+      await transport.yL(id);
+      if (liveBinding(projectId) !== bound)
+        return failure("agent_project_changed");
+    }
+    purgeSessionState(cacheContext(bound), id);
     return { ok: true as const, ...session, deleted: true };
   }
 
@@ -603,6 +656,9 @@ export async function agentOp(request: AgentRequest) {
       })
     )
       return failure("agent_turn_cannot_resume");
+    await replayResumedQuestions(replayContext(bound, id));
+    if (liveBinding(projectId) !== bound)
+      return failure("agent_project_changed");
     return {
       ok: true as const,
       ...session,
@@ -617,10 +673,16 @@ export async function agentOp(request: AgentRequest) {
       current.Vh.length + 1 !== request.turn
     )
       return failure("agent_turn_not_active");
+    clearQuestionReplays(id);
     transport.ev(id);
     const turn = conversation(bound, id, stored).at(-1);
     return { ok: true as const, ...session, turn };
   }
+  reconcileQuestionReplays(
+    replayContext(bound, id),
+    stored,
+    STORED_TURN_IN_PROGRESS,
+  );
   const turns = conversation(bound, id, stored);
   if (request.action === "get_turn") {
     const turn = turns.find((item) => item.turn === request.turn);

@@ -3,6 +3,14 @@
 
 // Format Agent turns, pending actions, expired elicitations, and question answers.
 
+import {
+  hasNonFailedMedia,
+  mergeDisconnectedTurn,
+  needsTurnHydration,
+  normalizeToolMediaStatus,
+  reconcileTurnMedia,
+} from "./agent_reconcile";
+import type { ToolMediaItem } from "./agent_reconcile";
 import type {
   AgentRequest,
   FlowAgentExports,
@@ -46,6 +54,8 @@ export interface TurnContext {
   flow: FlowAgentExports;
   /** Agent transport service for this document. */
   transport: Transport;
+  /** Live project page component when bound. */
+  page?: Record<string, unknown>;
 }
 
 /** Returns true when a later reply block in the same turn supersedes a proposed plan. */
@@ -67,6 +77,7 @@ function isLaterOutputBlock(block: ReplyBlock): boolean {
       return block.content.trim().length > 0;
     case "a2ui":
     case "plan":
+    case "view_agent_memory":
       return true;
     case "permission":
       return block.card.Vz !== undefined;
@@ -81,8 +92,9 @@ function isLaterOutputBlock(block: ReplyBlock): boolean {
 function expiredElicitationError(
   blocks: ReplyBlock[],
   active: boolean,
+  media: readonly ToolMediaItem[],
 ): string | undefined {
-  if (active) return undefined;
+  if (active || hasNonFailedMedia(media)) return undefined;
   let lastIndex = -1;
   let lastKind: "permission" | "question" | undefined;
   for (let i = 0; i < blocks.length; i++) {
@@ -118,6 +130,7 @@ function pendingActions(
   latest: boolean,
 ): PendingAction[] {
   const actions: PendingAction[] = [];
+  let hasOpenQuestion = false;
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index];
     if (
@@ -139,10 +152,12 @@ function pendingActions(
     }
     if (
       active &&
+      !hasOpenQuestion &&
       block.type === "question" &&
       block.card.Qj === undefined &&
       !block.card.Ls
     ) {
+      hasOpenQuestion = true;
       actions.push({
         type: "question",
         action_id: block.card.id,
@@ -194,9 +209,21 @@ function storedStatus(state: number): TurnStatus {
   }
 }
 
-/** Reads actual media IDs from the original Agent tool results. */
-function legacyTurnMedia(flow: FlowAgentExports, turn: LiveTurn): string[] {
-  const ids = new Set<string>();
+/** Reads a trimmed string field from a legacy tool struct row when present. */
+function readToolField(
+  flow: FlowAgentExports,
+  fields: Map<string, object>,
+  key: string,
+): string | undefined {
+  const value = fields.get(key);
+  if (!value) return undefined;
+  const text = flow.valueString(value).trim();
+  return text || undefined;
+}
+
+/** Reads media items, statuses, and errors from the original Agent tool results. */
+function legacyTurnMedia(flow: FlowAgentExports, turn: LiveTurn): ToolMediaItem[] {
+  const items = new Map<string, ToolMediaItem>();
   for (const message of turn.Yu) {
     for (const event of flow.turns(message, flow.toolEventType, 2)) {
       const result = flow.oneOf(
@@ -207,12 +234,22 @@ function legacyTurnMedia(flow: FlowAgentExports, turn: LiveTurn): string[] {
       );
       if (!result) continue;
       for (const row of flow.resultItems(result)) {
-        const media = flow.structFields(row).get("media_id");
-        if (media) ids.add(flow.valueString(media));
+        const fields = flow.structFields(row);
+        const mediaId = readToolField(flow, fields, "media_id");
+        if (!mediaId) continue;
+        const rawStatus = readToolField(flow, fields, "status") ?? "";
+        const error =
+          readToolField(flow, fields, "error_code") ??
+          readToolField(flow, fields, "error");
+        items.set(mediaId, {
+          media_id: mediaId,
+          status: normalizeToolMediaStatus(rawStatus, error !== undefined),
+          error,
+        });
       }
     }
   }
-  return [...ids].filter(Boolean);
+  return [...items.values()];
 }
 
 /** Formats one Agent turn using the same message model that the chat page uses. */
@@ -221,20 +258,65 @@ function formatTurn(
   id: string,
   turn: LiveTurn,
   position: TurnPosition,
+  prior?: LiveTurn,
 ) {
   const { number, status, active, latest } = position;
-  const [user, reply] = context.flow.reply({ turn, XJ: number - 1, yc: active });
-  const blocks = reply.Oh ?? turn.Tf?.Oh ?? [];
-  const rawError = reply.errorMessage ?? turn.errorMessage;
+  const disconnected = status === "in_progress" && !active
+    ? mergeDisconnectedTurn(context.flow, turn, prior, number - 1)
+    : undefined;
+  const decoded = disconnected ? undefined : context.flow.reply({ turn, XJ: number - 1, yc: active });
+  const user = disconnected ? disconnected.user : decoded![0];
+  const replyText = disconnected ? disconnected.text : decoded![1].text;
+  const responseId = disconnected ? disconnected.responseId : decoded![1].ci;
+  const blocks = disconnected
+    ? disconnected.blocks
+    : (decoded![1].Oh ?? turn.Tf?.Oh ?? []);
+  const rawError = disconnected
+    ? disconnected.rawError
+    : (decoded![1].errorMessage ?? turn.errorMessage);
+  const streamMedia = disconnected ? disconnected.streamMedia : turn.Tf?.Bx;
+  const hasStream = disconnected ? disconnected.hasStream : Boolean(turn.Tf);
+  const legacySources = disconnected ? disconnected.legacySources : [turn];
+
+  const mediaById = new Map<string, ToolMediaItem>();
+  for (const [mediaId, item] of streamMedia ?? []) {
+    mediaById.set(mediaId, {
+      media_id: mediaId,
+      status: item.status,
+      error: item.errorCode,
+    });
+  }
+  for (const source of legacySources) {
+    if (hasStream && source.Yu.length === 0) continue;
+    for (const item of legacyTurnMedia(context.flow, source)) {
+      const current = mediaById.get(item.media_id);
+      if (!current) {
+        if (!hasStream || mediaById.size === 0) mediaById.set(item.media_id, item);
+        continue;
+      }
+      mediaById.set(item.media_id, {
+        media_id: item.media_id,
+        status:
+          item.status === "failed" || item.status === "pending"
+            ? item.status
+            : current.status,
+        error: current.error ?? item.error,
+      });
+    }
+  }
+  const media = reconcileTurnMedia([...mediaById.values()], context.page);
+
   const timeoutError = status !== "stopped" && status !== "in_progress"
-    ? expiredElicitationError(blocks, active)
+    ? expiredElicitationError(blocks, active, media)
     : undefined;
   const pending = pendingActions(
     blocks,
     active,
     latest && status === "completed" && !timeoutError,
   );
-  const legacyRequest = reply.jna ?? context.transport.ka.Ma().get(id);
+  const legacyRequest =
+    (disconnected ? disconnected.legacyRequest : decoded![1].jna) ??
+    context.transport.ka.Ma().get(id);
   if (!active && latest && status === "completed" && !timeoutError && legacyRequest) {
     pending.push({
       type: "permission",
@@ -244,16 +326,6 @@ function formatTurn(
       credits: legacyRequest.qsa,
     });
   }
-  const media = [...(turn.Tf?.Bx ?? [])].map(([mediaId, item]) => ({
-    media_id: mediaId,
-    status: item.status,
-    error: item.errorCode,
-  }));
-  if (!turn.Tf) {
-    for (const mediaId of legacyTurnMedia(context.flow, turn)) {
-      media.push({ media_id: mediaId, status: "success", error: undefined });
-    }
-  }
   const effectiveStatus = pending.length > 0
     ? "action_required"
     : timeoutError
@@ -262,7 +334,7 @@ function formatTurn(
   return {
     turn: number,
     status: effectiveStatus,
-    response_id: reply.ci,
+    response_id: responseId,
     connected: effectiveStatus === "in_progress" ? active : undefined,
     user: {
       text: user.text,
@@ -274,7 +346,7 @@ function formatTurn(
         : undefined,
     },
     assistant: {
-      text: reply.text,
+      text: replyText,
       media,
       rich_content: blocks.flatMap((b) => (b.type === "a2ui" ? [b.round] : [])),
     },
@@ -306,10 +378,21 @@ export function conversation(context: TurnContext, id: string, stored: StoredTur
       });
     }
     const state = saved?.getState();
-    if (
-      saved &&
-      (!prior || (state !== undefined && state !== STORED_TURN_IN_PROGRESS))
-    ) {
+    if (saved && state === STORED_TURN_IN_PROGRESS) {
+      return formatTurn(
+        context,
+        id,
+        context.flow.decode(saved),
+        {
+          number,
+          status: "in_progress",
+          active: false,
+          latest,
+        },
+        prior,
+      );
+    }
+    if (saved && (!prior || state !== undefined)) {
       return formatTurn(context, id, context.flow.decode(saved), {
         number,
         status: storedStatus(state ?? 0),
@@ -341,7 +424,7 @@ export function loadStoredTurns(
 ): void {
   const { flow, transport } = context;
   const local = transport.ka.ha().get(sessionId);
-  if (turns.length > (local?.Vh.length ?? 0)) {
+  if (needsTurnHydration(local?.Vh, turns)) {
     flow.hydrate(transport.ka, {
       sessionId,
       BF: turns.map(flow.decode),

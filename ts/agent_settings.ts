@@ -74,6 +74,12 @@ export interface QueryClient {
   queryCache?: {
     /** Finds the project query with this exact key. */
     find?: (options: { queryKey: unknown[]; exact: true }) => SettingsQuery | undefined;
+    /** Finds all cached queries matching the optional key filter. */
+    findAll?: (options?: { queryKey?: unknown[]; exact?: boolean }) => SettingsQuery[];
+    /** Returns every cached query entry in the registry. */
+    getAll?: () => SettingsQuery[];
+    /** Removes a cached query entry from the registry. */
+    remove?: (query: SettingsQuery) => void;
   };
 }
 

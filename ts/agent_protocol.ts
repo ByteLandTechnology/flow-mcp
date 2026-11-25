@@ -231,7 +231,8 @@ export type ReplyBlock =
   | { type: "permission"; card: PermissionCard }
   | { type: "question"; card: QuestionCard }
   | { type: "plan"; Gz: PlanCard }
-  | { type: "a2ui"; round: unknown };
+  | { type: "a2ui"; round: unknown }
+  | { type: "view_agent_memory" };
 
 /** Media counts and credits from a permission request. */
 interface PermissionSummary {
