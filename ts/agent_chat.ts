@@ -7,6 +7,7 @@ import { buildAttachmentMessage } from "./agent_attachments";
 import { MEDIA_UPLOAD_TIMEOUT_MS, takeMediaFiles, waitForMedia } from "./project_upload";
 import type {
   AgentDecision,
+  AgentReplayEntry,
   AgentRequest,
   FlowAgentExports,
   QuestionResponder,
@@ -15,15 +16,17 @@ import type {
   Transport,
 } from "./agent_protocol";
 import {
-  clearQuestionReplays,
   isFailedDraftSession,
   purgeFailedDrafts,
   purgeSessionState,
-  reconcileQuestionReplays,
-  replayResumedQuestions,
-  submitQuestionAnswer,
   waitForSendReadiness,
 } from "./agent_reconcile";
+import {
+  clearInFlightAnswers,
+  isStreamAttached,
+  replayQuestionAnswers,
+  sendQuestionOnStream,
+} from "./agent_replay";
 import {
   agentSettingsOp,
   settingsWritePending,
@@ -51,6 +54,8 @@ interface Binding {
   format: AgentChatFormat;
   /** Angular injector of the project page. */
   injector: AgentInjector;
+  /** Composer service on the project page. */
+  composer: object;
   /** Library exports used by this binding. */
   flow: FlowAgentExports;
   /** Agent transport service for this document. */
@@ -203,7 +208,8 @@ export function bindAgent(
         typeof transport.ev !== "function" ||
         typeof questions?.OA !== "function" ||
         !permissions ||
-        typeof composer?.wb !== "function"
+        !composer ||
+        typeof composer.wb !== "function"
       )
         continue;
       binding = {
@@ -211,6 +217,7 @@ export function bindAgent(
         format,
         page,
         injector,
+        composer,
         transport,
         questions,
         permissions,
@@ -231,7 +238,44 @@ export async function agentAllocate(projectId: string) {
   const bound = liveBinding(projectId);
   if (!bound) return failure("agent_project_changed");
   const { id } = await bound.flow.allocate();
+  bound.drafts.add(id);
   return { ok: true as const, session_id: id };
+}
+
+/** Builds the reconciliation context for session caches and send readiness. */
+function cacheContext(bound: Binding) {
+  return {
+    projectId: bound.projectId,
+    page: bound.page,
+    transportField: bound.format.transport,
+    injector: bound.injector,
+    composer: bound.composer,
+    transport: bound.transport,
+    drafts: bound.drafts,
+    canSend: bound.canSend,
+    isCurrent: () => liveBinding(bound.projectId) === bound,
+  };
+}
+
+/** Purges draft tracking, in-flight answers, `TurnStore` state, signals, and query caches. */
+async function purgeBoundSession(bound: Binding, sessionId: string): Promise<void> {
+  clearInFlightAnswers(bound.transport, sessionId);
+  await purgeSessionState(cacheContext(bound), sessionId);
+}
+
+/** Clears local drafts, turn signals, active session state, and query caches for one session. */
+export async function agentPurge(projectId: string, sessionId: string) {
+  const bound = liveBinding(projectId);
+  if (!bound) return failure("agent_project_changed");
+  await purgeBoundSession(bound, sessionId);
+  return { ok: true as const, session_id: sessionId };
+}
+
+/** Replays recorded question answers once per `(session, turn, action, stream)` after reconnect. */
+export function agentReplay(projectId: string, entries: AgentReplayEntry[]) {
+  const bound = liveBinding(projectId);
+  if (!bound) return { ok: false as const, replayed: 0, turns: {} };
+  return replayQuestionAnswers(bound, entries);
 }
 
 /** Reads a fresh session list from Flow for the pinned project. */
@@ -284,31 +328,6 @@ async function savedTurns(
     flow.turnType,
     2,
   );
-}
-
-/** Builds the reconciliation context for session caches and send readiness. */
-function cacheContext(bound: Binding) {
-  return {
-    projectId: bound.projectId,
-    page: bound.page,
-    transportField: bound.format.transport,
-    injector: bound.injector,
-    transport: bound.transport,
-    drafts: bound.drafts,
-    canSend: bound.canSend,
-    isCurrent: () => liveBinding(bound.projectId) === bound,
-  };
-}
-
-/** Builds the reconciliation context for question answers and reconnect replays. */
-function replayContext(bound: Binding, sessionId: string) {
-  return {
-    sessionId,
-    transport: bound.transport,
-    flow: bound.flow,
-    questions: bound.questions,
-    isCurrent: () => liveBinding(bound.projectId) === bound,
-  };
 }
 
 /** Waits for active `PROJECT_DETAILS` and `USER_PROFILE` queries before reading `canSend`. */
@@ -381,15 +400,18 @@ async function send(
   const uploadResult = prepared?.uploaded_asset_ids.length
     ? { uploaded_asset_ids: prepared.uploaded_asset_ids }
     : {};
-  clearQuestionReplays(id);
+  clearInFlightAnswers(transport, id);
   if (!session.persisted) {
-    purgeFailedDrafts(cacheContext(bound));
+    await purgeFailedDrafts(cacheContext(bound));
+    if (liveBinding(projectId) !== bound)
+      return failure("agent_project_changed");
     bound.drafts.add(id);
     flow.init(transport, id, projectId);
   } else {
     loadStoredTurns(bound, id, saved);
   }
-  const number = saved.length + 1;
+  const currentLocal = transport.ka.ha().get(id);
+  const number = Math.max(saved.length, currentLocal?.Vh.length ?? 0) + 1;
   let envelope = prepared?.message;
   if (!envelope) {
     const part = flow.finish(flow.setText(flow.mutable(flow.newPart()), text));
@@ -411,7 +433,7 @@ async function send(
     });
   } catch {
     if (!session.persisted && isFailedDraftSession(transport, id)) {
-      purgeSessionState(cacheContext(bound), id);
+      await purgeBoundSession(bound, id);
     }
     return failure("outcome_unknown", {
       session_id: id,
@@ -426,20 +448,13 @@ async function send(
   );
   if (!result) {
     if (!session.persisted && isFailedDraftSession(transport, id)) {
-      purgeSessionState(cacheContext(bound), id);
+      await purgeBoundSession(bound, id);
     }
     return failure("agent_submission_not_observed", {
       session_id: id,
       turn: number,
       ...uploadResult,
     });
-  }
-  if (
-    !session.persisted &&
-    result.status === "failed" &&
-    isFailedDraftSession(transport, id)
-  ) {
-    purgeSessionState(cacheContext(bound), id);
   }
   return { ok: true as const, ...session, turn: result, ...uploadResult };
 }
@@ -452,11 +467,6 @@ async function respond(
   stored: StoredTurn[],
 ) {
   const id = session.session_id;
-  reconcileQuestionReplays(
-    replayContext(bound, id),
-    stored,
-    STORED_TURN_IN_PROGRESS,
-  );
   const current = conversation(bound, id, stored).at(-1);
   const action =
     current && current.turn === req.turn
@@ -478,21 +488,30 @@ async function respond(
         permission: decision.code,
       });
     }
+    const entry = bound.transport.ha.get(id);
+    if (!entry) return failure("agent_turn_not_active");
+    const attached = isStreamAttached(entry);
     bound.flow.permission(bound.permissions, {
       sessionId: id,
       Ig: action.action_id,
       action: decision.code,
     });
+    const after = bound.transport.ha.get(id);
+    if (attached && after !== undefined && !isStreamAttached(after)) {
+      return failure("agent_action_not_pending");
+    }
   } else if (action.type === "question") {
     const answers = req.answers && questionAnswers(action, req.answers);
     if (!answers) return failure("invalid_agent_question_answers");
-    const submitted = await submitQuestionAnswer(
-      { ...replayContext(bound, id), turn: req.turn ?? current.turn },
+    const outcome = sendQuestionOnStream(
+      bound,
+      id,
+      req.turn ?? current.turn,
       action.action_id,
       answers,
     );
-    if (submitted === "project_changed") return failure("agent_project_changed");
-    if (submitted !== "ok") return failure("agent_action_not_pending");
+    if (outcome === "turn_not_active") return failure("agent_turn_not_active");
+    if (outcome !== "ok") return failure("agent_action_not_pending");
   } else {
     const canSend = await readyToSend(bound);
     if (liveBinding(bound.projectId) !== bound)
@@ -504,7 +523,7 @@ async function respond(
       return failure("agent_turn_active_or_unavailable");
     const plan = req.decision && PLAN_DECISIONS[req.decision];
     if (!plan) return failure("invalid_agent_plan_decision");
-    clearQuestionReplays(id);
+    clearInFlightAnswers(bound.transport, id);
     loadStoredTurns(bound, id, stored);
     bound.flow.plan(bound.transport, {
       ua: bound.projectId,
@@ -543,8 +562,21 @@ async function sendUserMessage(
     text: request.message ?? "",
     attachments: signal ? { assetIds, files, signal } : undefined,
   };
-  if (request.action === "create_session")
-    return send(bound, draftSession(id), [], input);
+  if (request.action === "create_session") {
+    const created = await send(bound, draftSession(id), [], input);
+    if (!created.ok) {
+      await purgeBoundSession(bound, id);
+      return created;
+    }
+    if (created.turn.status === "failed") {
+      const saved = (await savedSessions(bound).catch(() => [])).find(
+        (item) => item.session_id === id,
+      );
+      if (saved) return { ...created, ...saved };
+      await purgeBoundSession(bound, id);
+    }
+    return created;
+  }
 
   try {
     const session = await waitForMedia(
@@ -584,6 +616,12 @@ export async function agentOp(request: AgentRequest) {
     }, request.settings ?? undefined);
   }
   const id = request.session_id;
+  if (request.drafts) {
+    for (const draftId of request.drafts) bound.drafts.add(draftId);
+  }
+  if (request.draft && id) {
+    bound.drafts.add(id);
+  }
   if (request.action === "list_sessions") {
     const [saved, canSend] = await Promise.all([
       savedSessions(bound),
@@ -591,7 +629,9 @@ export async function agentOp(request: AgentRequest) {
     ]);
     if (liveBinding(projectId) !== bound)
       return failure("agent_project_changed");
-    purgeFailedDrafts(cacheContext(bound));
+    await purgeFailedDrafts(cacheContext(bound));
+    if (liveBinding(projectId) !== bound)
+      return failure("agent_project_changed");
     return {
       ok: true as const,
       project_id: projectId,
@@ -626,7 +666,7 @@ export async function agentOp(request: AgentRequest) {
       if (liveBinding(projectId) !== bound)
         return failure("agent_project_changed");
     }
-    purgeSessionState(cacheContext(bound), id);
+    await purgeBoundSession(bound, id);
     return { ok: true as const, ...session, deleted: true };
   }
 
@@ -656,9 +696,6 @@ export async function agentOp(request: AgentRequest) {
       })
     )
       return failure("agent_turn_cannot_resume");
-    await replayResumedQuestions(replayContext(bound, id));
-    if (liveBinding(projectId) !== bound)
-      return failure("agent_project_changed");
     return {
       ok: true as const,
       ...session,
@@ -673,16 +710,11 @@ export async function agentOp(request: AgentRequest) {
       current.Vh.length + 1 !== request.turn
     )
       return failure("agent_turn_not_active");
-    clearQuestionReplays(id);
+    clearInFlightAnswers(transport, id);
     transport.ev(id);
     const turn = conversation(bound, id, stored).at(-1);
     return { ok: true as const, ...session, turn };
   }
-  reconcileQuestionReplays(
-    replayContext(bound, id),
-    stored,
-    STORED_TURN_IN_PROGRESS,
-  );
   const turns = conversation(bound, id, stored);
   if (request.action === "get_turn") {
     const turn = turns.find((item) => item.turn === request.turn);

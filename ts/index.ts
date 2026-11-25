@@ -11,6 +11,8 @@ import {
   agentBusy,
   agentOp,
   agentPrototype,
+  agentPurge,
+  agentReplay,
   agentStatus,
   bindAgent,
 } from "./agent_chat";
@@ -63,6 +65,8 @@ if (!window.__flowMcp) {
     agentBusy,
     agentOp,
     agentPrototype,
+    agentPurge,
+    agentReplay,
     agentStatus,
     bindAgent,
     bindAngularViews,

@@ -252,6 +252,19 @@ function legacyTurnMedia(flow: FlowAgentExports, turn: LiveTurn): ToolMediaItem[
   return [...items.values()];
 }
 
+/** Reads field 6 (`response_id`) from a raw `StoredTurn` protobuf when present. */
+function storedTurnResponseId(
+  flow: FlowAgentExports,
+  saved: StoredTurn | undefined,
+): string | undefined {
+  if (!saved) return undefined;
+  try {
+    return flow.string(saved, 6) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Formats one Agent turn using the same message model that the chat page uses. */
 function formatTurn(
   context: TurnContext,
@@ -259,15 +272,18 @@ function formatTurn(
   turn: LiveTurn,
   position: TurnPosition,
   prior?: LiveTurn,
+  storedResponseId?: string,
 ) {
   const { number, status, active, latest } = position;
   const disconnected = status === "in_progress" && !active
-    ? mergeDisconnectedTurn(context.flow, turn, prior, number - 1)
+    ? mergeDisconnectedTurn(context.flow, turn, prior, number - 1, storedResponseId)
     : undefined;
   const decoded = disconnected ? undefined : context.flow.reply({ turn, XJ: number - 1, yc: active });
   const user = disconnected ? disconnected.user : decoded![0];
   const replyText = disconnected ? disconnected.text : decoded![1].text;
-  const responseId = disconnected ? disconnected.responseId : decoded![1].ci;
+  const responseId = disconnected
+    ? disconnected.responseId
+    : (decoded![1].ci || storedResponseId);
   const blocks = disconnected
     ? disconnected.blocks
     : (decoded![1].Oh ?? turn.Tf?.Oh ?? []);
@@ -351,7 +367,7 @@ function formatTurn(
       rich_content: blocks.flatMap((b) => (b.type === "a2ui" ? [b.round] : [])),
     },
     pending_actions: pending,
-    error: timeoutError ?? rawError,
+    error: effectiveStatus === "in_progress" ? undefined : (timeoutError ?? rawError),
   };
 }
 
@@ -359,6 +375,7 @@ function formatTurn(
 export function conversation(context: TurnContext, id: string, stored: StoredTurn[]) {
   const local = context.transport.ka.ha().get(id);
   const inProgress = local?.xe;
+  const hasTransport = context.transport.ha.has(id);
   const count = Math.max(
     stored.length,
     (local?.Vh.length ?? 0) + (inProgress ? 1 : 0),
@@ -373,11 +390,12 @@ export function conversation(context: TurnContext, id: string, stored: StoredTur
       return formatTurn(context, id, inProgress, {
         number,
         status: "in_progress",
-        active: true,
+        active: hasTransport,
         latest,
       });
     }
     const state = saved?.getState();
+    const savedResponseId = storedTurnResponseId(context.flow, saved);
     if (saved && state === STORED_TURN_IN_PROGRESS) {
       return formatTurn(
         context,
@@ -390,15 +408,23 @@ export function conversation(context: TurnContext, id: string, stored: StoredTur
           latest,
         },
         prior,
+        savedResponseId,
       );
     }
     if (saved && (!prior || state !== undefined)) {
-      return formatTurn(context, id, context.flow.decode(saved), {
-        number,
-        status: storedStatus(state ?? 0),
-        active: false,
-        latest,
-      });
+      return formatTurn(
+        context,
+        id,
+        context.flow.decode(saved),
+        {
+          number,
+          status: storedStatus(state ?? 0),
+          active: false,
+          latest,
+        },
+        undefined,
+        savedResponseId,
+      );
     }
     if (!prior) throw new Error("Flow did not return a complete turn list");
     const status =

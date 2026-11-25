@@ -55,13 +55,15 @@ interface QueryState {
 }
 
 /** Native query entry in the shared query cache. */
-interface SettingsQuery {
+export interface SettingsQuery {
   /** Key of the cached query. */
   queryKey: unknown[];
   /** Current query state. */
   state?: QueryState;
   /** Returns true when at least one observer enables this query. */
   isActive?: () => boolean;
+  /** Cancels an active network fetch for this query. */
+  cancel?: (options?: { revert?: boolean }) => Promise<void>;
   /** Fetches current project metadata from Flow. */
   fetch(options?: unknown, control?: { cancelRefetch: boolean }): Promise<object>;
 }
@@ -72,8 +74,8 @@ export interface QueryClient {
   ha?: (key: unknown[]) => unknown;
   /** Query registry. */
   queryCache?: {
-    /** Finds the project query with this exact key. */
-    find?: (options: { queryKey: unknown[]; exact: true }) => SettingsQuery | undefined;
+    /** Finds the project query with this key. */
+    find?: (options: { queryKey: unknown[]; exact?: boolean }) => SettingsQuery | undefined;
     /** Finds all cached queries matching the optional key filter. */
     findAll?: (options?: { queryKey?: unknown[]; exact?: boolean }) => SettingsQuery[];
     /** Returns every cached query entry in the registry. */
@@ -142,6 +144,17 @@ function isCatalogue(value: unknown): value is ModelCatalogue {
     Boolean(readOwn(value, "Wx"));
 }
 
+/** Returns true when `value` exposes a query cache lookup method. */
+function hasQueryCache(value: unknown): value is QueryClient {
+  if (!value || typeof value !== "object") return false;
+  const cache = (value as QueryClient).queryCache;
+  return (
+    typeof cache?.find === "function" ||
+    typeof cache?.findAll === "function" ||
+    typeof cache?.getAll === "function"
+  );
+}
+
 /** Resolves the shared native `QueryClient` from the active page injector or component. */
 export function resolveQueryClient(
   injector: AgentInjector,
@@ -153,17 +166,15 @@ export function resolveQueryClient(
     const token = readOwn(namespace, support.format.exports.projectService);
     if (typeof token === "function") {
       const project = service(injector, token);
-      const client = readOwn(project, support.format.queryClient) as QueryClient | undefined;
-      if (typeof client?.queryCache?.find === "function") return client;
+      const client = readOwn(project, support.format.queryClient);
+      if (hasQueryCache(client)) return client;
     }
   }
   for (const value of Object.values(page ?? {})) {
     if (!value || typeof value !== "object") continue;
-    const direct = value as QueryClient;
-    if (typeof direct.queryCache?.find === "function") return direct;
+    if (hasQueryCache(value)) return value;
     for (const nested of Object.values(value as Record<string, unknown>)) {
-      const candidate = nested as QueryClient | undefined;
-      if (typeof candidate?.queryCache?.find === "function") return candidate;
+      if (hasQueryCache(nested)) return nested;
     }
   }
   return undefined;
@@ -192,9 +203,12 @@ export async function waitForQuerySettlement(options: QueryWaitOptions): Promise
   const start = Date.now();
   const deadline = start + COLD_QUERY_TIMEOUT_MS;
   const graceDeadline = start + COLD_QUERY_GRACE_MS;
+  let sawPending = false;
   while (Date.now() < deadline && canContinue() && !signal?.aborted) {
     if (ready()) return;
-    const query = client?.queryCache?.find?.({ queryKey, exact: true });
+    const query =
+      client?.queryCache?.find?.({ queryKey, exact: true }) ??
+      client?.queryCache?.find?.({ queryKey });
     const status = query?.state?.status;
     const fetchStatus = query?.state?.fetchStatus;
     const activeObserver = typeof query?.isActive === "function"
@@ -206,8 +220,12 @@ export async function waitForQuerySettlement(options: QueryWaitOptions): Promise
         : client?.queryCache?.find && Date.now() < graceDeadline,
     );
     if (!queryPending && !extraPending?.()) break;
+    sawPending = true;
     const remaining = Math.max(1, Math.min(COLD_QUERY_POLL_MS, deadline - Date.now()));
     await delay(remaining);
+  }
+  if (sawPending && !ready() && canContinue() && !signal?.aborted) {
+    await delay(0);
   }
 }
 
