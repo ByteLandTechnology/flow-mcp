@@ -7,11 +7,13 @@ import { createScene } from "./angular";
 import { delay, isTrashedTile, legacyTile } from "./dom";
 import { activeProjectStoreFormat, readBuildLabel } from "./frontend_builds";
 import {
+  beginProjectMutation,
   clearProjectStore,
   currentProjectStore,
+  fetchProjectStore,
   projectMutationPending,
   projectsToRefresh,
-  readConfirmedProjectStore,
+  refreshAfterUnknown,
 } from "./project_store";
 import { sceneContents } from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
@@ -104,6 +106,9 @@ function findLiveSceneTile(
 
 /** Returns true when `actual` matches a recorded pre-submission clip `prior`. */
 function clipMatchesPrior(actual: ClipIdentity, prior: ClipIdentity): boolean {
+  if (prior.workflowId !== null && actual.workflowId !== null) {
+    return actual.workflowId === prior.workflowId;
+  }
   if (prior.workflowId !== null && actual.workflowId === prior.workflowId) {
     return true;
   }
@@ -128,7 +133,7 @@ function clipMatchesExpected(actual: ClipIdentity, expected: ExpectedClip): bool
   );
 }
 
-/** Checks whether `afterScene` holds all `before` clips plus all `expected` clips. */
+/** Checks whether `afterScene` holds all `before` and `expected` clips in the intended order and count. */
 function sceneClipsConfirmed(
   before: ClipIdentity[],
   afterScene: FlowTile,
@@ -142,28 +147,12 @@ function sceneClipsConfirmed(
     typeof position === "number" && Number.isFinite(position)
       ? Math.max(0, Math.min(Math.trunc(position), before.length))
       : before.length;
-  const matchesAtIndex =
+  return (
     before.slice(0, insertAt).every((b, i) => clipMatchesPrior(after[i], b)) &&
     expected.every((exp, i) => clipMatchesExpected(after[insertAt + i], exp)) &&
     before
       .slice(insertAt)
-      .every((b, i) => clipMatchesPrior(after[insertAt + expected.length + i], b));
-  if (matchesAtIndex) return true;
-  if (typeof position === "number" && Number.isFinite(position)) return false;
-
-  const added: ClipIdentity[] = [];
-  let priorIndex = 0;
-  for (const item of after) {
-    if (priorIndex < before.length && clipMatchesPrior(item, before[priorIndex])) {
-      priorIndex += 1;
-    } else {
-      added.push(item);
-    }
-  }
-  return (
-    priorIndex === before.length &&
-    added.length === expected.length &&
-    expected.every((exp, i) => clipMatchesExpected(added[i], exp))
+      .every((b, i) => clipMatchesPrior(after[insertAt + expected.length + i], b))
   );
 }
 
@@ -190,9 +179,21 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
 
   const action = String(req?.action || "").toLowerCase();
   const resolveWfIds = (ids: string[]): string[] =>
-    ids.map((id) => String(getMap()?.get(id)?.workflowId || id));
+    ids.map((id) => String((tileMap ?? getMap())?.get(id)?.workflowId || id));
 
   if (action === "create") {
+    if (projectMutationPending) {
+      return { ok: false, error: "project_mutation_pending" };
+    }
+    const projectId = helper.projectId;
+    const store = projectId ? currentProjectStore(projectId) : null;
+    if (projectId && projectsToRefresh.has(projectId)) {
+      const refreshed = store ? await refreshAfterUnknown(store) : null;
+      if (!refreshed) {
+        return { ok: false, error: "project_refresh_failed", project_id: projectId };
+      }
+      tileMap = refreshed;
+    }
     const assetIds = Array.isArray(req?.asset_ids)
       ? req.asset_ids.map(String)
       : [];
@@ -231,10 +232,12 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     }
     const projectId = helper.projectId;
     const store = projectId ? currentProjectStore(projectId) : null;
-    if (store && projectsToRefresh.has(store.projectId)) {
-      const refreshed = await readConfirmedProjectStore(store);
+    const finishMutation = beginProjectMutation();
+    if (projectId && projectsToRefresh.has(projectId)) {
+      const refreshed = store ? await refreshAfterUnknown(store) : null;
       if (!refreshed) {
-        return { ok: false, error: "project_refresh_failed", project_id: store.projectId };
+        finishMutation();
+        return { ok: false, error: "project_refresh_failed", project_id: projectId };
       }
       tileMap = refreshed;
     }
@@ -246,6 +249,7 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
         (typeof existingTile.type === "string" &&
           existingTile.type.toUpperCase() !== "SCENE"))
     ) {
+      finishMutation();
       return { ok: false, error: "scene_not_found", scene_id: sceneId };
     }
 
@@ -262,12 +266,6 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
       };
     });
     const workflowIds = expectedClips.map((clip) => clip.workflowId);
-    const timeoutMs =
-      typeof req?.timeout_ms === "number" &&
-      Number.isFinite(req.timeout_ms) &&
-      req.timeout_ms > 0
-        ? Math.min(req.timeout_ms, SCENE_ADD_CLIPS_TIMEOUT_MS)
-        : SCENE_ADD_CLIPS_TIMEOUT_MS;
 
     let resolveCallback: () => void = () => {};
     let rejectCallback: (err: unknown) => void = () => {};
@@ -275,13 +273,15 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
       resolveCallback = resolve;
       rejectCallback = reject;
     });
-    void callbackPromise.catch(() => undefined);
     const completion = {
       resolve: () => resolveCallback(),
       reject: (err: unknown) => rejectCallback(err),
     };
 
-    if (store) projectsToRefresh.add(store.projectId);
+    if (projectId) projectsToRefresh.add(projectId);
+    let timedOut = false;
+    let mutateSettled = false;
+    let lateError: string | null = null;
     const mutatePromise = Promise.resolve().then(() =>
       helper.mutate({
         type: "add_workflows_to_scene",
@@ -296,7 +296,39 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
         ve: completion,
       }),
     );
-    void mutatePromise.catch(() => undefined);
+    void callbackPromise.then(
+      () => {
+        void mutatePromise.then(
+          () => finishMutation(),
+          () => finishMutation(),
+        );
+      },
+      (err: unknown) => {
+        lateError ??=
+          err instanceof Error ? err.message : String(err ?? "add_workflows_failed");
+        void mutatePromise.then(
+          () => finishMutation(),
+          () => finishMutation(),
+        );
+      },
+    );
+    void mutatePromise.then(
+      () => {
+        mutateSettled = true;
+        if (timedOut) {
+          finishMutation();
+        }
+      },
+      (err: unknown) => {
+        mutateSettled = true;
+        const message =
+          err instanceof Error ? err.message : String(err ?? "add_workflows_failed");
+        if (message !== "mutation_timeout") {
+          lateError ??= message;
+          finishMutation();
+        }
+      },
+    );
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const outcome: AddClipsWaitOutcome = await Promise.race([
@@ -306,6 +338,7 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
           const message =
             err instanceof Error ? err.message : String(err ?? "add_workflows_failed");
           if (message === "mutation_timeout") {
+            timedOut = true;
             return { kind: "timeout" };
           }
           return {
@@ -316,38 +349,47 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
         },
       ),
       new Promise<AddClipsWaitOutcome>((resolve) => {
-        timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+        timer = setTimeout(() => {
+          timedOut = true;
+          resolve({ kind: "timeout" });
+        }, SCENE_ADD_CLIPS_TIMEOUT_MS);
       }),
     ]).finally(() => {
       if (timer !== undefined) clearTimeout(timer);
     });
 
     if (outcome.kind === "rejected") {
-      if (outcome.preSubmit && store) {
-        projectsToRefresh.delete(store.projectId);
+      if (mutateSettled) {
+        finishMutation();
+      }
+      if (outcome.preSubmit && projectId) {
+        projectsToRefresh.delete(projectId);
       }
       return { ok: false, error: outcome.error };
     }
 
     if (outcome.kind === "timeout") {
-      const freshTiles = store
-        ? await readConfirmedProjectStore(store)
-        : helper.isCurrent() && helper.isReady()
-          ? helper.getTileMap() ?? null
-          : null;
+      const freshTiles = store ? await fetchProjectStore(store) : null;
       const afterScene = findLiveSceneTile(freshTiles, sceneId);
       if (
         baseline !== null &&
         afterScene !== null &&
         sceneClipsConfirmed(baseline, afterScene, expectedClips, req.position)
       ) {
-        if (store) projectsToRefresh.delete(store.projectId);
+        finishMutation();
+        if (projectId) projectsToRefresh.delete(projectId);
         return {
           ok: true,
           scene_id: sceneId,
           added: assetIds.length,
           confirmed: true,
         };
+      }
+      if (lateError !== null) {
+        if (mutateSettled) {
+          finishMutation();
+        }
+        return { ok: false, error: lateError };
       }
       return {
         ok: false,
@@ -359,7 +401,8 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
       };
     }
 
-    if (store) projectsToRefresh.delete(store.projectId);
+    finishMutation();
+    if (projectId) projectsToRefresh.delete(projectId);
     await delay(400);
     return { ok: true, scene_id: sceneId, added: assetIds.length };
   }

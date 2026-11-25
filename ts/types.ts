@@ -653,8 +653,6 @@ export interface SceneOpRequest {
   scene_id?: string | null;
   /** Optional insertion position index. */
   position?: number | null;
-  /** Optional callback wait limit in milliseconds for `add_clips`. */
-  timeout_ms?: number | null;
 }
 
 /** Request payload for `videoOp`. */

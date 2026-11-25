@@ -52,6 +52,8 @@ let boundStore: ProjectStore | null = null;
 let boundHandle: FlowStoreHandle | null = null;
 /** Promise chain that serializes general store mutations in this document. */
 let mutationChain: Promise<void> = Promise.resolve();
+/** Callback that unblocks `mutationChain` after server confirmation. */
+let releaseMutationChain: (() => void) | null = null;
 
 /** Returns the project ID in the current route. */
 export function projectInRoute(): string | null {
@@ -283,8 +285,23 @@ async function dispatchStoreMutation(
 
 /** Serializes general store mutations in the current page session. */
 function mutateStore(store: ProjectStore, payload: Record<string, unknown>): Promise<unknown> {
-  const run = mutationChain.then(() => dispatchStoreMutation(store, payload));
-  mutationChain = run.then(() => undefined, () => undefined);
+  let unblock: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    unblock = resolve;
+  });
+  const prev = mutationChain;
+  const run = prev.then(() => {
+    releaseMutationChain = unblock ?? null;
+    return dispatchStoreMutation(store, payload);
+  });
+  mutationChain = Promise.race([
+    run.then(() => undefined, () => undefined),
+    gate,
+  ]).finally(() => {
+    if (releaseMutationChain === unblock) {
+      releaseMutationChain = null;
+    }
+  });
   return run;
 }
 
@@ -459,10 +476,26 @@ export async function refreshProjectStore(store: ProjectStore): Promise<Map<stri
 const MUTATION_TIMEOUT_MS = 10_000;
 /** Time between checks for a submitted change. */
 const MUTATION_CHECK_INTERVAL_MS = 250;
-/** True until the previous project submission settles. */
+/** Active submissions that have not settled or been confirmed by the server. */
+const activeProjectMutations = new Set<symbol>();
+/** True until all active project submissions settle or are confirmed by the server. */
 export let projectMutationPending = false;
 /** Projects that need a new query result after a mutation. */
 export const projectsToRefresh = new Set<string>();
+
+/** Marks one project submission as pending and returns an idempotent release function. */
+export function beginProjectMutation(): () => void {
+  const token = Symbol("project_mutation");
+  activeProjectMutations.add(token);
+  projectMutationPending = true;
+  return () => {
+    if (!activeProjectMutations.delete(token)) return;
+    projectMutationPending = activeProjectMutations.size > 0;
+    if (!projectMutationPending) {
+      releaseMutationChain?.();
+    }
+  };
+}
 
 /** Sends one mutation and confirms it from a new server result. */
 export async function mutateAndVerify(
@@ -470,7 +503,7 @@ export async function mutateAndVerify(
   payload: Record<string, unknown>,
   verified: (tiles: Map<string, FlowTile>) => boolean,
 ): Promise<Map<string, FlowTile> | null> {
-  projectMutationPending = true;
+  const finishMutation = beginProjectMutation();
   projectsToRefresh.add(store.projectId);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
@@ -497,7 +530,7 @@ export async function mutateAndVerify(
     } catch {
       return null;
     } finally {
-      projectMutationPending = false;
+      finishMutation();
     }
   })();
   try {
@@ -507,16 +540,16 @@ export async function mutateAndVerify(
   }
 }
 
-/** Refreshes the project before the next operation after an unknown result. */
-export async function refreshAfterUnknown(store: ProjectStore): Promise<Map<string, FlowTile> | null> {
+/** Fetches a new tile result from the server within the mutation time limit. */
+export async function fetchProjectStore(
+  store: ProjectStore,
+): Promise<Map<string, FlowTile> | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), MUTATION_TIMEOUT_MS);
   });
   try {
-    const tiles = await Promise.race([refreshProjectStore(store), timeout]);
-    if (tiles) projectsToRefresh.delete(store.projectId);
-    return tiles;
+    return await Promise.race([refreshProjectStore(store), timeout]);
   } catch {
     return null;
   } finally {
@@ -524,15 +557,9 @@ export async function refreshAfterUnknown(store: ProjectStore): Promise<Map<stri
   }
 }
 
-/** Reads confirmed server rows when a query fetcher exists, or live store rows otherwise. */
-export async function readConfirmedProjectStore(
-  store: ProjectStore,
-): Promise<Map<string, FlowTile> | null> {
-  if (!isCurrent(store) || activeBoundStore() !== store) return null;
-  if (typeof projectQuery(store)?.fetch === "function") {
-    return await refreshAfterUnknown(store);
-  }
-  const tiles = readProjectStore(store);
+/** Refreshes the project before the next operation after an unknown result. */
+export async function refreshAfterUnknown(store: ProjectStore): Promise<Map<string, FlowTile> | null> {
+  const tiles = await fetchProjectStore(store);
   if (tiles) projectsToRefresh.delete(store.projectId);
   return tiles;
 }
