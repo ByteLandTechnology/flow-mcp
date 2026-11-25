@@ -12,6 +12,11 @@ import {
   type PickerMatchTarget,
 } from "./angular";
 import {
+  clearCharacterSlot,
+  openSlotProjectPicker,
+  waitForCharacterSlot,
+} from "./character_extra";
+import {
   clickButtonByRegex,
   delay,
   dismissOverlay,
@@ -179,7 +184,12 @@ function findPreviewSlotButton(slot: CharacterSlot): HTMLButtonElement | undefin
   const label = slot === "portrait" ? /\bportrait\b/i : /\bbody\b/i;
   return [...document.querySelectorAll<HTMLButtonElement>(
     "flow-character-preview-panel flow-slot-chip-button button",
-  )].find((button) => button.getClientRects().length > 0 && label.test(elText(button)));
+  )].find(
+    (button) =>
+      !button.closest("flow-character-prompt-box, flow-character-form") &&
+      button.getClientRects().length > 0 &&
+      label.test(elText(button)),
+  );
 }
 
 /** Reports whether the requested slot controls the visible preview. */
@@ -489,16 +499,15 @@ export async function characterMediaOp(
       const targetUrl = pickTileUrl(targetTile);
       const targetFife = fifeBase(targetUrl);
 
-      if (idx > 0) {
-        previewCompBefore = await ensurePreviewBound();
-        if (!previewCompBefore && requiresBoundPreview()) {
-          return {
-            ok: false,
-            error: "character_preview_not_bound",
-            applied,
-            completed_assets: completedAssets,
-          };
-        }
+      await waitForCharacterSlot("portrait");
+      previewCompBefore = (await ensurePreviewBound()) ?? previewCompBefore;
+      if (!previewCompBefore && requiresBoundPreview()) {
+        return {
+          ok: false,
+          error: "character_preview_not_bound",
+          applied,
+          completed_assets: completedAssets,
+        };
       }
       const hasSlotMedia = (slot: CharacterSlot): boolean => {
         if (previewCompBefore) {
@@ -508,22 +517,36 @@ export async function characterMediaOp(
         return isPreviewSlotOccupiedDom(slot);
       };
       const portraitOccupied = hasSlotMedia("portrait");
-      const bodyOccupied = hasSlotMedia("body");
+      const bodyBtn = findPreviewSlotButton("body");
+      const hasBodySlot = isVisibleEnabled(bodyBtn);
+      const bodyOccupied = hasBodySlot && hasSlotMedia("body");
       let wantBodySlot = false;
-      if (portraitOccupied && !bodyOccupied) {
-        const bodyBtn = findPreviewSlotButton("body");
-        if (isVisibleEnabled(bodyBtn)) {
-          wantBodySlot = true;
-          if (!bodyBtn.classList.contains("chip-button-active")) {
-            await captureLViewAndClick(() => bodyBtn.click());
-            await delay(250);
+      if (portraitOccupied && hasBodySlot && !bodyOccupied) {
+        wantBodySlot = true;
+      } else if (portraitOccupied && (!hasBodySlot || bodyOccupied)) {
+        const clearOrder: CharacterSlot[] = !hasBodySlot
+          ? ["portrait"]
+          : req.asset_ids.length - idx >= 2 && idx === 0
+            ? ["body", "portrait"]
+            : ["body"];
+        wantBodySlot = clearOrder[clearOrder.length - 1] === "body";
+        for (const toClear of clearOrder) {
+          const cleared = await clearCharacterSlot(toClear);
+          if (!cleared.ok) {
+            return {
+              ok: false,
+              error: cleared.error,
+              id: charId,
+              applied,
+              completed_assets: completedAssets,
+            };
           }
         }
       }
-      previewCompBefore ??= getCharacterPreviewInstance();
-      const prevSlotMedia = wantBodySlot
-        ? previewCompBefore?.media("body")
-        : previewCompBefore?.media("portrait");
+      const targetSlot: CharacterSlot = wantBodySlot ? "body" : "portrait";
+      await waitForCharacterSlot(targetSlot);
+      previewCompBefore = getCharacterPreviewInstance() ?? previewCompBefore;
+      const prevSlotMedia = previewCompBefore?.media(targetSlot);
       const prevSlotMediaId = String(prevSlotMedia?.id || "").trim();
       const prevPreviewSrc = String(
         document
@@ -535,63 +558,15 @@ export async function characterMediaOp(
 
       dismissAllSnackbars();
 
-      const imageFrame = document.querySelector(
-        "flow-character-image-preview .image-frame",
-      );
-      if (imageFrame) {
-        const fr = imageFrame.getBoundingClientRect();
-        imageFrame.dispatchEvent(
-          new MouseEvent("mouseenter", {
-            bubbles: false,
-            clientX: fr.left + Math.max(2, fr.width / 2),
-            clientY: fr.top + Math.max(2, fr.height / 2),
-          }),
-        );
-        await delay(120);
-      }
-
-      let clickedFromProject = false;
-      await captureLViewAndClick(() => {
-        clickedFromProject = clickButtonByRegex(
-          /\badd from project\b/i,
-          document,
-        );
-      });
-      if (!clickedFromProject) {
-        let openedAdd = false;
-        await captureLViewAndClick(() => {
-          openedAdd =
-            clickButtonByRegex(/\badd to character\b/i, document) ||
-            (() => {
-              const el = Array.from(
-                document.querySelectorAll("flow-add-menu button"),
-              ).find(
-                (btn): btn is HTMLElement =>
-                  !btn.closest("flow-character-form") && isVisibleEnabled(btn),
-              );
-              if (el) {
-                el.click();
-                return true;
-              }
-              return false;
-            })();
-        });
-        if (!openedAdd) {
-          return {
-            ok: false,
-            error: "add_to_character_button_not_found",
-            id: charId,
-          };
-        }
-        await delay(220);
-        if (!clickButtonByRegex(/\badd from project\b/i, document)) {
-          await dismissOverlay();
-          return {
-            ok: false,
-            error: "add_from_project_menu_not_found",
-            id: charId,
-          };
-        }
+      const openedPicker = await openSlotProjectPicker(targetSlot);
+      if (!openedPicker.ok) {
+        return {
+          ok: false,
+          error: openedPicker.error,
+          id: charId,
+          applied,
+          completed_assets: completedAssets,
+        };
       }
 
       let overlay: Element | null = null;
