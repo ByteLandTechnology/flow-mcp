@@ -103,6 +103,27 @@ const REQUIRED_AGENT_ATTACHMENT_EXPORTS: &[&str] = &[
     "confirmUpload",
 ];
 
+/// Required `PromptComposerExport` keys on every `PromptComposerFormat` constant.
+const REQUIRED_PROMPT_COMPOSER_EXPORTS: &[&str] = &[
+    "promptState",
+    "setMode",
+    "setModel",
+    "setCount",
+    "aspectLabels",
+    "videoAspects",
+];
+
+/// Required string field keys on every `PromptComposerFormat` constant.
+const REQUIRED_PROMPT_COMPOSER_FIELDS: &[&str] = &[
+    "families",
+    "activeFamily",
+    "catalogFamilies",
+    "modelId",
+    "items",
+    "disableReason",
+    "clearOutput",
+];
+
 /// Validates `VERIFIED_BUILDS`, export tables, and registered stores offline.
 pub(crate) fn check_flow_contracts(root: &Path) -> Vec<String> {
     let mut errors = Vec::new();
@@ -142,6 +163,13 @@ pub(crate) fn check_flow_contracts(root: &Path) -> Vec<String> {
         REQUIRED_AGENT_ATTACHMENT_EXPORTS,
         &mut errors,
     );
+    check_string_array(
+        builds_rel,
+        &clean,
+        "PROMPT_COMPOSER_EXPORTS",
+        REQUIRED_PROMPT_COMPOSER_EXPORTS,
+        &mut errors,
+    );
 
     check_typed_export_maps(
         builds_rel,
@@ -164,6 +192,20 @@ pub(crate) fn check_flow_contracts(root: &Path) -> Vec<String> {
         REQUIRED_AGENT_ATTACHMENT_EXPORTS,
         &mut errors,
     );
+    check_typed_export_maps(
+        builds_rel,
+        &clean,
+        "PromptComposerFormat",
+        REQUIRED_PROMPT_COMPOSER_EXPORTS,
+        &mut errors,
+    );
+    check_typed_string_fields(
+        builds_rel,
+        &clean,
+        "PromptComposerFormat",
+        REQUIRED_PROMPT_COMPOSER_FIELDS,
+        &mut errors,
+    );
 
     let declared_stores = collect_typed_consts(&clean, "ProjectStoreFormat");
     if declared_stores.is_empty() {
@@ -171,11 +213,28 @@ pub(crate) fn check_flow_contracts(root: &Path) -> Vec<String> {
             "{builds_rel}: no ProjectStoreFormat constants found"
         ));
     }
+    let declared_composers = collect_typed_consts(&clean, "PromptComposerFormat");
+    if declared_composers.is_empty() {
+        errors.push(format!(
+            "{builds_rel}: no PromptComposerFormat constants found"
+        ));
+    }
 
-    let build_stores = check_verified_builds(builds_rel, &clean, &declared_stores, &mut errors);
+    let (build_stores, build_composers) = check_verified_builds(
+        builds_rel,
+        &clean,
+        &declared_stores,
+        &declared_composers,
+        &mut errors,
+    );
     for store in declared_stores.difference(&build_stores) {
         errors.push(format!(
             "{builds_rel}: store `{store}` has no registered build"
+        ));
+    }
+    for composer in declared_composers.difference(&build_composers) {
+        errors.push(format!(
+            "{builds_rel}: promptComposer `{composer}` has no registered build"
         ));
     }
 
@@ -525,29 +584,64 @@ fn check_typed_export_maps(
     }
 }
 
-/// Validates every entry in `VERIFIED_BUILDS` and returns referenced `projectStore` names.
+/// Verifies top-level string literal fields on every constant of type `type_name`.
+fn check_typed_string_fields(
+    label: &str,
+    src: &str,
+    type_name: &str,
+    expected: &[&str],
+    errors: &mut Vec<String>,
+) {
+    for name in collect_typed_consts(src, type_name) {
+        let needle = format!("const {name}: {type_name}");
+        let Some(pos) = src.find(&needle) else {
+            continue;
+        };
+        let Some((obj_body, _)) = delimited_slice(src, pos + needle.len(), b'{', b'}') else {
+            continue;
+        };
+        let entries = top_level_object_entries(obj_body);
+        for req in expected {
+            match entries.iter().find(|(k, _)| k == req) {
+                Some((_, val)) => {
+                    let unquoted = val.trim_matches('"');
+                    if !val.starts_with('"') || !val.ends_with('"') || unquoted.is_empty() {
+                        errors.push(format!(
+                            "{label}: `{name}.{req}` must be a non-empty string literal"
+                        ));
+                    }
+                }
+                None => errors.push(format!("{label}: `{name}` omits required field `{req}`")),
+            }
+        }
+    }
+}
+
+/// Validates every entry in `VERIFIED_BUILDS` and returns referenced stores and prompt composers.
 fn check_verified_builds(
     label: &str,
     src: &str,
     declared_stores: &BTreeSet<String>,
+    declared_composers: &BTreeSet<String>,
     errors: &mut Vec<String>,
-) -> BTreeSet<String> {
+) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut used_stores = BTreeSet::new();
+    let mut used_composers = BTreeSet::new();
     let Some(pos) = src.find("const VERIFIED_BUILDS") else {
         errors.push(format!("{label}: missing `VERIFIED_BUILDS` map"));
-        return used_stores;
+        return (used_stores, used_composers);
     };
     let Some(map_pos) = src[pos..].find("new Map") else {
         errors.push(format!(
             "{label}: `VERIFIED_BUILDS` must initialize `new Map([...])`"
         ));
-        return used_stores;
+        return (used_stores, used_composers);
     };
     let Some((arr_body, _)) = delimited_slice(src, pos + map_pos, b'[', b']') else {
         errors.push(format!(
             "{label}: `VERIFIED_BUILDS` has no entry array literal"
         ));
-        return used_stores;
+        return (used_stores, used_composers);
     };
 
     let mut cursor = 0usize;
@@ -582,6 +676,15 @@ fn check_verified_builds(
                 "{label}: build `{build_id}` references unknown projectStore `{store_ident}`"
             )),
             None => errors.push(format!("{label}: build `{build_id}` omits `projectStore`")),
+        }
+        if let Some((_, composer_ident)) = fields.iter().find(|(k, _)| k == "promptComposer") {
+            if declared_composers.contains(composer_ident.as_str()) {
+                used_composers.insert(composer_ident.clone());
+            } else {
+                errors.push(format!(
+                    "{label}: build `{build_id}` references unknown promptComposer `{composer_ident}`"
+                ));
+            }
         }
         let Some((_, ops_val)) = fields.iter().find(|(k, _)| k == "operations") else {
             errors.push(format!("{label}: build `{build_id}` omits `operations`"));
@@ -618,10 +721,10 @@ fn check_verified_builds(
     if build_count == 0 {
         errors.push(format!("{label}: `VERIFIED_BUILDS` must not be empty"));
     }
-    used_stores
+    (used_stores, used_composers)
 }
 
-/// Verifies that `probeStore()` checks all seven managed operations and build verification.
+/// Verifies that `probeStore()` checks managed operations, `promptComposer`, and build status.
 fn check_probe_store(label: &str, src: &str, errors: &mut Vec<String>) {
     let Some(fn_pos) = src.find("export function probeStore") else {
         errors.push(format!("{label}: missing `export function probeStore`"));
@@ -638,6 +741,11 @@ fn check_probe_store(label: &str, src: &str, errors: &mut Vec<String>) {
                 "{label}: `probeStore` omits compatibility check for `{op}`"
             ));
         }
+    }
+    if !fn_body.contains("promptComposerCheck") {
+        errors.push(format!(
+            "{label}: `probeStore` omits runtime check for `promptComposer`"
+        ));
     }
     if !fn_body.contains("FRONTEND_OPERATIONS.every") {
         errors.push(format!(

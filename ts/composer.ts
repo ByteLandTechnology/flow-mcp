@@ -5,12 +5,14 @@
 
 import { isLiveLView, readAngularTooltip, readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import { promptComposerFormat } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type {
   BasePromptBoxInstance,
   NgLView,
   ProjectPageInstance,
   PromptBoxHost,
+  PromptStateController,
 } from "./types";
 
 /** Selector matching editable prompt textboxes in Flow composer UI. */
@@ -264,8 +266,10 @@ export function findLiveBasePromptBox(
         }
       }
     }
-    return scanElementForBasePromptBox(
-      document.querySelector("flow-prompt-box flow-base-prompt-box"),
+    return (
+      scanElementForBasePromptBox(
+        document.querySelector("flow-prompt-box flow-base-prompt-box"),
+      ) ?? scanElementForBasePromptBox(document.querySelector("flow-prompt-box"))
     );
   }
   return scanElementForBasePromptBox(
@@ -273,6 +277,78 @@ export function findLiveBasePromptBox(
       "flow-edit-video-prompt-box flow-base-prompt-box, flow-edit-video-prompt-box",
     ),
   );
+}
+
+/** Resolved manual or edit composer controllers for the active Flow view. */
+export interface ResolvedComposerControllers {
+  /** Live `flow-project-page` instance when mounted. */
+  page: ProjectPageInstance | null;
+  /** Live `flow-prompt-box` host managing manual and Agent composer modes. */
+  host: PromptBoxHost | null;
+  /** Live `flow-base-prompt-box` controller when mounted. */
+  ux: BasePromptBoxInstance | null;
+  /** Live `PromptState` (`Qa`) controller on `ux` or `page`. */
+  qa: PromptStateController | null;
+}
+
+/** Scans LViews starting at `el` for an instance of the verified `PromptState` class. */
+function scanElementForPromptState(
+  el: Element | null,
+  stateCtor: unknown,
+): PromptStateController | null {
+  if (!el || typeof stateCtor !== "function") return null;
+  let cur: Element | null = el;
+  for (let depth = 0; depth < 6 && cur; depth += 1) {
+    let lv: NgLView | null = resolveLView(cur);
+    for (let pDepth = 0; pDepth < 6 && Array.isArray(lv); pDepth += 1) {
+      for (const cand of lv) {
+        if (cand && typeof cand === "object" && cand instanceof stateCtor) {
+          return cand as PromptStateController;
+        }
+      }
+      lv = Array.isArray(lv[3]) ? lv[3] : Array.isArray(lv[15]) ? lv[15] : null;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+/** Resolves `BasePromptBoxInstance` and `PromptStateController` (`Qa`) for the active route. */
+export function resolveComposerControllers(editFlag: boolean): ResolvedComposerControllers {
+  const page = !editFlag ? findProjectPageInstance() : null;
+  const host = !editFlag ? findPromptBoxHost(page) : null;
+  const ux = findLiveBasePromptBox(editFlag, host);
+  let qa: PromptStateController | null = ux?.Qa ?? page?.Qa ?? null;
+  if (!qa) {
+    const format = promptComposerFormat();
+    const stateCtor = format
+      ? readOwn(readOwn(window, "default_AiSandboxAngularFrontend"), format.exports.promptState)
+      : null;
+    const root = editFlag
+      ? document.querySelector("flow-edit-video-prompt-box, flow-editor-page, flow-scene-builder")
+      : document.querySelector("flow-prompt-box flow-base-prompt-box, flow-prompt-box, flow-project-page");
+    qa = scanElementForPromptState(root, stateCtor);
+    if (!qa && typeof stateCtor === "function" && runtimeState.ngLViewMap instanceof Map) {
+      for (const lv of runtimeState.ngLViewMap.values()) {
+        if (!isLiveLView(lv)) continue;
+        if (!editFlag && lv[0] instanceof Element && lv[0].closest(AGENT_COMPOSER)) continue;
+        const hit = lv.find((c): c is PromptStateController =>
+          Boolean(c && typeof c === "object" && c instanceof stateCtor),
+        );
+        if (hit) {
+          qa = hit;
+          break;
+        }
+      }
+    }
+  }
+  if (!qa && !editFlag && runtimeState.promptState) {
+    qa = runtimeState.promptState;
+  }
+  if (qa && !editFlag) {
+    runtimeState.promptState = qa;
+  }
+  return { page, host, ux, qa };
 }
 
 /** Returns true when a custom warning element or one of its children is visible on screen. */

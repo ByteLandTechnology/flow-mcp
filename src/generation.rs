@@ -34,9 +34,9 @@ pub(crate) struct GenerateParams {
     pub(crate) prompt: String,
     /// Generation mode: "video" (default) or "image".
     pub(crate) mode: Option<String>,
-    /// Model name override (defaults to "veo-3.1-fast" for video or "nano-banana-2" for image).
+    /// Model name override (defaults to "veo_3_1_lite" for video or "nano-banana-2" for image).
     pub(crate) model: Option<String>,
-    /// Output aspect ratio: "16:9" (default), "9:16", or "1:1".
+    /// Output aspect ratio: "16:9" (default), "9:16", or "1:1" (image mode only).
     pub(crate) aspect: Option<String>,
     /// Output count from 1 to 4 (default 2).
     #[schemars(range(min = 1, max = 4))]
@@ -55,7 +55,7 @@ pub(crate) struct GenerateParams {
     pub(crate) asset_ids: Option<Vec<String>>,
     /// Existing character IDs or names to attach to video or image generation.
     pub(crate) characters: Option<Vec<String>>,
-    /// Video generation mode (`"frames"` or `"ingredients"`).
+    /// Video generation mode: "ingredients" (default) or "frames".
     pub(crate) video_type: Option<String>,
     /// Video duration setting (for example `"5s"` or `"8s"`).
     pub(crate) duration: Option<String>,
@@ -87,11 +87,127 @@ struct AssetWaitSpec<'a> {
     submit_summary: &'a str,
 }
 
+/// Normalizes `mode`, `video_type`, `aspect`, and `model` on `scene` and validates constraints.
+pub(crate) fn normalize_generation_scene(scene: &mut SceneParams) -> Result<()> {
+    let raw_mode = scene
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("video");
+    let mode = if raw_mode.eq_ignore_ascii_case("image")
+        || raw_mode.eq_ignore_ascii_case("character")
+        || raw_mode.eq_ignore_ascii_case("scene")
+    {
+        "image"
+    } else {
+        "video"
+    };
+    scene.mode = Some(mode.to_string());
+
+    let aspect = scene
+        .aspect
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("16:9")
+        .to_string();
+    if mode == "video" && (aspect == "1:1" || aspect.eq_ignore_ascii_case("square")) {
+        anyhow::bail!(
+            "Video generation does not support aspect ratio '{aspect}'; use '16:9' or '9:16'"
+        );
+    }
+    scene.aspect = Some(aspect);
+
+    if mode == "video" {
+        let normalized_vt = match scene
+            .video_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            None => "ingredients",
+            Some(vt)
+                if vt.eq_ignore_ascii_case("ingredients")
+                    || vt.eq_ignore_ascii_case("ingredient")
+                    || vt.eq_ignore_ascii_case("references")
+                    || vt.eq_ignore_ascii_case("video_ingredients")
+                    || vt.eq_ignore_ascii_case("video_references") =>
+            {
+                "ingredients"
+            }
+            Some(vt)
+                if vt.eq_ignore_ascii_case("frames")
+                    || vt.eq_ignore_ascii_case("frame")
+                    || vt.eq_ignore_ascii_case("video_frames") =>
+            {
+                "frames"
+            }
+            Some(other) => anyhow::bail!(
+                "Unsupported video_type '{other}'; expected 'ingredients' or 'frames'"
+            ),
+        };
+        if normalized_vt == "frames" {
+            if scene
+                .characters
+                .as_ref()
+                .is_some_and(|chars| chars.iter().any(|c| !c.trim().is_empty()))
+            {
+                anyhow::bail!(
+                    "Frame mode does not support character ingredients; use video_type 'ingredients'"
+                );
+            }
+            let ref_count = scene.frames.as_ref().map_or(0, Vec::len)
+                + scene.asset_ids.as_ref().map_or(0, Vec::len);
+            anyhow::ensure!(
+                ref_count <= 2,
+                "Frame mode accepts at most two references, got {ref_count}"
+            );
+        }
+        scene.video_type = Some(normalized_vt.to_string());
+    } else {
+        scene.video_type = None;
+    }
+
+    let resolved_model = match scene
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => {
+            if mode == "image" {
+                "nano-banana-2".to_string()
+            } else {
+                "veo_3_1_lite".to_string()
+            }
+        }
+        Some(m)
+            if m.eq_ignore_ascii_case("veo-3.1-fast") || m.eq_ignore_ascii_case("veo_3_1_fast") =>
+        {
+            "veo_3_1_lite".to_string()
+        }
+        Some(m) => m.to_string(),
+    };
+    scene.model = Some(resolved_model);
+    Ok(())
+}
+
 /// Configures generation controls, uploads reference frames, writes prompt text, and submits.
 async fn apply_generation_controls(
     engine: &ChromeEngine,
     scene: &SceneParams,
 ) -> Result<serde_json::Value> {
+    let mut normalized;
+    let scene = if scene.mode.is_some() || scene.edit_from.is_none() && scene.aspect.is_some() {
+        normalized = scene.clone();
+        if normalized.mode.is_some() {
+            normalize_generation_scene(&mut normalized)?;
+        }
+        &normalized
+    } else {
+        scene
+    };
     validate_local_files(scene.frames.as_deref(), "Reference image").await?;
 
     let raw_mode = scene.mode.as_deref().unwrap_or("video");
@@ -103,8 +219,13 @@ async fn apply_generation_controls(
     let model = scene.model.as_deref().unwrap_or(if mode == "image" {
         "nano-banana-2"
     } else {
-        "veo-3.1-fast"
+        "veo_3_1_lite"
     });
+    let video_type = if scene.mode.is_some() && mode == "video" {
+        Some(scene.video_type.as_deref().unwrap_or("ingredients"))
+    } else {
+        scene.video_type.as_deref()
+    };
     let count = scene.count.unwrap_or(2).clamp(1, 4);
 
     let cfg = json!({
@@ -115,7 +236,7 @@ async fn apply_generation_controls(
         "prompt": scene.prompt,
         "asset_ids": scene.asset_ids,
         "characters": scene.characters,
-        "video_type": scene.video_type,
+        "video_type": video_type,
         "duration": scene.duration,
         "resolution": scene.resolution,
     });
@@ -525,17 +646,11 @@ pub(crate) async fn run_generation(
     scene: &SceneParams,
     on_progress: ProgressCallback,
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+    let mut normalized_scene = scene.clone();
+    normalize_generation_scene(&mut normalized_scene)?;
+    let scene = &normalized_scene;
     ensure_project_workspace_root(engine).await?;
     ensure_flow_store(engine).await?;
-    if scene.video_type.as_deref() == Some("frames") {
-        let count = scene.frames.as_ref().map_or(0, Vec::len)
-            + scene.asset_ids.as_ref().map_or(0, Vec::len)
-            + scene.characters.as_ref().map_or(0, Vec::len);
-        anyhow::ensure!(
-            count <= 2,
-            "Frame mode accepts at most two references, got {count}"
-        );
-    }
     // Upload local frames into the library first and attach them as assets, so that the
     // uploaded tiles are not counted as generated outputs.
     let uploaded_scene;

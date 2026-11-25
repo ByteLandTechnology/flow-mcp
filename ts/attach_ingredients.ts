@@ -22,6 +22,13 @@ import {
   settingsOpen,
 } from "./composer";
 import {
+  clearPromptComposerItems,
+  findPromptItemsDisableReason,
+  isPromptItemLoading,
+  itemDisableReason,
+  readPromptItems,
+} from "./composer_state";
+import {
   characterLooksOf,
   cleanMediaId,
   delay,
@@ -68,14 +75,9 @@ function itemMatchesTarget(item: unknown, target: IngredientTarget): boolean {
     name.trim().toLowerCase() === target.name.toLowerCase());
 }
 
-/** Returns true while a prompt item is loading or when it cannot be submitted. */
+/** Returns true while a prompt item is loading or carries a defined `Rp` disable code. */
 function itemNotReady(item: unknown): boolean {
-  const invalid = /^(?:INVALID|ERROR|FAILED|PENDING|LOADING)(?:_|$)/i;
-  return readOwn(item, "isLoading") === true ||
-    ["Rp", "tl"].some((field) => {
-      const state = readOwn(item, field);
-      return typeof state === "string" && invalid.test(state);
-    });
+  return isPromptItemLoading(item) || itemDisableReason(item) !== null;
 }
 
 /** Verifies the requested frame in each slot before the prompt can be submitted. */
@@ -188,26 +190,18 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   const initialTb = onEditPage ? findTextbox(true) : await ensureManualComposer();
   if (!onEditPage && !initialTb) return { ok: false, error: "manual_prompt_not_ready" };
 
-  if (ingredientTargets.length > 0 && !onEditPage) {
-    for (let pass = 0; pass < 4; pass += 1) {
-      const staleRemoveBtns = Array.from(
+  if (!onEditPage) {
+    if (!(runtimeState.ngLViewMap instanceof Map)) {
+      const tipEls = Array.from(
         document.querySelectorAll(
-          'flow-prompt-box flow-image-ingredient-chip button, flow-prompt-box button[aria-label*="Remove" i], flow-prompt-box [class*="chip"] button',
+          "[mattooltip], button[aria-label], flow-prompt-box, flow-project-page",
         ),
-      ).filter((el): el is HTMLElement => {
-        if (!isVisibleEnabled(el)) return false;
-        if (el.closest("flow-image-ingredient-chip")) return true;
-        const lbl = (el.getAttribute("aria-label") || elText(el)).trim();
-        return /^remove\b|remove ingredient|remove reference|remove frame/i.test(
-          lbl,
-        );
+      ).slice(0, 8);
+      await withLViewMapCapture(async () => {
+        await hoverProbe(tipEls, 50);
       });
-      if (staleRemoveBtns.length === 0) break;
-      for (const btn of staleRemoveBtns) {
-        btn.click();
-      }
-      await delay(100);
     }
+    await clearPromptComposerItems();
   }
 
   const scope: ParentNode = (() => {
@@ -228,6 +222,8 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     page: ReturnType<typeof findProjectPageInstance>,
     ux?: ReturnType<typeof findLiveBasePromptBox>,
   ): Array<Record<string, unknown>> | null => {
+    const direct = readPromptItems(false);
+    if (Array.isArray(direct)) return direct;
     const raw =
       page?.Qa?.oc?.all?.() ??
       page?.Qa?.kc?.all?.() ??
@@ -236,19 +232,6 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
       ux?.Qa?.kc?.all?.();
     return Array.isArray(raw) ? raw : null;
   };
-
-  if (
-    ingredientTargets.length > 0 &&
-    !onEditPage &&
-    !(runtimeState.ngLViewMap instanceof Map)
-  ) {
-    const tipEls = Array.from(
-      document.querySelectorAll("[mattooltip], button[aria-label]"),
-    ).slice(0, 8);
-    await withLViewMapCapture(async () => {
-      await hoverProbe(tipEls, 50);
-    });
-  }
 
   const promptBoxEl = !onEditPage
     ? document.querySelector("flow-prompt-box")
@@ -296,6 +279,9 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
           String(cfg.mode || "video").toLowerCase() === "video") ||
         (!hasAddIngredientsBtn && hasFrameSlotBtn));
 
+  if (isVideoFrames && ingredientTargets.some((t) => Boolean(t.character))) {
+    return { ok: false, error: "characters_not_supported_in_frames" };
+  }
   if (isVideoFrames && ingredientTargets.length > 2) {
     return { ok: false, error: "ingredient_attach_failed" };
   }
@@ -574,17 +560,47 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     const liveUx = !onEditPage
       ? findLiveBasePromptBox(false, findPromptBoxHost(projPage))
       : null;
-    let finalItems = !onEditPage ? readPageItems(projPage, liveUx) : null;
-    const ready = (): boolean => isVideoFrames
-      ? framesReady(finalItems, ingredientTargets)
-      : finalItems === null ||
-        (finalItems.length >= ingredientTargets.length && !finalItems.some(itemNotReady));
-    for (let attempt = 0; attachedSteps === ingredientTargets.length && !ready() && attempt < 25; attempt++) {
+    let finalItems = !onEditPage
+      ? readPageItems(projPage, liveUx)
+      : readPromptItems(true);
+    const ready = (): boolean =>
+      isVideoFrames
+        ? framesReady(finalItems, ingredientTargets)
+        : finalItems === null ||
+          (finalItems.length >= ingredientTargets.length &&
+            !finalItems.some(itemNotReady));
+    for (
+      let attempt = 0;
+      attachedSteps === ingredientTargets.length &&
+      !ready() &&
+      findPromptItemsDisableReason(finalItems) === null &&
+      attempt < 25;
+      attempt++
+    ) {
       await delay(100);
-      finalItems = readPageItems(projPage, liveUx);
+      finalItems = !onEditPage
+        ? readPageItems(projPage, liveUx)
+        : readPromptItems(true);
+    }
+    const disableReason = findPromptItemsDisableReason(finalItems);
+    if (disableReason) {
+      return {
+        ok: false,
+        error: `ingredient_disabled:${disableReason}`,
+        disable_reason: disableReason,
+      };
     }
     if (attachedSteps < ingredientTargets.length || !ready()) {
       return { ok: false, error: "ingredient_attach_failed" };
+    }
+  } else if (!onEditPage) {
+    const residualDisable = findPromptItemsDisableReason(readPromptItems(false));
+    if (residualDisable) {
+      return {
+        ok: false,
+        error: `ingredient_disabled:${residualDisable}`,
+        disable_reason: residualDisable,
+      };
     }
   }
 

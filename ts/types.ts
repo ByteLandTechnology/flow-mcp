@@ -306,12 +306,40 @@ export interface PromptDocumentPayload {
   Te?: PromptTextSegment[];
 }
 
+/** Filtered model family option returned by `PromptState.model` signals. */
+export interface PromptModelOption {
+  /** Model family identifier in build 20261120.00. */
+  hg?: string;
+  /** Human-readable model family name. */
+  displayName?: string;
+  /** True when the model family is unavailable for the active tier or status. */
+  isDisabled?: boolean;
+  /** Optional subtitle shown in the model family menu. */
+  caption?: string;
+}
+
+/** Raw model family descriptor in `MODEL_CONFIG`. */
+export interface PromptModelCatalogFamily {
+  /** Canonical family identifier. */
+  id?: string;
+  /** Human-readable model family name. */
+  displayName?: string;
+  /** Alternate model identifiers mapped to this family. */
+  aliases?: string[];
+  /** Media category (`"image"` or `"video"`). */
+  type?: string;
+}
+
 /** Flow prompt validation and submission state controller. */
 export interface PromptStateController {
   /** Applies serialized prompt segments in earlier builds. */
   Wn?: (doc: PromptDocumentPayload) => void;
   /** Applies serialized prompt segments in build 20261120.00. */
   Gp?: (doc: PromptDocumentPayload) => void;
+  /** Clears prompt segments, attached items, and inherited references. */
+  clear?: () => void;
+  /** Sets the active native aspect ratio enum key (for example `"LANDSCAPE"`). */
+  setAspectRatio?: (aspect: string) => void;
   /** Prompt text helper object. */
   prompt?: {
     /** Returns true when the prompt is empty in earlier builds. */
@@ -322,11 +350,23 @@ export interface PromptStateController {
   /** Validator status object in earlier builds. */
   lf?: { isValid?: () => boolean; jYa?: () => string };
   /** Validator status object in build 20261120.00. */
-  Ff?: { isValid?: () => boolean; N7a?: () => string };
-  /** Mode, output count, and model config signals. */
+  Ff?: { isValid?: () => boolean; N7a?: () => string; S7a?: () => string };
+  /** Mode, aspect ratio, and output count signals. */
   config?: {
     mode?: () => string;
+    aspectRatio?: () => string;
     outputCount?: () => number;
+  };
+  /** Model family catalogue and selection signals. */
+  model?: {
+    /** Filtered model options for the active mode in build 20261120.00. */
+    Wqa?: () => PromptModelOption[];
+    /** Active model family ID in build 20261120.00. */
+    ala?: () => string | undefined;
+    /** Raw `MODEL_CONFIG` family descriptors for the active mode. */
+    jx?: () => PromptModelCatalogFamily[];
+    /** Active `MODEL_CONFIG` family descriptor. */
+    family?: () => PromptModelCatalogFamily | undefined;
   };
   /** Attached item signal container in legacy builds. */
   kc?: { all?: () => Array<Record<string, unknown>> };
@@ -351,6 +391,12 @@ export type BooleanOverlaySignal =
 export interface BasePromptBoxInstance {
   /** Prompt state signal container. */
   Qa?: PromptStateController;
+  /** Attachment uploader handle on the prompt box. */
+  lW?: { nPa?: () => void } | null;
+  /** Output emitter notified when leading ingredient chips are deleted. */
+  lF?: { emit?: (scope: string) => void };
+  /** Signal returning an optional clear callback on the host. */
+  C7?: () => (() => void) | undefined;
   /** Returns the rich editor wrapper in earlier builds. */
   CQ?: () => RichTextEditorInstance | null | undefined;
   /** Returns the rich editor wrapper in build 20261120.00. */

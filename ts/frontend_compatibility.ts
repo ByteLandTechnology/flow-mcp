@@ -4,7 +4,7 @@
 // Check the build and runtime requirements of internal Flow operations.
 
 import { readOwn } from "./angular";
-import { AGENT_ATTACHMENT_EXPORTS, AGENT_EXPORTS, AGENT_SETTINGS_EXPORTS, FRONTEND_OPERATIONS, frontendBuild, MEDIA_UPLOAD_EXPORTS, readBuildLabel, withMutationAliases } from "./frontend_builds";
+import { AGENT_ATTACHMENT_EXPORTS, AGENT_EXPORTS, AGENT_SETTINGS_EXPORTS, FRONTEND_OPERATIONS, frontendBuild, MEDIA_UPLOAD_EXPORTS, PROMPT_COMPOSER_EXPORTS, readBuildLabel, withMutationAliases } from "./frontend_builds";
 export { withMutationAliases };
 import type {
   AgentAttachmentFormat,
@@ -15,7 +15,9 @@ import type {
   CollectionWriteFormat,
   FrontendFormats,
   ProjectUploadFormat,
+  PromptComposerFormat,
 } from "./frontend_builds";
+import { resolveComposerControllers } from "./composer";
 import { findProjectPage } from "./project_upload";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
@@ -426,10 +428,60 @@ function operationStatus(result: FrontendCompatibility<unknown>): {
   return { ok: result.ok, failed_checks: result.ok ? [] : result.failed_checks };
 }
 
+/** Checks the PromptState exports and live manual composer controller when configured. */
+function promptComposerCheck(format: PromptComposerFormat): StoreProbeCheck {
+  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+  const failed: string[] = [];
+  for (const name of PROMPT_COMPOSER_EXPORTS) {
+    const value = readOwn(namespace, format.exports[name]);
+    const ok =
+      name === "videoAspects"
+        ? Array.isArray(value) && value.length > 0
+        : name === "aspectLabels"
+          ? value !== null && typeof value === "object"
+          : typeof value === "function";
+    if (!ok) failed.push(name);
+  }
+  const stateCtor = readOwn(namespace, format.exports.promptState);
+  const proto =
+    typeof stateCtor === "function"
+      ? (stateCtor as { prototype?: unknown }).prototype
+      : null;
+  if (typeof readOwn(proto, "clear") !== "function") failed.push("clear");
+  if (typeof readOwn(proto, "setAspectRatio") !== "function") {
+    failed.push("setAspectRatio");
+  }
+  if (document.querySelector("flow-project-page")) {
+    const { qa } = resolveComposerControllers(false);
+    const model = readOwn(qa, "model");
+    const items = readOwn(qa, format.items);
+    if (!qa) {
+      failed.push("qa");
+    } else {
+      if (typeof readOwn(model, format.families) !== "function") {
+        failed.push("families");
+      }
+      if (typeof readOwn(model, format.activeFamily) !== "function") {
+        failed.push("activeFamily");
+      }
+      if (typeof readOwn(items, "all") !== "function") {
+        failed.push("items");
+      }
+    }
+  }
+  return {
+    name: "prompt_composer",
+    ok: failed.length === 0,
+    detail:
+      failed.length === 0 ? "verified" : `missing ${failed.join(", ")}`,
+  };
+}
+
 /** Reports the general store checks and compatibility of each managed operation. */
 export function probeStore(): StoreProbeResult {
   const build = readBuildLabel();
   const verified = buildCheck(build);
+  const verifiedBuild = frontendBuild(build);
   const liveStore = runtimeState.store?.isCurrent() ? runtimeState.store : null;
   const trashChecks = assetTrashChecks(liveStore?.getTileMap());
   const views = runtimeState.ngLViewMap;
@@ -441,6 +493,9 @@ export function probeStore(): StoreProbeResult {
       detail: views ? `${views.size} views` : "not captured",
     },
     ...trashChecks,
+    ...(verifiedBuild?.promptComposer
+      ? [promptComposerCheck(verifiedBuild.promptComposer)]
+      : []),
   ];
   const pageChecks = projectPageOperationChecks(build);
   const operations: Record<
@@ -455,7 +510,7 @@ export function probeStore(): StoreProbeResult {
     character_bio: operationStatus(characterBioCompatibility()),
     asset_trash_store: operationStatus(assetTrashCompatibility()),
   };
-  const formats = frontendBuild(build)?.operations;
+  const formats = verifiedBuild?.operations;
   const operationsOk = FRONTEND_OPERATIONS.every((name) => !formats?.[name] || operations[name].ok);
   return {
     build,

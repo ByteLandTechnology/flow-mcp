@@ -13,6 +13,12 @@ import {
   findPromptBoxHost,
   settingsOpen,
 } from "./composer";
+import {
+  applyPromptComposerState,
+  buildAnchoredModelRegex,
+  buildDefinesPromptComposer,
+  normalizeComposerConfig,
+} from "./composer_state";
 import { delay, elText, hoverProbe, isVisibleEnabled } from "./dom";
 import { runtimeState } from "./state";
 import type { GenerationConfig, NgLView } from "./types";
@@ -91,6 +97,52 @@ function clickByText(
     }
   }
   return false;
+}
+
+/** Clicks a visible model family option whose primary label matches anchored `modelRe`. */
+function clickModelOption(modelRe: RegExp, scopeRoot: ParentNode): boolean {
+  const interactiveSel =
+    'button, [role="option"], [role="menuitem"], [role="radio"]';
+  const isExcludedButton = (el: Element): boolean => {
+    const aria = (el.getAttribute("aria-label") || "").trim();
+    return aria === "Select model family" || aria === "Settings trigger";
+  };
+  const els = Array.from(
+    scopeRoot.querySelectorAll(
+      '.model-select-option, [role="option"], [role="menuitem"], [role="radio"], button',
+    ),
+  );
+  const hit = els.find((el): el is HTMLElement => {
+    if (!isVisibleEnabled(el) || isExcludedButton(el)) return false;
+    if (!el.matches(interactiveSel)) {
+      const inner = el.querySelector(interactiveSel);
+      if (inner && (!isVisibleEnabled(inner) || isExcludedButton(inner))) {
+        return false;
+      }
+    }
+    const aria = (el.getAttribute("aria-label") || "").trim();
+    const propLabel = (el.getAttribute("label") || "").trim();
+    const raw = elText(el).trim();
+    const lines = raw
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const firstLine = lines[0] || "";
+    return (
+      (Boolean(aria) && modelRe.test(aria)) ||
+      (Boolean(propLabel) && modelRe.test(propLabel)) ||
+      (Boolean(firstLine) && modelRe.test(firstLine)) ||
+      (Boolean(raw) && modelRe.test(raw))
+    );
+  });
+  if (!hit) return false;
+  const targetBtn = hit.matches(interactiveSel)
+    ? hit
+    : Array.from(hit.querySelectorAll(interactiveSel)).find(
+        (b): b is HTMLElement => isVisibleEnabled(b) && !isExcludedButton(b),
+      ) || hit;
+  targetBtn.click();
+  return true;
 }
 
 /** Clicks a settings control matching `regex` within the labeled group container. */
@@ -228,6 +280,60 @@ async function ensureLViewCapture(allowSettingsClick = false): Promise<void> {
   }
 }
 
+/** Applies optional video duration and resolution controls inside the settings panel. */
+async function applyVideoDurationAndResolution(
+  cfg: GenerationConfig,
+  scope: ParentNode,
+): Promise<void> {
+  if (!cfg.duration && !cfg.resolution) return;
+  const settingsBtn = document.querySelector(
+    'flow-prompt-box button[aria-label="Settings trigger"], button[aria-label="Settings trigger"]',
+  );
+  if (isVisibleEnabled(settingsBtn) && !settingsOpen()) {
+    await withLViewMapCapture(async () => {
+      settingsBtn.click();
+      await delay(180);
+    });
+  }
+  const settingsScope = (): ParentNode =>
+    document.querySelector(
+      "flow-prompt-box-settings, .settings-content-overlay",
+    ) || scope;
+  try {
+    if (cfg.resolution) {
+      const rRe = new RegExp(escapeRegex(String(cfg.resolution).trim()), "i");
+      if (clickInsideGroup("Video resolution", rRe, settingsScope())) {
+        await delay(120);
+      }
+    }
+  } catch {
+    // Optional resolution control may be unavailable.
+  }
+  try {
+    if (cfg.duration) {
+      const rawDur = String(cfg.duration).replace(/s$/i, "").trim();
+      const secs = Number.parseInt(rawDur, 10);
+      const curScope = settingsScope();
+      if (Number.isFinite(secs) && (await setLengthSlider(secs, curScope))) {
+        await delay(160);
+      } else {
+        const d = escapeRegex(rawDur);
+        const hasDurGroup = Boolean(
+          document.querySelector('[aria-label*="Video duration" i]'),
+        );
+        const durRe = hasDurGroup
+          ? new RegExp(`\\b${d}\\s*s\\b|\\b${d}\\b`, "i")
+          : new RegExp(`\\b${d}\\s*(?:s|sec)\\b`, "i");
+        if (clickInsideGroup("Video duration", durRe, curScope)) {
+          await delay(120);
+        }
+      }
+    }
+  } catch {
+    // Optional duration control may be unavailable.
+  }
+}
+
 /** Configures generation mode, video type, aspect ratio, output count, duration, resolution, and model. */
 export async function setupGeneration(
   cfg: GenerationConfig,
@@ -235,14 +341,49 @@ export async function setupGeneration(
   const onEditPage = /\/edit\//.test(location.pathname || "");
 
   if (!onEditPage) {
+    const checked = normalizeComposerConfig(cfg);
+    if (!checked.ok) {
+      return { ok: false, error: checked.error };
+    }
+    const normalized = checked.config;
+
     const textbox = await ensureManualComposer();
     if (!textbox) return { ok: false, error: "manual_prompt_not_ready" };
+    const scope = findComposerRoot(textbox);
+
+    if (buildDefinesPromptComposer()) {
+      await ensureLViewCapture(false);
+      let direct = applyPromptComposerState(cfg);
+      if (
+        !direct.ok &&
+        !direct.fallback &&
+        direct.error === "prompt_composer_unavailable"
+      ) {
+        await ensureLViewCapture(true);
+        direct = applyPromptComposerState(cfg);
+      }
+      if (direct.ok) {
+        if (normalized.modeCategory === "video" && (cfg.duration || cfg.resolution)) {
+          await applyVideoDurationAndResolution(cfg, scope);
+        }
+        if (settingsOpen()) {
+          await closeSettingsAndMenus();
+        }
+        return { ok: true };
+      }
+      if (!direct.fallback) {
+        if (settingsOpen()) {
+          await closeSettingsAndMenus();
+        }
+        return { ok: false, error: direct.error };
+      }
+    }
+
     await ensureLViewCapture(true);
 
     const settingsBtn = document.querySelector(
       'flow-prompt-box button[aria-label="Settings trigger"], button[aria-label="Settings trigger"]',
     );
-    const scope = findComposerRoot(textbox);
 
     if (isVisibleEnabled(settingsBtn) && !settingsOpen()) {
       await withLViewMapCapture(async () => {
@@ -255,8 +396,8 @@ export async function setupGeneration(
       document.querySelector(
         "flow-prompt-box-settings, .settings-content-overlay",
       ) || scope;
-    const mode = String(cfg.mode || "video").toLowerCase();
-    if (mode === "image" || mode === "character" || mode === "scene") {
+    const mode = normalized.modeCategory;
+    if (mode === "image") {
       clickInsideGroup(
         "Mode",
         /\b(image|images|create image)\b/i,
@@ -272,11 +413,11 @@ export async function setupGeneration(
     await delay(140);
 
     try {
-      if (cfg.video_type && mode === "video") {
-        const vt = String(cfg.video_type).trim();
-        const vtRe = /ingredient/i.test(vt)
-          ? /\bingredients?\b/i
-          : /\bframes?\b/i;
+      if (mode === "video" && normalized.videoType) {
+        const vtRe =
+          normalized.videoType === "ingredients"
+            ? /\bingredients?\b/i
+            : /\bframes?\b/i;
         if (clickInsideGroup("Video type", vtRe, settingsScope())) {
           await delay(120);
         }
@@ -286,8 +427,8 @@ export async function setupGeneration(
     }
 
     try {
-      if (cfg.aspect) {
-        const a = String(cfg.aspect).trim();
+      if (normalized.aspect) {
+        const a = normalized.aspect;
         const aspectRe =
           a === "16:9"
             ? /\b16:9\b|\blandscape\b/i
@@ -305,8 +446,8 @@ export async function setupGeneration(
     }
 
     try {
-      if (cfg.count != null) {
-        const n = escapeRegex(String(cfg.count));
+      if (normalized.count != null) {
+        const n = escapeRegex(String(normalized.count));
         const countRe = new RegExp(
           `^(?:${n}|x${n}|${n}x|${n}\\s*(?:outputs?|results?|images?|videos?))$`,
           "i",
@@ -355,12 +496,8 @@ export async function setupGeneration(
     }
 
     try {
-      if (cfg.model) {
-        const flexPattern = escapeRegex(String(cfg.model).trim()).replace(
-          /[-_\s]+/g,
-          "[\\s\\-_]*",
-        );
-        const modelRe = new RegExp(flexPattern, "i");
+      if (normalized.model) {
+        const modelRe = buildAnchoredModelRegex(normalized.model);
         const familyBtn = document.querySelector(
           'button[aria-label="Select model family"]',
         );
@@ -381,11 +518,11 @@ export async function setupGeneration(
             if (pickerPane) break;
           }
           if (pickerPane) {
-            clickByText(modelRe, pickerPane, false);
+            clickModelOption(modelRe, pickerPane);
           }
           await delay(120);
           await closeModelMenu();
-        } else if (clickByText(modelRe, settingsScope(), false)) {
+        } else if (clickModelOption(modelRe, settingsScope())) {
           await delay(120);
         }
       }
@@ -395,7 +532,7 @@ export async function setupGeneration(
 
     try {
       // Some models show the resolution toggle and the length slider only after the model changes.
-      if (mode === "video" && cfg.model) {
+      if (mode === "video" && normalized.model) {
         if (cfg.resolution) {
           const rRe = new RegExp(escapeRegex(String(cfg.resolution).trim()), "i");
           if (clickInsideGroup("Video resolution", rRe, settingsScope())) {
@@ -419,28 +556,27 @@ export async function setupGeneration(
         findPromptBoxHost(findProjectPageInstance()),
       );
       const curMode = String(liveUx?.Qa?.config?.mode?.() || "");
-      const wantImageMode =
-        mode === "image" || mode === "character" || mode === "scene";
+      const wantImageMode = mode === "image";
       if (wantImageMode && curMode && curMode !== "IMAGE") {
         clickInsideGroup("Mode", /\bimage\b/i, settingsScope());
         await delay(140);
       } else if (!wantImageMode && curMode && !curMode.startsWith("VIDEO")) {
         clickInsideGroup("Mode", /\bvideo\b/i, settingsScope());
         await delay(140);
-        if (cfg.video_type) {
-          const vt = String(cfg.video_type).trim();
-          const vtRe = /ingredient/i.test(vt)
-            ? /\bingredients?\b/i
-            : /\bframes?\b/i;
+        if (normalized.videoType) {
+          const vtRe =
+            normalized.videoType === "ingredients"
+              ? /\bingredients?\b/i
+              : /\bframes?\b/i;
           if (clickInsideGroup("Video type", vtRe, settingsScope())) {
             await delay(120);
           }
         }
       }
       if (
-        cfg.count != null &&
+        normalized.count != null &&
         typeof liveUx?.Qa?.config?.outputCount === "function" &&
-        Number(liveUx.Qa.config.outputCount()) !== Number(cfg.count)
+        Number(liveUx.Qa.config.outputCount()) !== normalized.count
       ) {
         const settingsEl = document.querySelector("flow-prompt-box-settings");
         if (settingsEl) {
@@ -463,9 +599,9 @@ export async function setupGeneration(
             );
             if (iw) {
               if (typeof iw.Osa === "function") {
-                iw.Osa(Number(cfg.count));
+                iw.Osa(normalized.count);
               } else if (typeof iw.Ula === "function") {
-                iw.Ula(Number(cfg.count));
+                iw.Ula(normalized.count);
               }
               await delay(100);
               break;

@@ -153,6 +153,39 @@ export const AGENT_ATTACHMENT_EXPORTS = [
   "confirmUpload",
 ] as const satisfies readonly AgentAttachmentExport[];
 
+/** Browser exports required for direct PromptState control on the manual composer. */
+export const PROMPT_COMPOSER_EXPORTS = [
+  "promptState",
+  "setMode",
+  "setModel",
+  "setCount",
+  "aspectLabels",
+  "videoAspects",
+] as const;
+
+/** Keys in a build's PromptState export table. */
+export type PromptComposerExport = (typeof PROMPT_COMPOSER_EXPORTS)[number];
+
+/** Browser exports and PromptState fields for manual generation setup and submission checks. */
+export interface PromptComposerFormat {
+  /** Browser exports on `window.default_AiSandboxAngularFrontend`. */
+  exports: Readonly<Record<PromptComposerExport, string>>;
+  /** Signal on `Qa.model` that lists filtered model options for the active mode. */
+  families: string;
+  /** Signal on `Qa.model` that returns the active model family ID. */
+  activeFamily: string;
+  /** Signal on `Qa.model` that returns raw `MODEL_CONFIG` family descriptors and aliases. */
+  catalogFamilies: string;
+  /** Family ID property on each entry returned by `families`. */
+  modelId: string;
+  /** Attached prompt items container on `Qa`. */
+  items: string;
+  /** Disable reason code property on each entry in `Qa[items].all()`. */
+  disableReason: string;
+  /** Output emitter on `BasePromptBoxInstance` notified when leading items clear. */
+  clearOutput: string;
+}
+
 /** Browser exports and service fields for Agent settings. */
 export interface AgentSettingsFormat {
   /** Project metadata service's query client. */
@@ -718,6 +751,8 @@ interface FrontendBuildFields {
   characterCreate?: CharacterCreateFormat;
   /** Native fields of editable project titles. */
   projectTitle?: ProjectTitleFormat;
+  /** Native exports and PromptState fields for direct manual composer control. */
+  promptComposer?: PromptComposerFormat;
 }
 
 /** A verified build with full or pre-Agent operation coverage. */
@@ -831,6 +866,25 @@ const LEGACY_CHARACTER_CREATE: CharacterCreateFormat = {
 /** Editable project title format of earlier builds. */
 const LEGACY_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "tJa", stateSignal: "state" };
 
+/** Manual prompt composer format for Flow build 20261120.00_p0. */
+const NOVEMBER_20_PROMPT_COMPOSER: PromptComposerFormat = {
+  exports: {
+    promptState: "fP",
+    setMode: "AQ",
+    setModel: "BQ",
+    setCount: "scc",
+    aspectLabels: "NE",
+    videoAspects: "$O",
+  },
+  families: "Wqa",
+  activeFamily: "ala",
+  catalogFamilies: "jx",
+  modelId: "hg",
+  items: "oc",
+  disableReason: "Rp",
+  clearOutput: "lF",
+};
+
 /** Request formats by exact build label. Include only verified operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
@@ -887,6 +941,7 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
     },
     projectTitle: { saveEmitter: "HSa", stateSignal: "state" },
+    promptComposer: NOVEMBER_20_PROMPT_COMPOSER,
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
@@ -977,4 +1032,9 @@ export function projectTitleFormat(): ProjectTitleFormat {
 /** Returns the verified snapshot field descriptors for the active build. */
 export function snapshotFormat(): SnapshotFormat | undefined {
   return frontendBuild(readBuildLabel())?.snapshot;
+}
+
+/** Returns the verified manual prompt composer format for the active build. */
+export function promptComposerFormat(): PromptComposerFormat | undefined {
+  return frontendBuild(readBuildLabel())?.promptComposer;
 }

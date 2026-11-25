@@ -5,6 +5,11 @@
 
 import { readAngularTooltip, readOwn, resolveLView } from "./angular";
 import { findComposerWarning } from "./composer";
+import {
+  findPromptItemsDisableReason,
+  isPromptItemLoading,
+  readPromptItems,
+} from "./composer_state";
 import { delay, elText, isVisibleEnabled } from "./dom";
 import { runtimeState } from "./state";
 import type { NgLView } from "./types";
@@ -166,9 +171,34 @@ export async function submitGeneration(): Promise<unknown> {
     return fallback ?? null;
   };
 
+  const checkDisabledPromptItems = (): {
+    ok: false;
+    error: string;
+    detail: string;
+  } | null => {
+    const disableReason = findPromptItemsDisableReason(
+      readPromptItems(onEditPage),
+    );
+    if (!disableReason) return null;
+    return {
+      ok: false,
+      error: `ingredient_disabled:${disableReason}`,
+      detail: disableReason,
+    };
+  };
+
   for (let i = 0; i < 120; i += 1) {
+    const disabledItem = checkDisabledPromptItems();
+    if (disabledItem) return disabledItem;
+    const items = readPromptItems(onEditPage);
+    if (items?.some(isPromptItemLoading)) {
+      await delay(100);
+      continue;
+    }
     const exact = findStartButton();
     if (isVisibleEnabled(exact)) {
+      const recheckDisabled = checkDisabledPromptItems();
+      if (recheckDisabled) return recheckDisabled;
       return await prepareTarget(exact, "aria_start_generation");
     }
     const warning = checkWarning();
@@ -179,6 +209,9 @@ export async function submitGeneration(): Promise<unknown> {
       break;
     }
   }
+
+  const disabledAfter = checkDisabledPromptItems();
+  if (disabledAfter) return disabledAfter;
 
   const warningAfter = checkWarning();
   if (warningAfter) return warningAfter;

@@ -180,6 +180,7 @@ impl FlowService {
             resolution: req.resolution,
             ..Default::default()
         };
+        generation::normalize_generation_scene(&mut scene)?;
         characters::apply_character_look(&self.db, &mut scene).await?;
         Ok(self.queue.enqueue(scene).await)
     }
