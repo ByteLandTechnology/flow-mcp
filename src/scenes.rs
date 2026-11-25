@@ -137,6 +137,82 @@ fn clip_entered_error(asset: &FlowAsset, before: &HashMap<String, ClipBaseline>)
     }
 }
 
+/// Validates that each entry in `asset_ids` is non-empty and does not name a non-video asset or collection.
+fn validate_video_asset_ids(snap: &Value, asset_ids: &[String]) -> Result<Vec<String>> {
+    let collections = snap
+        .get("collections")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let assets = snap
+        .get("assets")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut cleaned = Vec::with_capacity(asset_ids.len());
+    for raw_id in asset_ids {
+        let id = raw_id.trim();
+        anyhow::ensure!(!id.is_empty(), "Video asset ID must not be empty");
+        if collections
+            .iter()
+            .any(|c| c.get("id").and_then(Value::as_str) == Some(id))
+        {
+            anyhow::bail!("Asset '{id}' is a collection, expected a video asset");
+        }
+        if let Some(found) = assets
+            .iter()
+            .find(|a| a.get("id").and_then(Value::as_str) == Some(id))
+        {
+            let kind = found
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            anyhow::ensure!(
+                kind == "video",
+                "Asset '{id}' has kind '{kind}', expected 'video'"
+            );
+        }
+        cleaned.push(id.to_string());
+    }
+    Ok(cleaned)
+}
+
+/// Validates that `scene_id` names a live scene in `snap`.
+fn validate_scene_target_id(snap: &Value, raw_scene_id: &str) -> Result<String> {
+    let scene_id = raw_scene_id.trim();
+    anyhow::ensure!(!scene_id.is_empty(), "Scene ID must not be empty");
+    if snap
+        .get("collections")
+        .and_then(Value::as_array)
+        .is_some_and(|cols| {
+            cols.iter()
+                .any(|c| c.get("id").and_then(Value::as_str) == Some(scene_id))
+        })
+    {
+        anyhow::bail!("Target '{scene_id}' is a collection, expected a scene");
+    }
+    let Some(found) = snap
+        .get("assets")
+        .and_then(Value::as_array)
+        .and_then(|assets| {
+            assets
+                .iter()
+                .find(|a| a.get("id").and_then(Value::as_str) == Some(scene_id))
+        })
+    else {
+        anyhow::bail!("Scene '{scene_id}' does not exist in the active project");
+    };
+    let kind = found
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    anyhow::ensure!(
+        kind == "scene",
+        "Target '{scene_id}' has kind '{kind}', expected 'scene'"
+    );
+    Ok(scene_id.to_string())
+}
+
 /// Parameters for `flow_scenes`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub(crate) struct ScenesParams {
@@ -190,31 +266,36 @@ pub(crate) async fn handle_scenes(
             Ok(json!({ "count": scenes.len(), "scenes": scenes }))
         }
         "create" => {
-            let asset_ids = req.asset_ids.unwrap_or_default();
-            let _ = read_snapshot(engine).await?;
+            let raw_asset_ids = req.asset_ids.unwrap_or_default();
+            let snap = read_snapshot(engine).await?;
+            let asset_ids = validate_video_asset_ids(&snap, &raw_asset_ids)?;
             let payload = json!({
                 "action": "create",
                 "asset_ids": asset_ids,
                 "name": req.name,
             });
             let res = engine.call_flow_async("sceneOp", json!([payload])).await?;
-            if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            if res.get("ok").and_then(Value::as_bool) != Some(true)
+                || res.get("confirmed").and_then(Value::as_bool) != Some(true)
+            {
                 anyhow::bail!(
                     "Failed to create scene: {}",
                     res.get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
+                        .and_then(Value::as_str)
+                        .unwrap_or("scene clips not confirmed")
                 );
             }
             Ok(res)
         }
         "add_clips" => {
-            let scene_id = req.id.context("flow_scenes add_clips requires 'id'")?;
-            let asset_ids = req
+            let raw_scene_id = req.id.context("flow_scenes add_clips requires 'id'")?;
+            let raw_asset_ids = req
                 .asset_ids
                 .filter(|v| !v.is_empty())
                 .context("flow_scenes add_clips requires non-empty 'asset_ids'")?;
-            let _ = read_snapshot(engine).await?;
+            let snap = read_snapshot(engine).await?;
+            let scene_id = validate_scene_target_id(&snap, &raw_scene_id)?;
+            let asset_ids = validate_video_asset_ids(&snap, &raw_asset_ids)?;
             let payload = json!({
                 "action": "add_clips",
                 "scene_id": scene_id,
@@ -222,12 +303,14 @@ pub(crate) async fn handle_scenes(
                 "position": req.position,
             });
             let res = engine.call_flow_async("sceneOp", json!([payload])).await?;
-            if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            if res.get("ok").and_then(Value::as_bool) != Some(true)
+                || res.get("confirmed").and_then(Value::as_bool) != Some(true)
+            {
                 anyhow::bail!(
                     "Failed to add clips to scene: {}",
                     res.get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
+                        .and_then(Value::as_str)
+                        .unwrap_or("scene clips not confirmed")
                 );
             }
             Ok(res)
@@ -320,7 +403,7 @@ pub(crate) async fn run_video_extend(
     if let Some(nav_url) = res.get("need_navigate").and_then(|v| v.as_str()) {
         engine.navigate(nav_url).await?;
         tokio::time::sleep(Duration::from_millis(1200)).await;
-        let _ = ensure_flow_store(engine).await;
+        let _ = read_snapshot(engine).await;
         let retry_payload = json!({
             "action": "prepare_extend",
             "asset_id": target.id,
@@ -379,7 +462,14 @@ pub(crate) async fn run_video_extend(
             on_progress("extending video...".to_string());
         }
 
-        if let Ok(cur_snap) = list_assets_with_project(engine).await {
+        let cur_snap = match list_assets_with_project(engine).await {
+            Ok(snap_ok) => Some(snap_ok),
+            Err(_) => {
+                let _ = ensure_flow_store(engine).await;
+                list_assets_with_project(engine).await.ok()
+            }
+        };
+        if let Some(cur_snap) = cur_snap {
             for asset in &cur_snap.assets {
                 if asset.kind == "video"
                     && !clip_is_failed(asset)
@@ -406,26 +496,27 @@ pub(crate) async fn run_video_extend(
                 ));
                 break;
             }
-            if !extending {
-                let fresh: Vec<FlowAsset> = cur_snap
-                    .assets
-                    .iter()
-                    .filter(|a| {
-                        a.kind == "video"
-                            && a.url.is_some()
-                            && before.get(&a.id).is_none_or(|prior| {
-                                a.primary_media_id.as_deref().map_or_else(
-                                    || a.url != prior.url,
-                                    |media_id| prior.primary_media_id.as_deref() != Some(media_id),
-                                )
-                            })
-                    })
-                    .cloned()
-                    .collect();
-                if !fresh.is_empty() {
-                    new_assets = fresh;
-                    break;
-                }
+            let fresh: Vec<FlowAsset> = cur_snap
+                .assets
+                .iter()
+                .filter(|a| {
+                    a.kind == "video"
+                        && !clip_is_failed(a)
+                        && !matches!(a.media_status.as_deref(), Some("pending" | "scheduled"))
+                        && a.url.is_some()
+                        && (!extending || a.media_status.as_deref() == Some("success"))
+                        && before.get(&a.id).is_none_or(|prior| {
+                            a.primary_media_id.as_deref().map_or_else(
+                                || !extending && a.url != prior.url,
+                                |media_id| prior.primary_media_id.as_deref() != Some(media_id),
+                            )
+                        })
+                })
+                .cloned()
+                .collect();
+            if !fresh.is_empty() {
+                new_assets = fresh;
+                break;
             }
         }
         if Instant::now() >= deadline {

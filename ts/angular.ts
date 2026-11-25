@@ -5,13 +5,17 @@
 
 import {
   characterLookMedia,
+  collectionIdOf,
   delay,
   elText,
   fifeBase,
+  isTrashedTile,
+  legacyTile,
   normalizeFlowMediaUrl,
+  parentCollectionId,
   readMediaUrl,
 } from "./dom";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { frontendBuild, readBuildLabel, snapshotFormat } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
@@ -431,13 +435,112 @@ function sceneIds(tiles: Map<string, FlowTile> | null | undefined): string[] {
     tile.type === "SCENE" && !tile.isPending ? [String(tile.id ?? id)] : []);
 }
 
+/** Finds and normalizes the first clip tile that `workflowIds` names in `tiles`. */
+function findFirstClipTile(
+  tiles: Map<string, FlowTile> | null | undefined,
+  workflowIds: string[],
+): FlowTile | null {
+  const firstId = workflowIds[0]?.trim();
+  if (!firstId || !(tiles instanceof Map)) return null;
+  const direct = tiles.get(firstId);
+  if (direct && !isTrashedTile(direct)) {
+    return legacyTile(direct) ?? null;
+  }
+  for (const tile of tiles.values()) {
+    if (!tile || isTrashedTile(tile)) continue;
+    if (String(tile.id ?? "") === firstId || String(tile.workflowId ?? "") === firstId) {
+      return legacyTile(tile) ?? null;
+    }
+  }
+  return null;
+}
+
+/** Derives a float width-to-height aspect ratio (`0.5625` for `9:16`, `16/9` for `16:9` or empty scenes). */
+function deriveSceneAspectRatio(firstTile: FlowTile | null): number {
+  if (!firstTile) return 16 / 9;
+  const candidates = [
+    firstTile.Kb?.aspectRatio,
+    firstTile.Fb?.aspectRatio,
+    firstTile.aspectRatio,
+  ];
+  let ratio = candidates.find(
+    (v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0,
+  );
+  if (ratio === undefined) {
+    const width =
+      firstTile.Fb?.tc?.width ??
+      firstTile.tc?.width ??
+      firstTile.Fb?.width ??
+      firstTile.width;
+    const height =
+      firstTile.Fb?.tc?.height ??
+      firstTile.tc?.height ??
+      firstTile.Fb?.height ??
+      firstTile.height;
+    if (
+      typeof width === "number" &&
+      Number.isFinite(width) &&
+      width > 0 &&
+      typeof height === "number" &&
+      Number.isFinite(height) &&
+      height > 0
+    ) {
+      ratio = width / height;
+    }
+  }
+  return ratio !== undefined && ratio < 1 ? 0.5625 : 16 / 9;
+}
+
+/** Derives the parent collection ID for a new scene from clip `0` or the active `/collection/<cid>` route. */
+function deriveSceneCollectionId(
+  tiles: Map<string, FlowTile> | null | undefined,
+  firstTile: FlowTile | null,
+): string | undefined {
+  const collectionType = snapshotFormat()?.tileTypes.collection ?? "COLLECTION";
+  const collectionIds = new Set<string>();
+  if (tiles instanceof Map) {
+    for (const [id, rawTile] of tiles.entries()) {
+      if (
+        rawTile &&
+        !isTrashedTile(rawTile) &&
+        String(rawTile.type ?? "").toUpperCase() === collectionType
+      ) {
+        collectionIds.add(String(rawTile.id ?? id));
+      }
+    }
+  }
+  const isCollectionId = (id: string): boolean => collectionIds.has(id);
+  const fromTile = collectionIdOf(firstTile, isCollectionId);
+  if (fromTile) return fromTile;
+  const directParent = firstTile ? parentCollectionId(firstTile) : null;
+  if (directParent && (!(tiles instanceof Map) || !tiles.has(directParent) || collectionIds.has(directParent))) {
+    return directParent;
+  }
+  const routeMatch = /\/project\/[^/?#]+\/collection\/([^/?#]+)/.exec(location.pathname || "");
+  if (routeMatch?.[1]) {
+    try {
+      const routeCid = decodeURIComponent(routeMatch[1]).trim();
+      if (routeCid && (!(tiles instanceof Map) || !tiles.has(routeCid) || collectionIds.has(routeCid))) {
+        return routeCid;
+      }
+    } catch {
+      // Ignore malformed URI components in location.pathname.
+    }
+  }
+  return undefined;
+}
+
 /** Creates a scene and waits for its ID from Flow. */
 export async function createScene(
   helper: FlowStoreHandle,
   getMap: () => Map<string, FlowTile> | null | undefined,
   workflowIds: string[],
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
-  const before = new Set(sceneIds(getMap()));
+  const initialMap = getMap();
+  const before = new Set(sceneIds(initialMap));
+  const firstClip = findFirstClipTile(initialMap, workflowIds);
+  const aspectRatio = deriveSceneAspectRatio(firstClip);
+  const collectionId = deriveSceneCollectionId(initialMap, firstClip);
   const resultField = frontendBuild(readBuildLabel())?.projectStore.mutations?.sceneCreated ?? "VWa";
   let confirmedId: string | undefined;
   let failure: string | undefined;
@@ -451,9 +554,9 @@ export async function createScene(
   void Promise.resolve().then(() => helper.mutate({
     type: "create_scene",
     rg: workflowIds,
-    Fc: undefined,
-    wc: undefined,
-    aspectRatio: 1,
+    Fc: collectionId,
+    wc: collectionId,
+    aspectRatio,
     De: completion,
     ve: completion,
   })).then((response) => {

@@ -3,13 +3,169 @@
 
 // Trim Flow videos and drive the scene builder extend workflow.
 
-import { buildProjectUrl, createScene, findRouter, navigateSpa, readAngularTooltip, withLViewMapCapture } from "./angular";
+import {
+  buildProjectUrl,
+  createScene,
+  findRouter,
+  navigateSpa,
+  pickerAssetMatches,
+  readAngularTooltip,
+  readOwn,
+  resolveLView,
+  withLViewMapCapture,
+} from "./angular";
+import type { PickerMatchTarget } from "./angular";
 import { findComposerWarning } from "./composer";
-import { delay, elText, hoverProbe, isDisabledProp, isVisibleEnabled, legacyTile, videoTrimBounds } from "./dom";
+import { discoverStore } from "./discover_store";
+import {
+  delay,
+  elText,
+  fifeBase,
+  hoverProbe,
+  isDisabledProp,
+  isTrashedTile,
+  isVisibleEnabled,
+  legacyTile,
+  pickTileUrl,
+  readMediaUrl,
+  videoTrimBounds,
+} from "./dom";
 import { activeProjectStoreFormat } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
+import { sceneContents } from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
-import type { FlowTile, VideoOpRequest } from "./types";
+import type { FlowTile, NgLView, VideoOpRequest } from "./types";
+
+/** Returns true when `fn` is a zero-argument Angular signal getter. */
+function isSignalGetter(fn: Function): boolean {
+  return fn.length === 0 && Object.getOwnPropertySymbols(fn).length > 0;
+}
+
+/** Returns visible `.clip` elements on `flow-scene-timeline`. */
+function timelineClipElements(): HTMLElement[] {
+  return Array.from(document.querySelectorAll("flow-scene-timeline .clip")).filter(
+    (el): el is HTMLElement =>
+      el instanceof HTMLElement &&
+      !el.classList.contains("pending-placeholder") &&
+      el.getClientRects().length > 0,
+  );
+}
+
+/** Returns true when `clipEl` on `flow-scene-timeline` has an Ivy context that matches `target`. */
+function timelineClipMatches(
+  clipEl: Element,
+  timelineLv: NgLView | null,
+  target: PickerMatchTarget,
+): boolean {
+  const seenLViews = new Set<NgLView>();
+  const nodes = [clipEl, ...Array.from(clipEl.querySelectorAll("*"))];
+  for (const node of nodes) {
+    const lv = resolveLView(node);
+    if (!Array.isArray(lv) || lv === timelineLv || seenLViews.has(lv)) continue;
+    if (lv[0] instanceof Element && lv[0] !== clipEl && !clipEl.contains(lv[0])) {
+      continue;
+    }
+    seenLViews.add(lv);
+    for (const cand of lv) {
+      if (
+        !cand ||
+        typeof cand !== "object" ||
+        cand instanceof Node ||
+        cand instanceof Error ||
+        Array.isArray(cand) ||
+        cand instanceof Map ||
+        cand === window ||
+        cand === document
+      ) {
+        continue;
+      }
+      if (pickerAssetMatches(cand, target)) return true;
+      for (const key of ["$implicit", "clip", "asset", "item", "workflow"]) {
+        const val = readOwn(cand, key);
+        if (pickerAssetMatches(val, target)) return true;
+        if (typeof val === "function" && val.length === 0) {
+          try {
+            if (pickerAssetMatches(val.call(cand), target)) return true;
+          } catch {
+            // Ignore unrelated methods.
+          }
+        }
+      }
+      const ownKeys = Object.getOwnPropertyNames(cand);
+      for (let i = 0; i < ownKeys.length && i < 24; i += 1) {
+        const val = Object.getOwnPropertyDescriptor(cand, ownKeys[i])?.value;
+        if (pickerAssetMatches(val, target)) return true;
+        if (typeof val === "function" && isSignalGetter(val)) {
+          try {
+            if (pickerAssetMatches(val.call(cand), target)) return true;
+          } catch {
+            // Ignore signal read errors.
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** Resolves `assetId` and `sceneId` against the bound project tile map for timeline clip selection. */
+function resolveExtendClipTarget(
+  tileMap: Map<string, FlowTile> | null | undefined,
+  sceneId: string | null,
+  assetId: string,
+): {
+  workflowId: string;
+  clipIndex: number;
+  sceneClipsCount: number;
+  matchTarget: PickerMatchTarget;
+} {
+  let assetTile: FlowTile | undefined = tileMap?.get(assetId);
+  if (!assetTile && tileMap instanceof Map && assetId) {
+    for (const tile of tileMap.values()) {
+      if (!tile || isTrashedTile(tile)) continue;
+      if (String(tile.id ?? "") === assetId || String(tile.workflowId ?? "") === assetId) {
+        assetTile = tile;
+        break;
+      }
+    }
+  }
+  const normalizedAsset = legacyTile(assetTile);
+  const workflowId = String(normalizedAsset?.workflowId || assetTile?.workflowId || assetId);
+  const sceneTile = sceneId && tileMap instanceof Map ? tileMap.get(sceneId) : undefined;
+  const { clips, history } = sceneTile ? sceneContents(sceneTile) : { clips: [], history: new Map() };
+  const activeClips = clips.filter((clip) => clip !== null);
+  const clipIndex = activeClips.findIndex(
+    (clip) =>
+      String(clip?.workflowId ?? "") === workflowId ||
+      String(clip?.workflowId ?? "") === assetId ||
+      (clip?.primaryMediaId != null && String(clip.primaryMediaId) === assetId),
+  );
+  const matchedClip = clipIndex >= 0 ? activeClips[clipIndex] : null;
+  const histMedia = history.get(workflowId)?.[0] ?? null;
+  const primaryMediaId =
+    matchedClip?.primaryMediaId ??
+    normalizedAsset?.primaryMediaId ??
+    normalizedAsset?.Kb?.id ??
+    normalizedAsset?.Fb?.id ??
+    histMedia?.id ??
+    null;
+  const url =
+    readMediaUrl(matchedClip) ||
+    readMediaUrl(histMedia) ||
+    pickTileUrl(normalizedAsset) ||
+    null;
+  return {
+    workflowId,
+    clipIndex,
+    sceneClipsCount: activeClips.length,
+    matchTarget: {
+      id: workflowId,
+      primaryMediaId,
+      url,
+      fife: url ? fifeBase(url) : undefined,
+    },
+  };
+}
 
 /** Checks whether an observed start trim bound matches the requested start time. */
 function startBoundMatches(
@@ -139,7 +295,8 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
 
   if (action === "prepare_extend") {
     const id = String(req?.asset_id || "").trim();
-    const activeScene = /\/scene\/([^/?#]+)/.exec(location.pathname)?.[1];
+    const activeScene = /\/scene\/([^/?#]+)/.exec(location.pathname)?.[1] ?? null;
+    let currentSceneId = req?.scene_id ? String(req.scene_id).trim() : activeScene;
     if (!activeScene || (req.scene_id && activeScene !== req.scene_id)) {
       if (!activeProjectStoreFormat()) {
         clearStore();
@@ -157,13 +314,24 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       }
       let sceneId = req?.scene_id ? String(req.scene_id).trim() : null;
       if (!sceneId) {
-        const wfId = String(tileMap.get(id)?.workflowId || id);
+        const rawSource = tileMap.get(id);
+        if (rawSource) {
+          if (isTrashedTile(rawSource) || rawSource.isPending) {
+            return { ok: false, error: `video_asset_unavailable:${id}` };
+          }
+          const sourceType = String(rawSource.type ?? "").toUpperCase();
+          if (sourceType !== "VIDEO") {
+            return { ok: false, error: `non_video_asset:${id}:${sourceType || "UNKNOWN"}` };
+          }
+        }
+        const wfId = String(rawSource?.workflowId || id);
         const created = await createScene(helper, getMap, [wfId]);
         if (!created?.ok || !created.id) {
           return { ok: false, error: created.error ?? "failed_to_create_scene_for_extend" };
         }
         sceneId = created.id;
       }
+      currentSceneId = sceneId;
       const pm = /\/project\/([^/?#]+)/.exec(location.pathname || "");
       const pid = pm ? pm[1] : helper?.projectId || null;
       const router = pid ? findRouter() : null;
@@ -183,7 +351,12 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         }
       }
       if (navigatedSpa) {
-        clearStore();
+        if (runtimeState.store?.isCurrent()) {
+          runtimeState.routePath = location.pathname;
+        } else {
+          clearStore();
+          await discoverStore();
+        }
         await delay(250);
       } else if (pid) {
         return {
@@ -198,17 +371,23 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
           scene_id: sceneId,
         };
       }
+    } else if (!runtimeState.store?.isCurrent()) {
+      await discoverStore();
     }
 
-    for (let i = 0; i < 40; i++) {
-      if (
-        document.querySelector(
-          "flow-scene-timeline, .is-extend-mode, .extend-composing, button[aria-label='Add clip']",
-        )
-      ) {
-        break;
-      }
+    const readCurrentMap = (): Map<string, FlowTile> | null | undefined =>
+      runtimeState.store?.getTileMap?.();
+    for (let i = 0; i < 25; i++) {
+      if (!runtimeState.store || runtimeState.store.isReady()) break;
       await delay(100);
+    }
+    if (currentSceneId) {
+      for (let i = 0; i < 20; i++) {
+        const st = readCurrentMap()?.get(currentSceneId);
+        if (st && sceneContents(st).clips.some((clip) => clip !== null)) break;
+        if (!runtimeState.store) break;
+        await delay(100);
+      }
     }
 
     const inExtendMode = (): boolean =>
@@ -217,6 +396,13 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
           ".is-extend-mode, .extend-composing, .extend-mode-chip",
         ),
       );
+
+    const findAddClipBtn = (): HTMLElement | null => {
+      const btn = document.querySelector(
+        'flow-scene-timeline button[aria-label="Add clip"], flow-scene-builder button[aria-label="Add clip"], button[aria-label="Add clip"]',
+      );
+      return isVisibleEnabled(btn) ? btn : null;
+    };
 
     const findExtendBtn = (): HTMLElement | null =>
       Array.from(
@@ -239,41 +425,89 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         );
       }) || null;
 
-    if (!inExtendMode()) {
-      let extendBtn = findExtendBtn();
-      if (!extendBtn) {
-        const sb = document.querySelector("flow-scene-builder") || document;
-        const clip = sb.querySelector(
-          '[class*="clip"], [data-testid*="clip"], video',
-        );
-        if (clip instanceof HTMLElement) {
-          clip.click();
-          await delay(250);
-        }
-        for (let i = 0; i < 15; i++) {
-          extendBtn = findExtendBtn();
-          if (extendBtn) break;
-          await delay(100);
-        }
+    let clipTarget = resolveExtendClipTarget(readCurrentMap(), currentSceneId, id);
+    for (let i = 0; i < 150; i++) {
+      if (inExtendMode()) {
+        break;
       }
-      if (extendBtn) {
-        extendBtn.click();
-        await delay(300);
-      }
-      if (!inExtendMode()) {
-        const addClipBtn = document.querySelector(
-          'flow-scene-builder button[aria-label="Add clip"], flow-scene-timeline button[aria-label="Add clip"], button[aria-label="Add clip"]',
-        );
-        if (isVisibleEnabled(addClipBtn)) {
-          if (!(runtimeState.ngLViewMap instanceof Map)) {
-            await withLViewMapCapture(async () => {
-              addClipBtn.click();
-              await delay(250);
-            });
-          } else {
-            addClipBtn.click();
-            await delay(250);
+      const selectedRendered = Boolean(
+        document.querySelector("flow-scene-timeline .clip.selected"),
+      );
+      const addClipRendered = Boolean(findAddClipBtn());
+      if (selectedRendered || addClipRendered) {
+        clipTarget = resolveExtendClipTarget(readCurrentMap(), currentSceneId, id);
+        const clipsDom = timelineClipElements();
+        const expectedCount =
+          clipTarget.clipIndex >= 0 ? clipTarget.clipIndex + 1 : Math.min(clipTarget.sceneClipsCount, 1);
+        if (clipsDom.length >= expectedCount || i >= 45) {
+          await delay(150);
+          if (
+            inExtendMode() ||
+            Boolean(document.querySelector("flow-scene-timeline .clip.selected")) ||
+            Boolean(findAddClipBtn())
+          ) {
+            break;
           }
+        }
+      }
+      await delay(100);
+    }
+
+    if (!runtimeState.store?.isCurrent()) {
+      await discoverStore();
+    }
+    clipTarget = resolveExtendClipTarget(readCurrentMap(), currentSceneId, id);
+
+    const clipEls = timelineClipElements();
+    if (clipEls.length > 0 && !(runtimeState.ngLViewMap instanceof Map)) {
+      await withLViewMapCapture(async () => {
+        await hoverProbe(clipEls.slice(0, 6), 25);
+      });
+    }
+
+    const timelineHost = document.querySelector("flow-scene-timeline");
+    const timelineLv = timelineHost ? resolveLView(timelineHost) : null;
+    let matchedClip: HTMLElement | null =
+      (id ? clipEls.find((el) => timelineClipMatches(el, timelineLv, clipTarget.matchTarget)) : null) ??
+      (clipTarget.clipIndex >= 0 && clipTarget.clipIndex < clipEls.length
+        ? clipEls[clipTarget.clipIndex]
+        : !id && clipEls.length === 1
+          ? clipEls[0]
+          : null);
+
+    if (id && !matchedClip && (clipEls.length > 0 || clipTarget.sceneClipsCount > 0)) {
+      return { ok: false, error: `scene_clip_not_found:${id}` };
+    }
+
+    if (matchedClip && !matchedClip.classList.contains("selected")) {
+      matchedClip.scrollIntoView({ block: "nearest", inline: "center" });
+      await delay(40);
+      matchedClip.click();
+      for (let i = 0; i < 20; i++) {
+        if (matchedClip.classList.contains("selected")) break;
+        if (i === 8) matchedClip.click();
+        await delay(100);
+      }
+      if (!matchedClip.classList.contains("selected")) {
+        return { ok: false, error: `scene_clip_select_failed:${clipTarget.workflowId}` };
+      }
+      await delay(150);
+    }
+
+    if (!inExtendMode()) {
+      const addClipBtn = findAddClipBtn();
+      if (addClipBtn) {
+        if (!(runtimeState.ngLViewMap instanceof Map)) {
+          await withLViewMapCapture(async () => {
+            addClipBtn.click();
+            await delay(200);
+          });
+        } else {
+          addClipBtn.click();
+          await delay(200);
+        }
+        let extendOpt: Element | undefined;
+        for (let i = 0; i < 15; i++) {
           // Angular renders the menu in an overlay outside the menu host.
           const menuScope = document.querySelector(".extend-menu-panel") ?? document;
           const optCandidates = Array.from(
@@ -281,7 +515,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
               '.extend-clip-option button, .extend-clip-option [role="menuitem"], flow-menu-item.extend-clip-option, button, [role="menuitem"], [role="button"]',
             ),
           );
-          const extendOpt = optCandidates.find((el) => {
+          extendOpt = optCandidates.find((el) => {
             if (el.getClientRects().length === 0) return false;
             const aria = (el.getAttribute("aria-label") || "").trim();
             const raw = elText(el);
@@ -294,26 +528,38 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
               Boolean(el.closest(".extend-clip-option"))
             );
           });
-          if (extendOpt) {
-            const innerBtn =
-              extendOpt.querySelector("button, [role='menuitem']") || extendOpt;
-            if (!isVisibleEnabled(innerBtn) || !isVisibleEnabled(extendOpt)) {
-              if (!(runtimeState.ngLViewMap instanceof Map)) {
-                await withLViewMapCapture(async () => {
-                  await hoverProbe([extendOpt, innerBtn], 40);
-                });
-              }
-              const reason =
-                readAngularTooltip(extendOpt) ||
-                readAngularTooltip(innerBtn) ||
-                "unavailable";
-              return { ok: false, error: `extend_option_disabled:${reason}` };
+          if (extendOpt) break;
+          await delay(100);
+        }
+        if (extendOpt) {
+          const innerBtn =
+            extendOpt.querySelector("button, [role='menuitem']") || extendOpt;
+          if (!isVisibleEnabled(innerBtn) || !isVisibleEnabled(extendOpt)) {
+            if (!(runtimeState.ngLViewMap instanceof Map)) {
+              await withLViewMapCapture(async () => {
+                await hoverProbe([extendOpt, innerBtn], 40);
+              });
             }
-            innerBtn.click();
-            for (let i = 0; i < 20; i++) {
-              if (inExtendMode()) break;
-              await delay(100);
-            }
+            const reason =
+              readAngularTooltip(extendOpt) ||
+              readAngularTooltip(innerBtn) ||
+              "unavailable";
+            return { ok: false, error: `extend_option_disabled:${reason}` };
+          }
+          innerBtn.click();
+          for (let i = 0; i < 20; i++) {
+            if (inExtendMode()) break;
+            await delay(100);
+          }
+        }
+      }
+      if (!inExtendMode()) {
+        const extendBtn = findExtendBtn();
+        if (extendBtn) {
+          extendBtn.click();
+          for (let i = 0; i < 20; i++) {
+            if (inExtendMode()) break;
+            await delay(100);
           }
         }
       }
@@ -459,7 +705,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     if (!submitBtn.contains(document.elementFromPoint(x, y))) {
       return { ok: false, error: "extend_submit_button_obscured" };
     }
-    return { ok: true, submit_point: { x, y } };
+    return { ok: true, submit_point: { x, y }, scene_id: currentSceneId };
   }
 
   if (action === "poll_extend") {
@@ -513,7 +759,11 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       }
     }
     const closed = !location.pathname.includes("/scene/");
-    clearStore();
+    if (runtimeState.store?.isCurrent()) {
+      runtimeState.routePath = location.pathname;
+    } else {
+      clearStore();
+    }
     return { ok: true, closed };
   }
 

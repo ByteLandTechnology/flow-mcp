@@ -342,9 +342,15 @@ export function findProjectStoreInView(
 
   for (const slot of view) {
     consider(slot);
-    if (!slot || typeof slot !== "object" || slot instanceof Node) continue;
+    if (!slot || typeof slot !== "object" || slot instanceof Node || Array.isArray(slot) || slot instanceof Map) {
+      continue;
+    }
     for (const key of format.componentSlots) {
       consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
+    }
+    const ownKeys = Object.getOwnPropertyNames(slot);
+    for (let i = 0; i < ownKeys.length && i < 48; i += 1) {
+      consider(Object.getOwnPropertyDescriptor(slot, ownKeys[i])?.value);
     }
   }
   return matches;
