@@ -37,6 +37,36 @@ const ACCOUNT_CREDITS_RE = /(?:^|[^\w,])(\d[\d,]*)\s+(?:Google\s+Flow|Flow|AI)\s
 /** Selector matching generation credit cost estimates that are not account balances. */
 const COST_LABEL_SELECTOR = "flow-credit-cost-label, .credit-cost-label, .credit-cost-link";
 
+/** Reads the creation timestamp in milliseconds from a media payload when available. */
+function variantTimestampMs(
+  media: FlowMediaPayload | null | undefined,
+): number | null {
+  if (!media || typeof media !== "object") return null;
+  const rawDate =
+    media.hc ?? media.kc ?? (media as Record<string, unknown>).lc;
+  return rawDate instanceof Date && Number.isFinite(rawDate.getTime())
+    ? rawDate.getTime()
+    : null;
+}
+
+/** Selects the newest normalized media variant from a tile or scene clip history list. */
+function pickLatestHistoryVariant(history: unknown): FlowMediaPayload | null {
+  if (!Array.isArray(history) || history.length === 0) return null;
+  let best: FlowMediaPayload | null = null;
+  let bestTs: number | null = null;
+  for (const item of history) {
+    if (!item || typeof item !== "object") continue;
+    const norm = legacyMedia(item as FlowMediaPayload);
+    if (!norm) continue;
+    const curTs = variantTimestampMs(norm);
+    if (!best || curTs === null || bestTs === null || curTs >= bestTs) {
+      best = norm;
+      bestTs = curTs;
+    }
+  }
+  return best;
+}
+
 /** Locates an active Angular service instance matching `ServiceClass` in runtime state. */
 function findCreditsServiceInstance(
   ServiceClass: abstract new (...args: never[]) => object,
@@ -324,13 +354,13 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
           readMediaUrl(t.fb, true)
         : null;
 
-    const mediaStatus = String(t.Fb?.Zc ?? t.fb?.Zc ?? t.Zc ?? "").toLowerCase();
-    const mediaError = formatMediaError(t.Fb?.nf ?? t.fb?.nf ?? t.nf);
+    const primaryStatus = String(t.Fb?.Zc ?? t.fb?.Zc ?? t.Zc ?? "").toLowerCase();
+    const primaryError = formatMediaError(t.Fb?.nf ?? t.fb?.nf ?? t.nf);
     const mediaNotReady =
-      mediaStatus === "pending" ||
-      mediaStatus === "scheduled" ||
-      mediaStatus === "failed" ||
-      mediaStatus === "canceled" ||
+      primaryStatus === "pending" ||
+      primaryStatus === "scheduled" ||
+      primaryStatus === "failed" ||
+      primaryStatus === "canceled" ||
       Boolean(t.Fb?.nf || t.fb?.nf || t.nf);
 
     const primaryMediaId =
@@ -341,6 +371,33 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       t.fb?.mediaId ||
       t.mediaId ||
       null;
+    const primaryMediaIdStr =
+      primaryMediaId != null && String(primaryMediaId) !== ""
+        ? String(primaryMediaId)
+        : null;
+    const rawHistory = Array.isArray(rawTile.history)
+      ? rawTile.history
+      : Array.isArray(t.history)
+        ? t.history
+        : null;
+    const latestVariant = pickLatestHistoryVariant(rawHistory);
+    const latestVariantIdRaw =
+      latestVariant?.id ?? latestVariant?.mediaId ?? primaryMediaIdStr;
+    const latestVariantId =
+      latestVariantIdRaw != null && String(latestVariantIdRaw) !== ""
+        ? String(latestVariantIdRaw)
+        : null;
+    const latestStatus = latestVariant
+      ? String(latestVariant.Zc ?? "").toLowerCase()
+      : "";
+    const latestError = latestVariant
+      ? formatMediaError(latestVariant.nf)
+      : null;
+    const mediaStatus = (latestStatus || primaryStatus) || null;
+    const mediaError = latestVariant
+      ? latestError ??
+        (latestVariantId === primaryMediaIdStr ? primaryError : null)
+      : primaryError;
 
     const cachedEntry = primaryMediaId
       ? runtimeState.mediaInfoCache.get(String(primaryMediaId))
@@ -403,12 +460,14 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
             : null,
       url: mediaUrl ? normalizeFlowMediaUrl(String(mediaUrl), kind, env) : null,
       collection_id: cid,
-      primary_media_id: primaryMediaId ? String(primaryMediaId) : null,
+      scene_id: null,
+      primary_media_id: primaryMediaIdStr,
+      latest_variant_id: latestVariantId,
       personality_notes: bio == null ? null : String(bio),
       voice: voiceRaw != null ? voiceRaw : null,
       trim_start_seconds: trimStart,
       trim_end_seconds: trimEnd,
-      media_status: mediaStatus || null,
+      media_status: mediaStatus,
       media_error: mediaError,
       width:
         typeof t.width === "number"
@@ -458,64 +517,108 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
   }
 
   for (const st of sceneTiles) {
+    const sceneId =
+      st.id != null && String(st.id) !== "" ? String(st.id) : null;
     const sceneCid = collectionIdOf(st, isCollectionId);
     const { clips, history } = sceneContents(st);
+    const seenWfIds = new Set<string>();
     const candidates: Array<
-      [string, SceneClipItem | null, FlowMediaPayload | null]
+      [
+        string,
+        SceneClipItem | null,
+        FlowMediaPayload | null,
+        FlowMediaPayload[] | undefined,
+      ]
     > = [];
     for (const clip of clips) {
       const wfId = clip?.workflowId ? String(clip.workflowId) : null;
-      if (!wfId) continue;
+      if (!wfId || seenWfIds.has(wfId)) continue;
+      seenWfIds.add(wfId);
       const hist = history.get(wfId);
       const primaryId = clip?.primaryMediaId
         ? String(clip.primaryMediaId)
         : null;
       const mObj = Array.isArray(hist)
-        ? hist.find((x) => x && String(x.id || "") === primaryId) ||
-          hist[0] ||
+        ? (primaryId
+            ? hist.find((x) => x && String(x.id ?? x.mediaId ?? "") === primaryId)
+            : null) ||
+          pickLatestHistoryVariant(hist) ||
           null
         : null;
-      candidates.push([wfId, clip, mObj]);
+      candidates.push([wfId, clip, mObj, hist]);
     }
     for (const [wfId, hist] of history) {
-      const mObj = Array.isArray(hist) ? hist[0] || null : null;
-      candidates.push([wfId, null, mObj]);
+      if (!wfId || seenWfIds.has(wfId)) continue;
+      seenWfIds.add(wfId);
+      const mObj = pickLatestHistoryVariant(hist);
+      candidates.push([wfId, null, mObj, hist]);
     }
 
-    for (const [wfId, clip, rawMedia] of candidates) {
+    for (const [wfId, clip, rawMedia, hist] of candidates) {
       if (!wfId) continue;
       const mObj = legacyMedia(rawMedia);
       const cObj = legacyMedia(clip as FlowMediaPayload | null);
-      const mStatus = String(
+      const primaryClipStatus = String(
         mObj?.Zc ?? cObj?.Zc ?? clip?.Zc ?? "",
       ).toLowerCase();
-      const mError = formatMediaError(mObj?.nf ?? cObj?.nf ?? clip?.nf);
-      const existing = byId.get(wfId);
-      if (existing) {
-        if (mStatus === "failed" || mStatus === "canceled" || mError) {
-          if (
-            existing.media_status !== "failed" &&
-            existing.media_status !== "canceled"
-          ) {
-            existing.media_status = mStatus || existing.media_status;
-          }
-          if (!existing.media_error && mError) {
-            existing.media_error = mError;
-          }
-        }
-        continue;
-      }
-      const mNotReady =
-        mStatus === "pending" ||
-        mStatus === "scheduled" ||
-        mStatus === "failed" ||
-        mStatus === "canceled" ||
-        Boolean(mObj?.nf || cObj?.nf || clip?.nf);
+      const primaryClipError = formatMediaError(mObj?.nf ?? cObj?.nf ?? clip?.nf);
       const clipPrimaryMediaId = clip?.primaryMediaId
         ? String(clip.primaryMediaId)
         : mObj?.id
           ? String(mObj.id)
           : null;
+      const latestClipVariant = pickLatestHistoryVariant(hist);
+      const latestClipIdRaw =
+        latestClipVariant?.id ?? latestClipVariant?.mediaId ?? clipPrimaryMediaId;
+      const latestClipVariantId =
+        latestClipIdRaw != null && String(latestClipIdRaw) !== ""
+          ? String(latestClipIdRaw)
+          : null;
+      const latestClipStatus = latestClipVariant
+        ? String(latestClipVariant.Zc ?? "").toLowerCase()
+        : "";
+      const latestClipError = latestClipVariant
+        ? formatMediaError(latestClipVariant.nf)
+        : null;
+      const effectiveStatus = (latestClipStatus || primaryClipStatus) || null;
+      const effectiveError = latestClipVariant
+        ? latestClipError ??
+          (latestClipVariantId === clipPrimaryMediaId ? primaryClipError : null)
+        : primaryClipError;
+      const existing = byId.get(wfId);
+      if (existing) {
+        if (
+          latestClipVariantId &&
+          (!existing.latest_variant_id ||
+            existing.latest_variant_id === existing.primary_media_id)
+        ) {
+          existing.latest_variant_id = latestClipVariantId;
+        }
+        if (
+          effectiveStatus === "failed" ||
+          effectiveStatus === "canceled" ||
+          effectiveStatus === "pending" ||
+          effectiveStatus === "scheduled" ||
+          effectiveError
+        ) {
+          if (
+            existing.media_status !== "failed" &&
+            existing.media_status !== "canceled"
+          ) {
+            existing.media_status = effectiveStatus || existing.media_status;
+          }
+          if (!existing.media_error && effectiveError) {
+            existing.media_error = effectiveError;
+          }
+        }
+        continue;
+      }
+      const mNotReady =
+        primaryClipStatus === "pending" ||
+        primaryClipStatus === "scheduled" ||
+        primaryClipStatus === "failed" ||
+        primaryClipStatus === "canceled" ||
+        Boolean(mObj?.nf || cObj?.nf || clip?.nf);
       const cachedClipVideoUrl = clipPrimaryMediaId
         ? asHttpOrDataUrl(
             runtimeState.mediaInfoCache.get(clipPrimaryMediaId)?.url,
@@ -586,13 +689,15 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         prompt: clipPrompt,
         url: clipUrl ? normalizeFlowMediaUrl(String(clipUrl), "video", env) : null,
         collection_id: sceneCid,
+        scene_id: sceneId,
         primary_media_id: clipPrimaryMediaId,
+        latest_variant_id: latestClipVariantId,
         personality_notes: null,
         voice: null,
         trim_start_seconds: trimStartVal,
         trim_end_seconds: trimEndVal,
-        media_status: mStatus || null,
-        media_error: mError,
+        media_status: effectiveStatus,
+        media_error: effectiveError,
         width:
           typeof mObj?.width === "number"
             ? mObj.width

@@ -28,7 +28,7 @@ const MEDIA_URL_LOOKUPS: usize = 4;
 const ASSET_LIST_URL_BUDGET: Duration = Duration::from_secs(10);
 
 /// Media asset or scene item inside a Google Flow project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct FlowAsset {
     /// Flow asset or tile ID.
     pub(crate) id: String,
@@ -48,6 +48,9 @@ pub(crate) struct FlowAsset {
     /// Parent collection display name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) collection_name: Option<String>,
+    /// Parent scene ID when this clip exists only inside a scene timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scene_id: Option<String>,
     /// Media width in pixels.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) width: Option<u32>,
@@ -60,6 +63,9 @@ pub(crate) struct FlowAsset {
     /// Primary media ID for video trim and edit operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) primary_media_id: Option<String>,
+    /// Newest variant ID in asset or scene clip history.
+    #[serde(default, skip_serializing)]
+    pub(crate) latest_variant_id: Option<String>,
     /// Character personality notes or introduction text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) personality_notes: Option<String>,
@@ -166,15 +172,18 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
+        let primary_not_ready = (asset.media_error.is_some()
+            || matches!(
+                asset.media_status.as_deref(),
+                Some("pending" | "scheduled" | "failed" | "canceled")
+            ))
+            && (asset.latest_variant_id.is_none()
+                || asset.latest_variant_id == asset.primary_media_id);
         if !matches!(
             asset.kind.as_str(),
             "video" | "image" | "character" | "audio"
         ) || asset.url.is_some()
-            || asset.media_error.is_some()
-            || matches!(
-                asset.media_status.as_deref(),
-                Some("pending" | "scheduled" | "failed" | "canceled")
-            )
+            || primary_not_ready
         {
             continue;
         }

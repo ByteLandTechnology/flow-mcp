@@ -11,6 +11,8 @@ import {
   findLiveBasePromptBox,
   findProjectPageInstance,
   findPromptBoxHost,
+  isEditOrSceneRoute,
+  NON_COMPOSER_PANELS,
   settingsOpen,
 } from "./composer";
 import { delay, elText, hoverProbe, isVisibleEnabled } from "./dom";
@@ -232,16 +234,19 @@ async function ensureLViewCapture(allowSettingsClick = false): Promise<void> {
 export async function setupGeneration(
   cfg: GenerationConfig,
 ): Promise<{ ok: boolean; error?: string }> {
-  const onEditPage = /\/edit\//.test(location.pathname || "");
+  const onEditPage = isEditOrSceneRoute();
 
   if (!onEditPage) {
     const textbox = await ensureManualComposer();
     if (!textbox) return { ok: false, error: "manual_prompt_not_ready" };
     await ensureLViewCapture(true);
 
-    const settingsBtn = document.querySelector(
-      'flow-prompt-box button[aria-label="Settings trigger"], button[aria-label="Settings trigger"]',
-    );
+    const settingsBtn =
+      Array.from(
+        document.querySelectorAll(
+          'flow-prompt-box button[aria-label="Settings trigger"], button[aria-label="Settings trigger"]',
+        ),
+      ).find((el) => !el.closest(NON_COMPOSER_PANELS)) ?? null;
     const scope = findComposerRoot(textbox);
 
     if (isVisibleEnabled(settingsBtn) && !settingsOpen()) {

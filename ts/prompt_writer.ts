@@ -312,9 +312,13 @@ export async function writePromptBox(
       }
     };
 
+    const isExcluded = (el: Element | null | undefined): boolean =>
+      Boolean(opts.excludeSelector && el?.closest(opts.excludeSelector));
+
     const scanResolvedTree = (): void => {
       const defaultSeeds = [
         document.querySelector("flow-rich-text-editor"),
+        document.querySelector("flow-edit-image-prompt-box"),
         document.querySelector("flow-edit-video-prompt-box"),
         document.querySelector("flow-base-prompt-box"),
       ];
@@ -323,6 +327,7 @@ export async function writePromptBox(
         rootEl,
         rootEl.closest("flow-rich-text-editor"),
         rootEl.closest("flow-base-prompt-box"),
+        rootEl.closest("flow-edit-image-prompt-box"),
         rootEl.closest("flow-edit-video-prompt-box"),
         rootEl.closest("flow-creative-agent-prompt-box"),
         rootEl.closest("flow-applet-prompt-box"),
@@ -330,10 +335,11 @@ export async function writePromptBox(
         rootEl.closest("flow-character-prompt-box"),
         rootEl.closest("flow-edit-character-footer"),
         ...extraSeeds,
-      ].filter((el): el is Element => Boolean(el));
+      ].filter((el): el is Element => Boolean(el && !isExcluded(el)));
       for (const seed of startSeeds) {
         let cur: Element | null = seed;
         for (let depth = 0; depth < 8 && cur; depth++) {
+          if (isExcluded(cur)) break;
           let p: NgLView | null = resolveLView(cur);
           for (let pDepth = 0; pDepth < 6 && Array.isArray(p); pDepth++) {
             extractFromLView(p);
@@ -357,7 +363,9 @@ export async function writePromptBox(
     ) {
       const sBtn =
         opts.trySettingsClick !== false
-          ? document.querySelector('button[aria-label="Settings trigger"]')
+          ? Array.from(
+              document.querySelectorAll('button[aria-label="Settings trigger"]'),
+            ).find((el) => !isExcluded(el)) ?? null
           : null;
       if (isVisibleEnabled(sBtn)) {
         await withLViewMapCapture(async () => {
@@ -395,7 +403,9 @@ export async function writePromptBox(
             : null) || document;
         const tipEls = Array.from(
           scope.querySelectorAll("[mattooltip], button[aria-label]"),
-        ).slice(0, 6);
+        )
+          .filter((el) => !isExcluded(el))
+          .slice(0, 6);
         await withLViewMapCapture(async () => {
           await hoverProbe(tipEls, 80);
         });
@@ -453,7 +463,7 @@ export async function writePromptBox(
           : null;
     if (!promptState || !applyFn) return false;
     const segments = [{ type: "text", content }];
-    applyFn.call(promptState, { Oe: segments, Te: segments });
+    applyFn.call(promptState, { kf: segments, Te: segments, Oe: segments });
     return true;
   };
   const isPromptPopulated = (): boolean => {
