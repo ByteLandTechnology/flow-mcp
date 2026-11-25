@@ -23,6 +23,7 @@ mod http;
 mod instance;
 mod mcp;
 mod media_files;
+mod pcm_wav;
 mod platform;
 mod project;
 mod project_route;

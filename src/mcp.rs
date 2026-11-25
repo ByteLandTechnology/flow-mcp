@@ -204,9 +204,9 @@ impl FlowMcpServer {
         Self::format_result(self.service.trash(&req.r#match).await)
     }
 
-    /// Downloads a media asset from the active Google Flow project.
+    /// Downloads a media asset or scene from the active Google Flow project.
     #[tool(
-        description = "Download an image, video, audio, or character asset from the active Google Flow project."
+        description = "Download an image, video, audio, scene, or character asset from the active Google Flow project."
     )]
     async fn flow_download(
         &self,

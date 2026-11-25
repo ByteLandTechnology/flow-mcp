@@ -60,6 +60,15 @@ pub(crate) struct FlowAsset {
     /// Primary media ID for video trim and edit operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) primary_media_id: Option<String>,
+    /// Internal list of media variant and history IDs associated with this tile.
+    #[serde(default, skip_serializing)]
+    pub(crate) variant_ids: Vec<String>,
+    /// Internal media family hint cached from `as29s` resolution.
+    #[serde(default, skip_serializing)]
+    pub(crate) media_kind_hint: Option<String>,
+    /// Internal flag set when `as29s` case `11` returned raw 24 kHz PCM bytes.
+    #[serde(default, skip_serializing)]
+    pub(crate) pcm_audio: bool,
     /// Character personality notes or introduction text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) personality_notes: Option<String>,
@@ -81,6 +90,40 @@ pub(crate) struct FlowAsset {
     /// Creation timestamp (`createTime`) string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) created_at: Option<String>,
+}
+
+impl FlowAsset {
+    /// Builds an image [`FlowAsset`] for a freshly generated look or preview media item.
+    pub(crate) fn new_image(
+        id: String,
+        name: String,
+        url: Option<String>,
+        primary_media_id: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            kind: "image".to_string(),
+            prompt: None,
+            url,
+            collection_id: None,
+            collection_name: None,
+            width: None,
+            height: None,
+            duration: None,
+            primary_media_id,
+            variant_ids: Vec::new(),
+            media_kind_hint: None,
+            pcm_audio: false,
+            personality_notes: None,
+            voice: None,
+            trim_start_seconds: None,
+            trim_end_seconds: None,
+            media_status: None,
+            media_error: None,
+            created_at: None,
+        }
+    }
 }
 
 /// Snapshot of active project metadata and asset tiles.
@@ -168,7 +211,7 @@ async fn populate_missing_media_urls(
     for (index, asset) in assets.iter().enumerate() {
         if !matches!(
             asset.kind.as_str(),
-            "video" | "image" | "character" | "audio"
+            "video" | "image" | "character" | "audio" | "scene"
         ) || asset.url.is_some()
             || asset.media_error.is_some()
             || matches!(
@@ -195,30 +238,41 @@ async fn populate_missing_media_urls(
             let timeout_ms = deadline.and_then(|at| {
                 u64::try_from(at.saturating_duration_since(Instant::now()).as_millis()).ok()
             });
-            let (resolved, media_kind) = eval_resolve_media_url(engine, &media_id, timeout_ms)
-                .await
-                .map(|val| {
-                    let url = val
-                        .get("url")
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|u| u.starts_with("http"))
-                        .map(str::to_string);
-                    let kind = val
-                        .get("media_kind")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    (url, kind)
-                })
-                .unwrap_or((None, None));
-            (indices, resolved, media_kind)
+            let (resolved, media_kind, pcm_audio) =
+                eval_resolve_media_url(engine, &media_id, timeout_ms)
+                    .await
+                    .map(|val| {
+                        let url = val
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|u| u.starts_with("http"))
+                            .map(str::to_string);
+                        let kind = val
+                            .get("media_kind")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        let pcm = val
+                            .get("pcm_audio")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        (url, kind, pcm)
+                    })
+                    .unwrap_or((None, None, false));
+            (indices, resolved, media_kind, pcm_audio)
         })
         .buffer_unordered(MEDIA_URL_LOOKUPS);
     futures_util::pin_mut!(lookups);
-    while let Some((indices, url, media_kind)) = lookups.next().await {
+    while let Some((indices, url, media_kind, pcm_audio)) = lookups.next().await {
         for index in indices {
             if let Some(ref resolved_url) = url {
                 assets[index].url = Some(resolved_url.clone());
+            }
+            if let Some(ref mk) = media_kind {
+                assets[index].media_kind_hint = Some(mk.clone());
+            }
+            if pcm_audio {
+                assets[index].pcm_audio = true;
             }
             if assets[index].kind == "image" && media_kind.as_deref() == Some("audio") {
                 assets[index].kind = "audio".to_string();
@@ -268,8 +322,80 @@ async fn read_project_assets(engine: &ChromeEngine) -> Result<ProjectAssetsSnaps
     })
 }
 
-/// Selects the best-matching asset by exact ID, exact name, name substring, ID substring,
-/// or optional prompt substring.
+/// Strips optional `media/` or `workflows/` collection prefixes from an identifier.
+fn strip_media_prefix(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.len() > 6 && trimmed[..6].eq_ignore_ascii_case("media/") {
+        &trimmed[6..]
+    } else if trimmed.len() > 10 && trimmed[..10].eq_ignore_ascii_case("workflows/") {
+        &trimmed[10..]
+    } else {
+        trimmed
+    }
+}
+
+/// Returns `true` when `candidate` equals `query` either verbatim or without resource prefix.
+fn media_id_matches(candidate: &str, query: &str) -> bool {
+    let clean_cand = strip_media_prefix(candidate);
+    let clean_query = strip_media_prefix(query);
+    !clean_cand.is_empty() && (candidate.trim() == query || clean_cand == clean_query)
+}
+
+/// Finds a variant ID on `asset` that matches `raw` verbatim or without resource prefix.
+fn find_exact_variant_id<'a>(asset: &'a FlowAsset, raw: &str) -> Option<&'a str> {
+    asset
+        .variant_ids
+        .iter()
+        .map(String::as_str)
+        .find(|v| media_id_matches(v, raw))
+}
+
+/// Pins `target.primary_media_id` and clears stale `target.url` when `match_str` targets a specific variant ID.
+fn pin_matched_variant(target: &mut FlowAsset, match_str: &str) {
+    let raw = match_str.trim();
+    if raw.is_empty() || media_id_matches(&target.id, raw) || target.name.eq_ignore_ascii_case(raw)
+    {
+        return;
+    }
+    let matched_variant = find_exact_variant_id(target, raw).or_else(|| {
+        let lower = raw.to_lowercase();
+        let non_variant_hit = target.name.to_lowercase().contains(&lower)
+            || target.id.to_lowercase().contains(&lower)
+            || target
+                .primary_media_id
+                .as_deref()
+                .is_some_and(|pm| pm.to_lowercase().contains(&lower));
+        if non_variant_hit {
+            None
+        } else {
+            target
+                .variant_ids
+                .iter()
+                .map(String::as_str)
+                .find(|v| v.to_lowercase().contains(&lower))
+        }
+    });
+    let Some(chosen) = matched_variant else {
+        return;
+    };
+    let clean_chosen = strip_media_prefix(chosen).to_string();
+    if clean_chosen.is_empty() {
+        return;
+    }
+    let same_primary = target
+        .primary_media_id
+        .as_deref()
+        .is_some_and(|pm| media_id_matches(pm, &clean_chosen));
+    if !same_primary {
+        target.url = None;
+        target.media_kind_hint = None;
+        target.pcm_audio = false;
+    }
+    target.primary_media_id = Some(clean_chosen);
+}
+
+/// Selects the best-matching asset by exact ID, primary or variant media ID, exact name,
+/// name substring, ID substring, or optional prompt substring.
 pub(crate) fn match_asset<'a>(
     assets: &'a [FlowAsset],
     match_str: &str,
@@ -283,14 +409,36 @@ pub(crate) fn match_asset<'a>(
 
     assets
         .iter()
-        .find(|a| a.id == raw)
+        .find(|a| a.id == raw || media_id_matches(&a.id, raw))
+        .or_else(|| {
+            assets.iter().find(|a| {
+                a.primary_media_id
+                    .as_deref()
+                    .is_some_and(|pm| media_id_matches(pm, raw))
+            })
+        })
+        .or_else(|| {
+            assets
+                .iter()
+                .find(|a| find_exact_variant_id(a, raw).is_some())
+        })
         .or_else(|| assets.iter().find(|a| a.name.eq_ignore_ascii_case(raw)))
         .or_else(|| {
             assets
                 .iter()
                 .find(|a| a.name.to_lowercase().contains(&lower))
         })
-        .or_else(|| assets.iter().find(|a| a.id.to_lowercase().contains(&lower)))
+        .or_else(|| {
+            assets.iter().find(|a| {
+                a.id.to_lowercase().contains(&lower)
+                    || a.primary_media_id
+                        .as_deref()
+                        .is_some_and(|pm| pm.to_lowercase().contains(&lower))
+                    || a.variant_ids
+                        .iter()
+                        .any(|v| v.to_lowercase().contains(&lower))
+            })
+        })
         .or_else(|| {
             if include_prompt {
                 assets.iter().find(|a| {
@@ -314,7 +462,7 @@ pub(crate) async fn resolve_asset(
     context_label: &str,
 ) -> Result<(FlowAsset, Option<String>, Option<String>)> {
     let snap = read_project_assets(engine).await?;
-    let target = match_asset(&snap.assets, match_str, include_prompt)
+    let mut target = match_asset(&snap.assets, match_str, include_prompt)
         .cloned()
         .with_context(|| {
             format!(
@@ -322,6 +470,7 @@ pub(crate) async fn resolve_asset(
                 match_str, context_label
             )
         })?;
+    pin_matched_variant(&mut target, match_str);
     Ok((target, snap.project_id, snap.project_title))
 }
 
@@ -356,7 +505,11 @@ pub(crate) async fn list_assets(
             }
             if let Some(q) = &q_lower {
                 let name_hit = a.name.to_lowercase().contains(q);
-                let id_hit = a.id.to_lowercase().contains(q);
+                let id_hit = a.id.to_lowercase().contains(q)
+                    || a.primary_media_id
+                        .as_deref()
+                        .is_some_and(|pm| pm.to_lowercase().contains(q))
+                    || a.variant_ids.iter().any(|v| v.to_lowercase().contains(q));
                 let prompt_hit = a.prompt.as_deref().unwrap_or("").to_lowercase().contains(q);
                 if !name_hit && !id_hit && !prompt_hit {
                     return false;

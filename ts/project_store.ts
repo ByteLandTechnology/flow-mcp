@@ -144,19 +144,334 @@ function tileMap(data: unknown, field: string): Map<string, FlowTile> | null {
   return indexTileRows(readOwn(data, field));
 }
 
+/** Returns true when `val` is a plain JSPB sparse field map rather than a Closure message. */
+function isSparsePivot(val: unknown): boolean {
+  return (
+    val !== null &&
+    typeof val === "object" &&
+    !Array.isArray(val) &&
+    Object.getPrototypeOf(val) === Object.prototype &&
+    toSerializedJspb(val) === null
+  );
+}
+
+/** Reads a 1-based field from a dense or sparse serialized JSPB message or Closure instance. */
+function protoField(rawMsg: unknown, fieldNumber: number): unknown {
+  if (fieldNumber < 1 || !rawMsg || typeof rawMsg !== "object") return undefined;
+  const msg = toSerializedJspb(rawMsg) ?? rawMsg;
+  if (!Array.isArray(msg)) {
+    return readOwn(msg, String(fieldNumber));
+  }
+  if (msg.length === 0) return undefined;
+  const denseIdx = fieldNumber - 1;
+  const lastIdx = msg.length - 1;
+  const tail = msg[lastIdx];
+  if (isSparsePivot(tail)) {
+    if (denseIdx < lastIdx && msg[denseIdx] != null) {
+      return msg[denseIdx];
+    }
+    return readOwn(tail, String(fieldNumber));
+  }
+  return denseIdx <= lastIdx ? msg[denseIdx] : undefined;
+}
+
+/** Extracts a serialized JSPB array from a Closure message instance or array. */
+function toSerializedJspb(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return null;
+  try {
+    const toJson = (value as { toJSON?: unknown }).toJSON;
+    if (typeof toJson === "function") {
+      const res: unknown = toJson.call(value);
+      if (Array.isArray(res)) return res;
+    }
+  } catch {
+    // Fall through to internal array field inspection.
+  }
+  const qf = readOwn(value, "qf");
+  return Array.isArray(qf) ? qf : null;
+}
+
+/** Trims a string value and returns null when empty or non-string. */
+function trimmedStr(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  return s ? s : null;
+}
+
+/** Strips `media/` or `workflows/` prefixes from a resource identifier. */
+function stripResourcePrefix(raw: string): string {
+  return raw.trim().replace(/^(?:media|workflows)\//i, "");
+}
+
+/** Converts a protobuf `Timestamp` `[seconds, nanos]` tuple into a `Date`. */
+function parseProtoDate(value: unknown): Date | undefined {
+  if (value instanceof Date) return value;
+  const arr = toSerializedJspb(value);
+  if (!arr) return undefined;
+  const sec = Number(protoField(arr, 1) ?? 0);
+  const nanos = Number(protoField(arr, 2) ?? 0);
+  if (!Number.isFinite(sec) || sec <= 0) return undefined;
+  const ms = sec * 1000 + (Number.isFinite(nanos) ? Math.floor(nanos / 1e6) : 0);
+  return Number.isFinite(ms) ? new Date(ms) : undefined;
+}
+
+/** Extracts a workflow display title from an entry in the `lr` map. */
+function readWorkflowTitle(entry: unknown): string | null {
+  const direct = trimmedStr(entry);
+  if (direct) return direct;
+  if (!entry || typeof entry !== "object") return null;
+  const jspb = toSerializedJspb(entry);
+  if (jspb) {
+    const meta = protoField(jspb, 4);
+    const title = trimmedStr(protoField(meta, 1)) ?? trimmedStr(protoField(jspb, 2));
+    if (title) return title;
+  }
+  const metaObj = readOwn(entry, "metadata");
+  return (
+    trimmedStr(readOwn(entry, "displayName")) ??
+    trimmedStr(readOwn(entry, "title")) ??
+    trimmedStr(readOwn(entry, "name")) ??
+    trimmedStr(readOwn(metaObj, "displayName")) ??
+    trimmedStr(readOwn(metaObj, "name"))
+  );
+}
+
+/** Builds a lookup map of workflow/voice IDs to titles from `lr`. */
+function indexWorkflowTitles(lrRaw: unknown): Map<string, string> {
+  const titles = new Map<string, string>();
+  const recordEntry = (rawKey: unknown, rawVal: unknown): void => {
+    const title = readWorkflowTitle(rawVal);
+    if (!title) return;
+    const jspb = toSerializedJspb(rawVal);
+    const idFromVal =
+      trimmedStr(jspb ? protoField(jspb, 1) : undefined) ??
+      trimmedStr(readOwn(rawVal, "id")) ??
+      trimmedStr(readOwn(rawVal, "name"));
+    for (const candidate of [trimmedStr(rawKey), idFromVal]) {
+      if (!candidate) continue;
+      titles.set(candidate, title);
+      const clean = stripResourcePrefix(candidate);
+      if (clean) titles.set(clean, title);
+    }
+  };
+
+  if (lrRaw instanceof Map) {
+    for (const [k, v] of lrRaw.entries()) recordEntry(k, v);
+  } else if (Array.isArray(lrRaw)) {
+    for (const v of lrRaw) recordEntry(undefined, v);
+  } else if (lrRaw && typeof lrRaw === "object") {
+    for (const [k, v] of Object.entries(lrRaw as Record<string, unknown>)) {
+      recordEntry(k, v);
+    }
+  }
+  return titles;
+}
+
+/** Reads the assigned voice reference string from a character tile when present. */
+function readCharacterVoiceRef(tile: FlowTile): string | null {
+  const entity = readOwn(tile, "Rc");
+  const jspb = toSerializedJspb(entity);
+  if (jspb) {
+    const charInfo = protoField(protoField(jspb, 4), 3);
+    const refs = protoField(charInfo, 2);
+    if (Array.isArray(refs) && refs.length > 0) {
+      const first = refs[0];
+      const custom = trimmedStr(protoField(first, 1));
+      if (custom) return stripResourcePrefix(custom);
+      const preset = trimmedStr(protoField(first, 2));
+      if (preset) return preset;
+    }
+  }
+  const direct =
+    trimmedStr(tile.voiceId) ??
+    trimmedStr(tile.Vo) ??
+    trimmedStr(tile.voice);
+  return direct ? stripResourcePrefix(direct) : null;
+}
+
+/** Merges custom voices from `cj` and titles from `lr` into a copy of `baseTiles`. */
+function mergeProjectVoices(
+  baseTiles: Map<string, FlowTile>,
+  rawData: unknown,
+): Map<string, FlowTile> {
+  if (!rawData || typeof rawData !== "object") return baseTiles;
+  const cjRaw = readOwn(rawData, "cj");
+  const lrRaw = readOwn(rawData, "lr");
+  if (!cjRaw && !lrRaw) return baseTiles;
+
+  const lrTitles = indexWorkflowTitles(lrRaw);
+  const entries: Array<[unknown, unknown]> = [];
+  if (cjRaw instanceof Map) {
+    for (const pair of cjRaw.entries()) entries.push(pair);
+  } else if (Array.isArray(cjRaw)) {
+    for (const item of cjRaw) entries.push([undefined, item]);
+  } else if (cjRaw && typeof cjRaw === "object") {
+    for (const pair of Object.entries(cjRaw as Record<string, unknown>)) {
+      entries.push(pair);
+    }
+  }
+  if (entries.length === 0) return baseTiles;
+
+  const merged = new Map<string, FlowTile>(baseTiles);
+  const existingWorkflowIds = new Set<string>();
+  for (const tile of merged.values()) {
+    const wf = trimmedStr(tile.workflowId);
+    if (wf) existingWorkflowIds.add(stripResourcePrefix(wf));
+    const pm = trimmedStr(tile.primaryMediaId);
+    if (pm) existingWorkflowIds.add(stripResourcePrefix(pm));
+  }
+
+  const voiceByRef = new Map<string, { mediaId: string; title: string }>();
+
+  for (const [rawKey, mediaVal] of entries) {
+    if (!mediaVal || typeof mediaVal !== "object") continue;
+    const jspb = toSerializedJspb(mediaVal);
+    let mediaId: string | null = null;
+    let workflowId: string | null = null;
+    let title: string | null = null;
+    let promptText: string | null = null;
+    let inlineUrl: string | null = null;
+    let createdAt: Date | undefined;
+
+    if (jspb) {
+      const audioBranch = protoField(jspb, 11);
+      if (!audioBranch || typeof audioBranch !== "object") continue;
+      const rawId = trimmedStr(protoField(jspb, 1)) ?? trimmedStr(rawKey);
+      if (!rawId || /^voices\//i.test(rawId)) continue;
+      const audioMeta = protoField(audioBranch, 1);
+      if (protoField(audioMeta, 3) === true) continue;
+
+      mediaId = stripResourcePrefix(rawId);
+      const rawWf = trimmedStr(protoField(jspb, 3));
+      workflowId = rawWf ? stripResourcePrefix(rawWf) : null;
+
+      const mediaMeta = protoField(jspb, 6);
+      createdAt = parseProtoDate(protoField(mediaMeta, 1));
+      const labels = protoField(audioMeta, 12);
+      const firstLabel = Array.isArray(labels) && labels.length > 0 ? labels[0] : undefined;
+      title =
+        (rawWf ? lrTitles.get(rawWf) : undefined) ??
+        (workflowId ? lrTitles.get(workflowId) : undefined) ??
+        lrTitles.get(rawId) ??
+        lrTitles.get(mediaId) ??
+        trimmedStr(protoField(mediaMeta, 2)) ??
+        trimmedStr(protoField(firstLabel, 2)) ??
+        trimmedStr(protoField(firstLabel, 1)) ??
+        trimmedStr(protoField(audioMeta, 5)) ??
+        "Custom voice";
+      promptText =
+        trimmedStr(protoField(audioMeta, 8)) ??
+        trimmedStr(protoField(audioMeta, 2)) ??
+        trimmedStr(protoField(audioMeta, 7));
+      inlineUrl =
+        trimmedStr(protoField(audioMeta, 4)) ??
+        trimmedStr(protoField(audioMeta, 6));
+    } else {
+      const rawType = String(readOwn(mediaVal, "type") ?? readOwn(mediaVal, "kind") ?? "").toUpperCase();
+      const rawMime = String(readOwn(mediaVal, "mimeType") ?? "").toLowerCase();
+      const hasAudioShape =
+        rawType === "VOICE" ||
+        rawType === "AUDIO" ||
+        rawMime.startsWith("audio/") ||
+        readOwn(mediaVal, "audio") != null ||
+        readOwn(mediaVal, "voice") != null ||
+        (rawType === "" &&
+          readOwn(mediaVal, "image") == null &&
+          readOwn(mediaVal, "video") == null);
+      if (!hasAudioShape) continue;
+      if (readOwn(mediaVal, "isPreset") === true || readOwn(mediaVal, "Rv") === true) continue;
+      const rawId =
+        trimmedStr(readOwn(mediaVal, "id")) ??
+        trimmedStr(readOwn(mediaVal, "mediaId")) ??
+        trimmedStr( readOwn(mediaVal, "name")) ??
+        trimmedStr(rawKey);
+      if (!rawId || /^voices\//i.test(rawId)) continue;
+      mediaId = stripResourcePrefix(rawId);
+      const rawWf = trimmedStr(readOwn(mediaVal, "workflowId"));
+      workflowId = rawWf ? stripResourcePrefix(rawWf) : null;
+      title =
+        trimmedStr(readOwn(mediaVal, "displayName")) ??
+        trimmedStr(readOwn(mediaVal, "title")) ??
+        (rawWf ? lrTitles.get(rawWf) : undefined) ??
+        (workflowId ? lrTitles.get(workflowId) : undefined) ??
+        lrTitles.get(rawId) ??
+        lrTitles.get(mediaId) ??
+        trimmedStr(readOwn(mediaVal, "name")) ??
+        "Custom voice";
+      promptText =
+        trimmedStr(readOwn(mediaVal, "prompt")) ??
+        trimmedStr(readOwn(mediaVal, "description"));
+      inlineUrl =
+        trimmedStr(readOwn(mediaVal, "url")) ??
+        trimmedStr(readOwn(mediaVal, "kc")) ??
+        trimmedStr(readOwn(mediaVal, "fifeUrl"));
+      const rawDate = readOwn(mediaVal, "lc") ?? readOwn(mediaVal, "hc");
+      if (rawDate instanceof Date) createdAt = rawDate;
+    }
+
+    if (!mediaId) continue;
+    const resolvedTitle = title || "Custom voice";
+    voiceByRef.set(mediaId, { mediaId, title: resolvedTitle });
+    if (workflowId) {
+      voiceByRef.set(workflowId, { mediaId, title: resolvedTitle });
+    }
+
+    if (
+      merged.has(mediaId) ||
+      existingWorkflowIds.has(mediaId) ||
+      (workflowId !== null && (merged.has(workflowId) || existingWorkflowIds.has(workflowId)))
+    ) {
+      continue;
+    }
+
+    const synthesized: FlowTile = {
+      id: mediaId,
+      workflowId: workflowId ?? mediaId,
+      primaryMediaId: mediaId,
+      displayName: resolvedTitle,
+      type: "VOICE",
+      ...(inlineUrl ? { kc: inlineUrl, url: inlineUrl } : {}),
+      ...(promptText ? { prompt: promptText } : {}),
+      ...(createdAt ? { hc: createdAt } : {}),
+    };
+    merged.set(mediaId, synthesized);
+  }
+
+  if (voiceByRef.size > 0) {
+    for (const [id, tile] of merged.entries()) {
+      if (String(tile?.type ?? "").toUpperCase() !== "CHARACTER") continue;
+      const ref = readCharacterVoiceRef(tile);
+      if (!ref) continue;
+      const hit = voiceByRef.get(ref);
+      if (!hit) continue;
+      merged.set(id, {
+        ...tile,
+        voiceMediaId: hit.mediaId,
+        ...(tile.voiceName == null ? { voiceName: hit.title } : {}),
+      });
+    }
+  }
+
+  return merged;
+}
+
 /** Reads the cached rows for the active project when the query settles. */
 export function readProjectStore(store: ProjectStore): Map<string, FlowTile> | null {
   if (!isCurrent(store) || isProjectStorePending(store)) return null;
   const query = projectQuery(store);
+  const rawQueryData = query?.state.data;
   if (query) {
-    const cached = tileMap(query.state.data, store.format.rows);
-    if (cached) return cached;
+    const cached = tileMap(rawQueryData, store.format.rows);
+    if (cached) return mergeProjectVoices(cached, rawQueryData);
   }
   const signalQuery = readOwn(store.service, store.format.tileQuery);
   if (!signalQuery || typeof signalQuery !== "object" || !("data" in signalQuery)) return null;
   const readData = readOwn(signalQuery, "data");
   const signalData: unknown = typeof readData === "function" ? readData.call(signalQuery) : readData;
-  return indexTileRows(signalData) ?? tileMap(signalData, store.format.rows);
+  const indexed = indexTileRows(signalData) ?? tileMap(signalData, store.format.rows);
+  if (!indexed) return null;
+  return mergeProjectVoices(indexed, rawQueryData ?? signalData);
 }
 
 /** Returns the bound store only when the project and runtime session match. */

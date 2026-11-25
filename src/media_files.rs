@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use url::Url;
 
@@ -22,6 +23,142 @@ const DEFAULT_CHUNK_BYTES: usize = 1_048_576;
 
 /// Maximum chunk size (`4 MiB`) allowed by `flow_downloads` `read_chunk`.
 const MAX_CHUNK_BYTES: usize = 4_194_304;
+
+/// Clock-skew safety margin subtracted from signed URL deadlines in seconds.
+const SIGNED_URL_SKEW_SECS: u64 = 5;
+
+/// Returns `true` when `raw_url` carries signed GCS/Flow CDN hosts or V2/V4 query signatures.
+pub(crate) fn is_signed_direct_url(raw_url: &str) -> bool {
+    let Ok(parsed) = Url::parse(raw_url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    host == "storage.googleapis.com"
+        || host.ends_with(".storage.googleapis.com")
+        || host == "flow-content.google"
+        || host.ends_with(".flow-content.google")
+        || host == "labs-flow.dev"
+        || host.ends_with(".labs-flow.dev")
+        || host == "video-downloads.googleusercontent.com"
+        || host.ends_with(".video-downloads.googleusercontent.com")
+        || parsed.query_pairs().any(|(k, _)| {
+            matches!(
+                k.to_ascii_lowercase().as_str(),
+                "signature"
+                    | "googleaccessid"
+                    | "x-goog-signature"
+                    | "x-goog-algorithm"
+                    | "x-goog-credential"
+                    | "x-goog-date"
+                    | "x-goog-expires"
+                    | "x-goog-signedheaders"
+            )
+        })
+}
+
+/// Parses an `X-Goog-Date` basic UTC timestamp (`YYYYMMDDTHHMMSSZ`) into Unix epoch seconds.
+fn parse_goog_date_epoch_secs(raw: &str) -> Option<u64> {
+    let b = raw.trim().as_bytes();
+    if b.len() != 16 || !matches!(b[8], b'T' | b't') || !matches!(b[15], b'Z' | b'z') {
+        return None;
+    }
+    let s = std::str::from_utf8(b).ok()?;
+    let year: i64 = s[0..4].parse().ok()?;
+    let month: u64 = s[4..6].parse().ok()?;
+    let day: u64 = s[6..8].parse().ok()?;
+    let hour: u64 = s[9..11].parse().ok()?;
+    let minute: u64 = s[11..13].parse().ok()?;
+    let second: u64 = s[13..15].parse().ok()?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let y = year - i64::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + (doe as i64) - 719_468;
+    if days < 0 {
+        return None;
+    }
+    Some((days as u64) * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Returns `true` when `raw_url` carries an expired GCS V4 (`X-Goog-Date` + `X-Goog-Expires`) or V2 (`Expires`) signature.
+pub(crate) fn is_expired_signed_url(raw_url: &str) -> bool {
+    let Ok(parsed) = Url::parse(raw_url.trim()) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut goog_date: Option<String> = None;
+    let mut goog_expires: Option<String> = None;
+    let mut v2_expires: Option<String> = None;
+    let mut has_v2_sig = false;
+    for (k, v) in parsed.query_pairs() {
+        match k.to_ascii_lowercase().as_str() {
+            "x-goog-date" => goog_date = Some(v.into_owned()),
+            "x-goog-expires" => goog_expires = Some(v.into_owned()),
+            "expires" => v2_expires = Some(v.into_owned()),
+            "signature" | "googleaccessid" => has_v2_sig = true,
+            _ => {}
+        }
+    }
+
+    if let Some(ref gd) = goog_date {
+        let Some(issued_secs) = parse_goog_date_epoch_secs(gd) else {
+            return true;
+        };
+        if let Some(ref ge) = goog_expires {
+            let Ok(ttl_secs) = ge.trim().parse::<u64>() else {
+                return true;
+            };
+            if ttl_secs == 0 {
+                return true;
+            }
+            return now_secs.saturating_add(SIGNED_URL_SKEW_SECS)
+                >= issued_secs.saturating_add(ttl_secs);
+        }
+    }
+
+    if has_v2_sig && let Some(ref exp_str) = v2_expires {
+        let Ok(raw_exp) = exp_str.trim().parse::<u64>() else {
+            return true;
+        };
+        if raw_exp == 0 {
+            return true;
+        }
+        let exp_secs = if raw_exp > 100_000_000_000 {
+            raw_exp / 1_000
+        } else {
+            raw_exp
+        };
+        return now_secs.saturating_add(SIGNED_URL_SKEW_SECS) >= exp_secs;
+    }
+
+    false
+}
+
+/// Returns `true` when `err` represents an HTTP 400 or 403 signature rejection on a signed URL.
+pub(crate) fn is_signed_url_auth_failure(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<reqwest::Error>()
+        .and_then(reqwest::Error::status)
+        .is_some_and(|status| matches!(status.as_u16(), 400 | 403))
+}
 
 /// Decodes one hexadecimal ASCII byte into its 4-bit integer value.
 fn hex_nibble(b: u8) -> Option<u8> {
@@ -175,6 +312,36 @@ fn default_extension_for_asset(expected_kind: &str, content_type: Option<&str>) 
         })
 }
 
+/// Returns `true` when `ext` is a recognized image, video, or audio file extension.
+fn is_allowed_media_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mp4"
+            | "webm"
+            | "mov"
+            | "avi"
+            | "mkv"
+            | "m4v"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "webp"
+            | "gif"
+            | "avif"
+            | "heic"
+            | "heif"
+            | "wav"
+            | "mp3"
+            | "m4a"
+            | "aac"
+            | "ogg"
+            | "opus"
+            | "flac"
+            | "aif"
+            | "aiff"
+    )
+}
+
 /// Resolves the natural download file name from HTTP headers, URL path, or `<asset_id>.<ext>`.
 pub(crate) fn natural_asset_filename(
     target: &FlowAsset,
@@ -187,13 +354,18 @@ pub(crate) fn natural_asset_filename(
         if Path::new(&name)
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| !e.is_empty())
+            .is_some_and(is_allowed_media_extension)
         {
             return name;
         }
+        let stem = Path::new(&name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&name);
         return format!(
             "{}.{}",
-            name,
+            stem,
             default_extension_for_asset(expected_kind, content_type)
         );
     }
@@ -204,7 +376,7 @@ pub(crate) fn natural_asset_filename(
         && Path::new(&clean)
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric()))
+            .is_some_and(is_allowed_media_extension)
     {
         return clean;
     }

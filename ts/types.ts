@@ -90,8 +90,8 @@ export interface FlowMediaPayload {
   voice?: unknown;
   /** Trim start timestamp in seconds. */
   Ac?: number;
-  /** Alternative trim start timestamp in seconds. */
-  Cg?: number;
+  /** Alternative trim start timestamp in seconds, or scene clip history map in build 20261120.00. */
+  Cg?: number | Map<string, FlowMediaPayload[]> | Record<string, FlowMediaPayload[]>;
   /** Trim end timestamp in seconds. */
   Ic?: number;
   /** Alternative trim end timestamp in seconds. */
@@ -242,6 +242,8 @@ export interface FlowTile extends FlowMediaPayload {
   voiceName?: unknown;
   /** Attached voice identifier. */
   voiceId?: unknown;
+  /** Resolved custom voice media identifier on look-less character tiles. */
+  voiceMediaId?: string;
   /** Minified voice descriptor. */
   Vo?: unknown;
   /** Audio voice references list. */
@@ -254,8 +256,14 @@ export interface FlowTile extends FlowMediaPayload {
   createTime?: string;
   /** Scene clip array. */
   Oc?: SceneClipItem[];
+  /** Scene clip array in build 20261120.00. */
+  Uc?: SceneClipItem[];
   /** Scene clip workflow history lookup. */
   Yf?: Map<string, FlowMediaPayload[]> | Record<string, FlowMediaPayload[]>;
+  /** Generation history items on media tiles. */
+  history?: FlowMediaPayload[];
+  /** Upsampled video variants (`1080p` and `4K`) in build 20261120.00. */
+  yn?: FlowMediaPayload[];
   /** Tile width alias. */
   width?: number;
   /** Tile height alias. */
@@ -486,6 +494,10 @@ export interface CachedMediaInfo {
   candidates: string[];
   /** Media kind from the wire response when known. */
   media_kind?: "video" | "image" | "audio";
+  /** True when `as29s` case `11` returned raw 24 kHz PCM audio bytes. */
+  pcm_audio?: boolean;
+  /** Epoch timestamp in milliseconds when the entry entered the cache. */
+  cached_at?: number;
 }
 
 /** Result returned by `checkAuth`. */
@@ -534,6 +546,12 @@ export interface SnapshotAssetItem {
   collection_name: string | null;
   /** Primary media identifier. */
   primary_media_id: string | null;
+  /** Additional variant and history media identifiers associated with this tile. */
+  variant_ids?: string[];
+  /** Cached wire media family hint (`video`, `image`, or `audio`) when known. */
+  media_kind_hint?: "video" | "image" | "audio" | null;
+  /** True when cached media resolution flagged raw 24 kHz PCM audio bytes. */
+  pcm_audio?: boolean;
   /** Character personality notes. */
   personality_notes: string | null;
   /** Assigned voice name or identifier. */
@@ -615,7 +633,29 @@ export type ResolvedMediaResult =
       download_url: string;
       candidates: string[];
       media_kind?: "video" | "image" | "audio";
+      pcm_audio?: boolean;
     };
+
+/** Request payload for `exportScene`. */
+export interface SceneExportRequest {
+  /** Operation (`start`, `poll`, or `release`). */
+  action?: "start" | "poll" | "release";
+  /** Scene tile identifier for `start`. */
+  scene_id?: string | null;
+  /** Pending export operation handle for `poll` or `release`. */
+  export_id?: string | null;
+  /** Staged `blob:` URL to revoke for `release`. */
+  blob_url?: string | null;
+  /** Optional per-RPC timeout in milliseconds. */
+  timeout_ms?: number | null;
+}
+
+/** Result returned by `exportScene`. */
+export type SceneExportResult =
+  | { ok: false; error: string }
+  | { ok: true; status: "pending"; export_id: string }
+  | { ok: true; status: "ready"; blob_url: string }
+  | { ok: true; status: "released" };
 
 /** Configuration payload shared by `setupGeneration` and `attachIngredients`. */
 export interface GenerationConfig {
@@ -851,6 +891,8 @@ export interface FlowMcpRuntime {
   submitGeneration: () => Promise<unknown>;
   /** Creates Flow scenes and adds clips. */
   sceneOp: (req: SceneOpRequest) => Promise<unknown>;
+  /** Starts, polls, or releases a scene MP4 export via `GjQLTd` and `IxdSwd`. */
+  exportScene: (req: SceneExportRequest) => Promise<SceneExportResult>;
   /** Applies video trim timestamps or drives the scene builder extend workflow. */
   videoOp: (req: VideoOpRequest) => Promise<unknown>;
   /** Opens/exits the character editor and creates or updates character fields. */

@@ -5,6 +5,7 @@
 
 import { fifeEnv as getFifeEnv } from "./dom";
 import { readBuildLabel } from "./frontend_builds";
+import { getFreshCachedMedia, isExpiredSignedUrl } from "./media_variants";
 import { runtimeState } from "./state";
 import type { ResolvedMediaResult } from "./types";
 
@@ -27,6 +28,8 @@ interface MediaExtractState {
   unsignedCandidates: string[];
   /** Media family from the wire message. */
   mediaKind: ResolvedMediaKind | null;
+  /** True when case `11` audio resolved raw 24 kHz PCM bytes. */
+  pcmAudio: boolean;
 }
 
 /** Returns true when `val` is a plain sparse JSPB field map object. */
@@ -76,27 +79,30 @@ export async function resolveVideoUrl(
     return { ok: false, error: "missing_wiz_or_media_id" };
   }
 
-  const cachedInfo = bypassCache
-    ? undefined
-    : runtimeState.mediaInfoCache.get(cacheKey);
-  if (
-    cachedInfo &&
-    typeof cachedInfo.url === "string" &&
-    /^https?:\/\//i.test(cachedInfo.url) &&
-    Array.isArray(cachedInfo.candidates) &&
-    cachedInfo.candidates.length > 0
-  ) {
-    return {
-      ok: true,
-      url: cachedInfo.url,
-      download_url:
-        typeof cachedInfo.download_url === "string" &&
-        /^https?:\/\//i.test(cachedInfo.download_url)
-          ? cachedInfo.download_url
-          : cachedInfo.url,
-      candidates: cachedInfo.candidates.slice(),
-      ...(cachedInfo.media_kind ? { media_kind: cachedInfo.media_kind } : {}),
-    };
+  if (bypassCache) {
+    runtimeState.mediaInfoCache.delete(cacheKey);
+  } else {
+    const cachedInfo = getFreshCachedMedia(cacheKey);
+    if (
+      cachedInfo &&
+      typeof cachedInfo.url === "string" &&
+      /^https?:\/\//i.test(cachedInfo.url) &&
+      Array.isArray(cachedInfo.candidates) &&
+      cachedInfo.candidates.length > 0
+    ) {
+      return {
+        ok: true,
+        url: cachedInfo.url,
+        download_url:
+          typeof cachedInfo.download_url === "string" &&
+          /^https?:\/\//i.test(cachedInfo.download_url)
+            ? cachedInfo.download_url
+            : cachedInfo.url,
+        candidates: cachedInfo.candidates.slice(),
+        ...(cachedInfo.media_kind ? { media_kind: cachedInfo.media_kind } : {}),
+        ...(cachedInfo.pcm_audio ? { pcm_audio: true } : {}),
+      };
+    }
   }
 
   const { fifeHost, authuser, isSignedCdnHost } = getFifeEnv();
@@ -167,10 +173,12 @@ export async function resolveVideoUrl(
     }
   };
 
-  const recordSigned = (state: MediaExtractState, direct: string): void => {
+  const recordSigned = (state: MediaExtractState, direct: string): boolean => {
+    if (isExpiredSignedUrl(direct)) return false;
     pushCandidate(state.signedCandidates, direct);
     state.signedDownloadUrl ||= direct;
     state.signedStreamUrl ||= direct;
+    return true;
   };
 
   const hasExtractedUrls = (state: MediaExtractState): boolean =>
@@ -316,9 +324,10 @@ export async function resolveVideoUrl(
           !(a6Case1 && isSignedUrl(a6Case1)),
       );
 
-      const a1 = jspbField(audio, 1);
+    const a1 = jspbField(audio, 1);
       const a2 = jspbField(audio, 2);
       const a5 = jspbField(audio, 5);
+      let addedCase11Audio = false;
       for (const rawAudio of [
         a6Case2,
         a6Case3,
@@ -347,7 +356,9 @@ export async function resolveVideoUrl(
         const direct = asDirectUrl(rawAudio);
         if (!direct) continue;
         if (isSignedUrl(direct)) {
-          recordSigned(state, direct);
+          if (recordSigned(state, direct)) {
+            addedCase11Audio = true;
+          }
         } else {
           const rewritten = proxyActive
             ? rewriteFifeUrl(direct, null, true) || direct
@@ -358,9 +369,13 @@ export async function resolveVideoUrl(
           }
           state.unsignedDownloadUrl ||= rewritten;
           state.unsignedStreamUrl ||= rewritten;
+          addedCase11Audio = true;
         }
       }
-      if (hasExtractedUrls(state)) {
+      if (addedCase11Audio) {
+        state.mediaKind ||= "audio";
+        state.pcmAudio = true;
+      } else if (hasExtractedUrls(state)) {
         state.mediaKind ||= "audio";
       }
     }
@@ -444,6 +459,7 @@ export async function resolveVideoUrl(
     unsignedDownloadUrl: null,
     unsignedCandidates: [],
     mediaKind: null,
+    pcmAudio: false,
   };
   let lastErr = await fetchAs29s([cacheKey, null, [1]], state);
   if (
@@ -484,6 +500,8 @@ export async function resolveVideoUrl(
     download_url: finalDl,
     candidates: candidates.slice(),
     ...(state.mediaKind ? { media_kind: state.mediaKind } : {}),
+    ...(state.pcmAudio ? { pcm_audio: true } : {}),
+    cached_at: Date.now(),
   });
   return {
     ok: true,
@@ -491,5 +509,6 @@ export async function resolveVideoUrl(
     download_url: finalDl,
     candidates: candidates.slice(),
     ...(state.mediaKind ? { media_kind: state.mediaKind } : {}),
+    ...(state.pcmAudio ? { pcm_audio: true } : {}),
   };
 }

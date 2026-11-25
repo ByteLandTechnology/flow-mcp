@@ -387,11 +387,11 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ### `flow_download`
 
-将匹配的项目媒体资产（图像、视频、音频或角色外观）下载至 `<home>/downloads` 并索引到 `flow-mcp.db`。最多等待 `45` 秒（超时返回 `pending: true`），并返回 `{"file", "resource_uri", "record"}`。如果客户端支持 MCP `2025-06-18` 或更高版本，还会返回 `resource_link`。
+将匹配的项目媒体资产（图像、视频、音频、场景或角色外观与音色）下载至 `<home>/downloads` 并索引到 `flow-mcp.db`。最多等待 `45` 秒（超时返回 `pending: true`），并返回 `{"file", "resource_uri", "record"}`。如果客户端支持 MCP `2025-06-18` 或更高版本，还会返回 `resource_link`。
 
 | 参数 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `match` | `string` | 是 | 匹配项目资产的精确资产 ID、精确名称或忽略大小写子串。 |
+| `match` | `string` | 是 | 匹配项目资产的精确资产或变体 ID、精确名称或忽略大小写子串。 |
 
 ### `flow_downloads`
 

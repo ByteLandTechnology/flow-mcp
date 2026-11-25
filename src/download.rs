@@ -9,18 +9,28 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::OnceLock;
 use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 use url::Url;
 
 use crate::assets::{FlowAsset, resolve_asset};
 use crate::config::downloads_dir;
 use crate::db::{DownloadRecord, FlowDb, NewDownloadRecord};
-use crate::engine::{ChromeEngine, DEFAULT_CHROME_UA};
+use crate::engine::{ChromeEngine, DEFAULT_CHROME_UA, checked_runtime_result};
 use crate::media_files::{
-    MEDIA_KIND_MISMATCH_TAG, disambiguate_dest, natural_asset_filename, resolve_stored_path,
+    MEDIA_KIND_MISMATCH_TAG, disambiguate_dest, is_expired_signed_url, is_signed_direct_url,
+    is_signed_url_auth_failure, natural_asset_filename, resolve_stored_path,
     validate_content_type_header, validate_downloaded_file,
 };
 use crate::platform::create_private_dir_all;
+
+/// Maximum time to poll a multi-clip or trimmed scene export inside `flow_download`.
+const SCENE_EXPORT_BUDGET: Duration = Duration::from_secs(38);
+
+/// Delay between `IxdSwd` poll requests while a scene export runs.
+const SCENE_EXPORT_POLL_INTERVAL: Duration = Duration::from_millis(1_500);
+
+/// Per-RPC timeout passed to `window.__flowMcp.exportScene` in milliseconds.
+const SCENE_EXPORT_RPC_TIMEOUT_MS: u64 = 10_000;
 
 /// Source location for the media bytes of one [`FlowAsset`].
 #[derive(Debug, Clone)]
@@ -41,6 +51,11 @@ enum DownloadSource {
     },
     /// Unsigned media URL when the asset has no media ID.
     UnsignedUrl(String),
+    /// Multi-clip or trimmed scene tile exported to MP4 via `GjQLTd` and `IxdSwd`.
+    ExportScene {
+        /// Scene tile identifier in the active project store.
+        scene_id: String,
+    },
 }
 
 /// Ordered URL candidates and media kind from `resolveVideoUrl`.
@@ -49,6 +64,8 @@ struct ResolvedMediaUrls {
     urls: Vec<String>,
     /// Media family from the `as29s` wire message when present.
     media_kind: Option<String>,
+    /// True when `as29s` case `11` flagged raw 24 kHz PCM audio bytes.
+    pcm_audio: bool,
 }
 
 /// Returns the shared HTTP client for streaming media downloads.
@@ -69,6 +86,7 @@ async fn stream_http_to_temp(
     engine: &ChromeEngine,
     media_url: &str,
     expected_kind: &str,
+    pcm_audio: bool,
     temp_path: &Path,
 ) -> Result<(Option<String>, Option<String>, u64)> {
     let signed_url = is_signed_direct_url(media_url);
@@ -119,8 +137,13 @@ async fn stream_http_to_temp(
     if size_bytes == 0 {
         anyhow::bail!("Media URL returned empty body");
     }
-    let validated_ct = validate_downloaded_file(temp_path, raw_ct, expected_kind).await?;
-    Ok((validated_ct, disp, size_bytes))
+    let (effective_ct, framed_size) = if pcm_audio && expected_kind == "audio" {
+        crate::pcm_wav::frame_raw_pcm_file(temp_path, raw_ct).await?
+    } else {
+        (raw_ct, size_bytes)
+    };
+    let validated_ct = validate_downloaded_file(temp_path, effective_ct, expected_kind).await?;
+    Ok((validated_ct, disp, framed_size))
 }
 
 /// Fetches a media URL inside the active Chrome page and writes bytes to `temp_path`.
@@ -128,6 +151,7 @@ async fn fetch_via_browser_to_temp(
     engine: &ChromeEngine,
     media_url: &str,
     expected_kind: &str,
+    pcm_audio: bool,
     temp_path: &Path,
 ) -> Result<(Option<String>, Option<String>, u64)> {
     let val = engine
@@ -154,39 +178,13 @@ async fn fetch_via_browser_to_temp(
         .map(str::to_string);
     let size_bytes = bytes.len() as u64;
     tokio::fs::write(temp_path, &bytes).await?;
-    let validated_ct = validate_downloaded_file(temp_path, raw_ct, expected_kind).await?;
-    Ok((validated_ct, disp, size_bytes))
-}
-
-/// Returns `true` when `raw_url` carries signed GCS/Flow CDN hosts or V2/V4 query signatures.
-fn is_signed_direct_url(raw_url: &str) -> bool {
-    let Ok(parsed) = Url::parse(raw_url) else {
-        return false;
+    let (effective_ct, framed_size) = if pcm_audio && expected_kind == "audio" {
+        crate::pcm_wav::frame_raw_pcm_file(temp_path, raw_ct).await?
+    } else {
+        (raw_ct, size_bytes)
     };
-    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
-        return false;
-    };
-    host == "storage.googleapis.com"
-        || host.ends_with(".storage.googleapis.com")
-        || host == "flow-content.google"
-        || host.ends_with(".flow-content.google")
-        || host == "labs-flow.dev"
-        || host.ends_with(".labs-flow.dev")
-        || host == "video-downloads.googleusercontent.com"
-        || host.ends_with(".video-downloads.googleusercontent.com")
-        || parsed.query_pairs().any(|(k, _)| {
-            matches!(
-                k.to_ascii_lowercase().as_str(),
-                "signature"
-                    | "googleaccessid"
-                    | "x-goog-signature"
-                    | "x-goog-algorithm"
-                    | "x-goog-credential"
-                    | "x-goog-date"
-                    | "x-goog-expires"
-                    | "x-goog-signedheaders"
-            )
-        })
+    let validated_ct = validate_downloaded_file(temp_path, effective_ct, expected_kind).await?;
+    Ok((validated_ct, disp, framed_size))
 }
 
 /// Appends `raw` to `out` when it uses an allowed scheme and is not already present.
@@ -307,12 +305,17 @@ async fn query_resolved_media_urls(
         return ResolvedMediaUrls {
             urls: Vec::new(),
             media_kind: None,
+            pcm_audio: false,
         };
     };
     let media_kind = val
         .get("media_kind")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let pcm_audio = val
+        .get("pcm_audio")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let effective_kind = if media_kind.as_deref() == Some("audio") {
         "audio"
     } else {
@@ -322,6 +325,9 @@ async fn query_resolved_media_urls(
     let mut signed = Vec::new();
     let mut unsigned = Vec::new();
     let mut record_cand = |raw: &str| {
+        if is_expired_signed_url(raw) {
+            return;
+        }
         if is_signed_direct_url(raw) {
             push_unique_url(&mut signed, raw);
         } else {
@@ -346,7 +352,11 @@ async fn query_resolved_media_urls(
     for cand in unsigned {
         push_unique_url(&mut urls, &cand);
     }
-    ResolvedMediaUrls { urls, media_kind }
+    ResolvedMediaUrls {
+        urls,
+        media_kind,
+        pcm_audio,
+    }
 }
 
 /// Selects the [`DownloadSource`] for `target` from its pre-populated URL and media ID.
@@ -355,7 +365,7 @@ fn select_download_source(target: &FlowAsset, label: &str) -> Result<DownloadSou
         .url
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !is_expired_signed_url(s))
         .map(str::to_string);
     let media_id = target
         .primary_media_id
@@ -381,6 +391,11 @@ fn select_download_source(target: &FlowAsset, label: &str) -> Result<DownloadSou
             fallback_url,
         }),
         (Some(url), None) => Ok(DownloadSource::UnsignedUrl(url)),
+        (None, None) if target.kind == "scene" && !target.id.trim().is_empty() => {
+            Ok(DownloadSource::ExportScene {
+                scene_id: target.id.trim().to_string(),
+            })
+        }
         (None, None) => anyhow::bail!("Asset '{}' has no media URL or media ID", label),
     }
 }
@@ -390,24 +405,38 @@ async fn try_download_candidates(
     engine: &ChromeEngine,
     candidates: &[String],
     expected_kind: &str,
+    pcm_audio: bool,
     temp_path: &Path,
 ) -> Result<((Option<String>, Option<String>, u64), String)> {
     let mut attempts = Vec::new();
     for cand_url in candidates {
         let lower = cand_url.to_ascii_lowercase();
         let is_http = lower.starts_with("http://") || lower.starts_with("https://");
+        if is_http && is_expired_signed_url(cand_url) {
+            attempts.push(format!("{} (expired signed URL)", cand_url));
+            continue;
+        }
         if is_http && is_signed_direct_url(cand_url) {
             let _ = tokio::fs::remove_file(temp_path).await;
-            match stream_http_to_temp(engine, cand_url, expected_kind, temp_path).await {
+            match stream_http_to_temp(engine, cand_url, expected_kind, pcm_audio, temp_path).await {
                 Ok(res) => return Ok((res, cand_url.clone())),
                 Err(http_err) => {
                     let _ = tokio::fs::remove_file(temp_path).await;
-                    if http_err.to_string().contains(MEDIA_KIND_MISMATCH_TAG) {
+                    if http_err.to_string().contains(MEDIA_KIND_MISMATCH_TAG)
+                        || is_expired_signed_url(cand_url)
+                        || is_signed_url_auth_failure(&http_err)
+                    {
                         attempts.push(format!("{} (HTTP: {})", cand_url, http_err));
                         continue;
                     }
-                    match fetch_via_browser_to_temp(engine, cand_url, expected_kind, temp_path)
-                        .await
+                    match fetch_via_browser_to_temp(
+                        engine,
+                        cand_url,
+                        expected_kind,
+                        pcm_audio,
+                        temp_path,
+                    )
+                    .await
                     {
                         Ok(res) => return Ok((res, cand_url.clone())),
                         Err(browser_err) => {
@@ -422,7 +451,9 @@ async fn try_download_candidates(
             }
         } else if is_http {
             let _ = tokio::fs::remove_file(temp_path).await;
-            match fetch_via_browser_to_temp(engine, cand_url, expected_kind, temp_path).await {
+            match fetch_via_browser_to_temp(engine, cand_url, expected_kind, pcm_audio, temp_path)
+                .await
+            {
                 Ok(res) => return Ok((res, cand_url.clone())),
                 Err(browser_err) => {
                     let _ = tokio::fs::remove_file(temp_path).await;
@@ -430,7 +461,9 @@ async fn try_download_candidates(
                         attempts.push(format!("{} (browser: {})", cand_url, browser_err));
                         continue;
                     }
-                    match stream_http_to_temp(engine, cand_url, expected_kind, temp_path).await {
+                    match stream_http_to_temp(engine, cand_url, expected_kind, pcm_audio, temp_path)
+                        .await
+                    {
                         Ok(res) => return Ok((res, cand_url.clone())),
                         Err(http_err) => {
                             let _ = tokio::fs::remove_file(temp_path).await;
@@ -444,7 +477,9 @@ async fn try_download_candidates(
             }
         } else {
             let _ = tokio::fs::remove_file(temp_path).await;
-            match fetch_via_browser_to_temp(engine, cand_url, expected_kind, temp_path).await {
+            match fetch_via_browser_to_temp(engine, cand_url, expected_kind, pcm_audio, temp_path)
+                .await
+            {
                 Ok(res) => return Ok((res, cand_url.clone())),
                 Err(browser_err) => {
                     let _ = tokio::fs::remove_file(temp_path).await;
@@ -454,6 +489,96 @@ async fn try_download_candidates(
         }
     }
     anyhow::bail!("{}", attempts.join(" | "))
+}
+
+/// Exports a multi-clip or trimmed scene via `GjQLTd` and `IxdSwd` and writes the MP4 to `temp_path`.
+async fn export_scene_to_temp(
+    engine: &ChromeEngine,
+    scene_id: &str,
+    temp_path: &Path,
+) -> Result<((Option<String>, Option<String>, u64), String)> {
+    let deadline = Instant::now() + SCENE_EXPORT_BUDGET;
+    let start_raw = engine
+        .call_flow_async(
+            "exportScene",
+            json!([{
+                "action": "start",
+                "scene_id": scene_id,
+                "timeout_ms": SCENE_EXPORT_RPC_TIMEOUT_MS,
+            }]),
+        )
+        .await?;
+    let mut step = checked_runtime_result(start_raw)?;
+    let mut export_id = step
+        .get("export_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    loop {
+        if step.get("status").and_then(|v| v.as_str()) == Some("ready") {
+            let blob_url = step
+                .get("blob_url")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .context("Scene export returned ready status without a blob URL")?
+                .to_string();
+            let fetch_res =
+                fetch_via_browser_to_temp(engine, &blob_url, "video", false, temp_path).await;
+            let _ = engine
+                .call_flow_async(
+                    "exportScene",
+                    json!([{
+                        "action": "release",
+                        "export_id": export_id,
+                        "blob_url": blob_url,
+                    }]),
+                )
+                .await;
+            let meta = fetch_res?;
+            return Ok((meta, blob_url));
+        }
+
+        let Some(ref active_id) = export_id else {
+            anyhow::bail!("Scene export did not return an export handle");
+        };
+        let now = Instant::now();
+        if now >= deadline {
+            let _ = engine
+                .call_flow_async(
+                    "exportScene",
+                    json!([{ "action": "release", "export_id": active_id }]),
+                )
+                .await;
+            anyhow::bail!(
+                "Scene export timed out after {}s",
+                SCENE_EXPORT_BUDGET.as_secs()
+            );
+        }
+        let sleep_dur = SCENE_EXPORT_POLL_INTERVAL.min(deadline.saturating_duration_since(now));
+        tokio::time::sleep(sleep_dur).await;
+
+        let rpc_ms = u64::try_from(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis(),
+        )
+        .unwrap_or(1_000)
+        .clamp(1_000, SCENE_EXPORT_RPC_TIMEOUT_MS);
+        let poll_raw = engine
+            .call_flow_async(
+                "exportScene",
+                json!([{
+                    "action": "poll",
+                    "export_id": active_id,
+                    "timeout_ms": rpc_ms,
+                }]),
+            )
+            .await?;
+        step = checked_runtime_result(poll_raw)?;
+        if let Some(next_id) = step.get("export_id").and_then(|v| v.as_str()) {
+            export_id = Some(next_id.to_string());
+        }
+    }
 }
 
 /// Downloads a resolved [`FlowAsset`] into `<home>/downloads` and indexes it in SQLite.
@@ -477,39 +602,59 @@ pub(crate) async fn download_resolved_asset(
     let temp_name = format!(".flow-mcp-{}.part", &uuid::Uuid::new_v4().to_string()[..8]);
     let temp_path = stage_dir.join(temp_name);
 
-    let mut effective_kind = target.kind.clone();
+    let mut effective_kind = if target.kind == "scene" {
+        "video".to_string()
+    } else if matches!(target.kind.as_str(), "image" | "character")
+        && target.media_kind_hint.as_deref() == Some("audio")
+    {
+        "audio".to_string()
+    } else {
+        target.kind.clone()
+    };
+    let mut pcm_audio = target.pcm_audio;
+
     let download_res = match source {
         DownloadSource::DirectSigned {
             url,
             fallback_media_id,
         } => {
             let direct = std::slice::from_ref(&url);
-            match try_download_candidates(engine, direct, &effective_kind, &temp_path).await {
+            match try_download_candidates(engine, direct, &effective_kind, pcm_audio, &temp_path)
+                .await
+            {
                 Ok(res) => Ok(res),
                 Err(first_err) => {
                     if let Some(media_id) = fallback_media_id {
+                        let prev_kind = effective_kind.clone();
+                        let prev_pcm = pcm_audio;
                         let resolved =
                             query_resolved_media_urls(engine, &media_id, &effective_kind, true)
                                 .await;
-                        if effective_kind == "image"
+                        if matches!(effective_kind.as_str(), "image" | "character")
                             && resolved.media_kind.as_deref() == Some("audio")
                         {
                             effective_kind = "audio".to_string();
                         }
+                        pcm_audio |= resolved.pcm_audio;
+                        let retry_same_url = effective_kind != prev_kind || pcm_audio != prev_pcm;
                         let mut extra = Vec::new();
                         for cand in resolved.urls {
-                            if cand != url {
+                            if retry_same_url || cand != url {
                                 push_unique_url(&mut extra, &cand);
                             }
                         }
                         if extra.is_empty() {
                             Err(first_err)
                         } else {
-                            try_download_candidates(engine, &extra, &effective_kind, &temp_path)
-                                .await
-                                .map_err(|extra_err| {
-                                    anyhow::anyhow!("{} | {}", first_err, extra_err)
-                                })
+                            try_download_candidates(
+                                engine,
+                                &extra,
+                                &effective_kind,
+                                pcm_audio,
+                                &temp_path,
+                            )
+                            .await
+                            .map_err(|extra_err| anyhow::anyhow!("{} | {}", first_err, extra_err))
                         }
                     } else {
                         Err(first_err)
@@ -523,28 +668,67 @@ pub(crate) async fn download_resolved_asset(
         } => {
             let resolved =
                 query_resolved_media_urls(engine, &media_id, &effective_kind, false).await;
-            if effective_kind == "image" && resolved.media_kind.as_deref() == Some("audio") {
+            if matches!(effective_kind.as_str(), "image" | "character")
+                && resolved.media_kind.as_deref() == Some("audio")
+            {
                 effective_kind = "audio".to_string();
             }
+            pcm_audio |= resolved.pcm_audio;
             let mut candidates = resolved.urls;
-            if let Some(raw_fallback) = fallback_url {
-                push_fife_candidates(&mut candidates, &raw_fallback, &effective_kind);
-                push_unique_url(&mut candidates, &raw_fallback);
+            if let Some(ref raw_fallback) = fallback_url {
+                push_fife_candidates(&mut candidates, raw_fallback, &effective_kind);
+                push_unique_url(&mut candidates, raw_fallback);
             }
-            if candidates.is_empty() {
+            let cached_attempt = if candidates.is_empty() {
                 Err(anyhow::anyhow!(
                     "media lookup returned no URLs for media ID '{}'",
                     media_id
                 ))
             } else {
-                try_download_candidates(engine, &candidates, &effective_kind, &temp_path).await
+                try_download_candidates(engine, &candidates, &effective_kind, pcm_audio, &temp_path)
+                    .await
+            };
+            match cached_attempt {
+                Ok(res) => Ok(res),
+                Err(first_err) => {
+                    let fresh =
+                        query_resolved_media_urls(engine, &media_id, &effective_kind, true).await;
+                    if matches!(effective_kind.as_str(), "image" | "character")
+                        && fresh.media_kind.as_deref() == Some("audio")
+                    {
+                        effective_kind = "audio".to_string();
+                    }
+                    pcm_audio |= fresh.pcm_audio;
+                    let mut fresh_candidates = fresh.urls;
+                    if let Some(ref raw_fallback) = fallback_url {
+                        push_fife_candidates(&mut fresh_candidates, raw_fallback, &effective_kind);
+                        push_unique_url(&mut fresh_candidates, raw_fallback);
+                    }
+                    if fresh_candidates.is_empty() {
+                        Err(first_err)
+                    } else {
+                        try_download_candidates(
+                            engine,
+                            &fresh_candidates,
+                            &effective_kind,
+                            pcm_audio,
+                            &temp_path,
+                        )
+                        .await
+                        .map_err(|retry_err| anyhow::anyhow!("{} | {}", first_err, retry_err))
+                    }
+                }
             }
         }
         DownloadSource::UnsignedUrl(raw_url) => {
             let mut candidates = Vec::new();
             push_fife_candidates(&mut candidates, &raw_url, &effective_kind);
             push_unique_url(&mut candidates, &raw_url);
-            try_download_candidates(engine, &candidates, &effective_kind, &temp_path).await
+            try_download_candidates(engine, &candidates, &effective_kind, pcm_audio, &temp_path)
+                .await
+        }
+        DownloadSource::ExportScene { scene_id } => {
+            export_scene_to_temp(engine, &scene_id, &temp_path).await
         }
     };
 

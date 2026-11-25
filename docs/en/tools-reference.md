@@ -387,11 +387,11 @@ The tool checks the result of each write in a new read of the same project. The 
 
 ### `flow_download`
 
-Download a matching project media asset (image, video, audio, or character look) to `<home>/downloads` and index it in `flow-mcp.db`. Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
+Download a matching project media asset (image, video, audio, scene, or character look or voice) to `<home>/downloads` and index it in `flow-mcp.db`. Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
 
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `match` | `string` | Yes | Exact asset ID, exact name, or case-insensitive substring matching a project asset. |
+| `match` | `string` | Yes | Exact asset or variant ID, exact name, or case-insensitive substring matching a project asset. |
 
 ### `flow_downloads`
 

@@ -4,6 +4,7 @@
 // Shared DOM, event, input, and FIFE URL helpers for Flow browser modules.
 
 import { snapshotFormat } from "./frontend_builds";
+import { cleanMediaIdKey, isExpiredSignedUrl, pickUpsampledTileUrl } from "./media_variants";
 import type { CharacterLookEntry, FifeEnv, FlowMediaPayload, FlowTile } from "./types";
 
 /** Reads an own data property from `o` without invoking prototype getters. */
@@ -66,7 +67,7 @@ export function isNonAssetTileType(type: unknown): boolean {
 const VIDEO_SHORT_EDGE: Readonly<Record<number, number>> = { 1: 720, 2: 1080, 3: 2160, 4: 360 };
 
 /** Calculates video pixel dimensions from a Flow resolution code and an aspect ratio, or returns null. */
-function videoDimensions(
+export function videoDimensions(
   resolution: unknown,
   aspectRatio: unknown,
 ): { width: number; height: number } | null {
@@ -242,6 +243,77 @@ export function characterLooksOf(
   return null;
 }
 
+/** Reads a 1-based protobuf field from a dense or sparse serialized JSPB array. */
+function charProtoField(message: unknown, field: number): unknown {
+  if (!Array.isArray(message) || field < 1) return undefined;
+  const sparse = message.at(-1);
+  if (sparse && typeof sparse === "object" && !Array.isArray(sparse)) {
+    if (field - 1 < message.length - 1 && message[field - 1] != null) {
+      return message[field - 1];
+    }
+    return readMediaField(sparse, String(field));
+  }
+  return message[field - 1];
+}
+
+/** Extracts an identifier string from a voice value or nested voice descriptor. */
+function pickVoiceIdentifier(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    return s ? (s.startsWith("voices/") ? s : cleanMediaIdKey(s) || s) : null;
+  }
+  if (Array.isArray(raw)) {
+    return raw.length > 0 ? pickVoiceIdentifier(raw[0]) : null;
+  }
+  if (typeof raw === "object") {
+    for (const key of ["mediaId", "voiceId", "id", "workflowId", "Th"]) {
+      const candidate = pickVoiceIdentifier(readMediaField(raw, key));
+      if (candidate) return candidate;
+    }
+  }
+  return null;
+}
+
+/** Reads the assigned voice identifier from character tile `t` when no look media exists. */
+function fallbackCharacterVoiceId(t: FlowTile): string | null {
+  const mappedVoiceMedia = pickVoiceIdentifier(t.voiceMediaId);
+  if (mappedVoiceMedia) return mappedVoiceMedia;
+
+  const charFmt = snapshotFormat()?.character;
+  const entity = readMediaField(t, charFmt?.entity ?? "Rc");
+  if (entity && typeof entity === "object") {
+    try {
+      const toJson = (entity as { toJSON?: unknown }).toJSON;
+      const root = typeof toJson === "function" ? toJson.call(entity) : readMediaField(entity, "qf");
+      const info = charProtoField(
+        charProtoField(root, charFmt?.entityInfoField ?? 4),
+        charFmt?.characterInfoField ?? 3,
+      );
+      const refs = charProtoField(info, charFmt?.audioReferencesField ?? 2);
+      if (Array.isArray(refs) && refs.length > 0) {
+        const custom = pickVoiceIdentifier(
+          charProtoField(refs[0], charFmt?.customVoiceField ?? 1),
+        );
+        if (custom) return custom;
+        const preset = pickVoiceIdentifier(
+          charProtoField(refs[0], charFmt?.presetVoiceField ?? 2),
+        );
+        if (preset) return preset;
+      }
+    } catch {
+      // Fall through to plain field inspection.
+    }
+  }
+
+  return (
+    pickVoiceIdentifier(t.voiceId) ??
+    pickVoiceIdentifier(t.Vo) ??
+    pickVoiceIdentifier(t.voice) ??
+    pickVoiceIdentifier(t.audioReferences)
+  );
+}
+
 /** Extracts the preferred look image URL and primary media ID from character tile `t`. */
 export function characterLookMedia(
   t: FlowTile | null | undefined,
@@ -286,9 +358,14 @@ export function characterLookMedia(
       }
     }
   }
+  const lookUrl = preferredId ? preferredUrl : fallbackUrl;
+  const lookPrimaryId = preferredId || firstPrimaryId;
+  if (!lookUrl && !lookPrimaryId) {
+    return { url: null, primaryMediaId: fallbackCharacterVoiceId(t) };
+  }
   return {
-    url: preferredId ? preferredUrl : fallbackUrl,
-    primaryMediaId: preferredId || firstPrimaryId,
+    url: lookUrl,
+    primaryMediaId: lookPrimaryId,
   };
 }
 
@@ -553,16 +630,23 @@ export function normalizeFlowMediaUrl(
 export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
   const t = legacyTile(tile);
   if (!t) return null;
+  const nonExpired = (u: string | null): string | null =>
+    u && !isExpiredSignedUrl(u) ? u : null;
   const kind = String(t.type ?? "").toUpperCase() === "VIDEO" ? "video" : "image";
+  const upsampledUrl = kind === "video" ? pickUpsampledTileUrl(tile) : null;
   const videoUrl = kind === "video"
-    ? readMediaUrl(t.Fb, true) || readMediaUrl(t, true) || readMediaUrl(t.fb, true)
+    ? upsampledUrl ||
+      nonExpired(readMediaUrl(t.Fb, true)) ||
+      nonExpired(readMediaUrl(t, true)) ||
+      nonExpired(readMediaUrl(t.fb, true))
     : null;
   const raw =
-    videoUrl || readMediaUrl(t.Fb) ||
-    readMediaUrl(t) ||
-    readMediaUrl(t.fb) ||
-    characterLookMedia(t).url ||
-    asHttpOrDataUrl(t.ue) ||
+    videoUrl ||
+    nonExpired(readMediaUrl(t.Fb)) ||
+    nonExpired(readMediaUrl(t)) ||
+    nonExpired(readMediaUrl(t.fb)) ||
+    nonExpired(characterLookMedia(t).url) ||
+    nonExpired(asHttpOrDataUrl(t.ue)) ||
     null;
   return raw ? normalizeFlowMediaUrl(raw, kind) : null;
 }
