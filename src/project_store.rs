@@ -98,8 +98,11 @@ impl<'a> ProjectStoreSession<'a> {
 
 /// Prepares the direct store for a status check without changing the page.
 pub(crate) async fn prepare_project_store_status(engine: &ChromeEngine, project_id: &str) {
-    if let Some(_guard) = engine.try_lock_project_store() {
-        let _ = bind_current_store(engine, project_id).await;
+    if let Some(_guard) = engine.try_lock_project_store()
+        && let Ok(status) = bind_current_store(engine, project_id).await
+        && status.get("error").and_then(Value::as_str) == Some("collection_store_not_bound")
+    {
+        let _ = engine.call_flow_async("discoverStore", json!([])).await;
     }
 }
 

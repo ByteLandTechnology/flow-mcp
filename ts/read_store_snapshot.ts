@@ -200,10 +200,11 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     clearStore();
     return { ok: false, error: "project_mismatch" };
   }
-  if (!helper.isCurrent() || runtimeState.routePath !== location.pathname) {
+  if (!helper.isCurrent()) {
     clearStore();
     return { ok: false, error: "route_changed" };
   }
+  runtimeState.routePath = location.pathname;
   if (!helper.isReady()) {
     return { ok: false, error: "store_loading" };
   }
@@ -213,20 +214,44 @@ export function readStoreSnapshot(): StoreSnapshotResult {
   }
 
   const { assets, collections } = readStoreTiles(tileMap);
-  const titleEl = document.querySelector(
-    'input[aria-label="Editable text"], .editable-text-input, [data-testid="project-title"]',
-  );
-  const rawTitle = titleEl
-    ? ((titleEl as HTMLInputElement).value || titleEl.textContent || "").trim()
-    : "";
-  const docTitle = (document.title || "")
-    .replace(/\s*[-–|]\s*(?:Google\s*)?Flow\s*$/i, "")
-    .trim();
-  const projectTitle = rawTitle || docTitle || null;
+  const rawStoreTitle =
+    typeof helper.getTitle === "function" ? helper.getTitle() : null;
+  const storeTitle =
+    typeof rawStoreTitle === "string" && rawStoreTitle.trim().length > 0
+      ? rawStoreTitle.trim()
+      : null;
+  const titleVerified =
+    storeTitle !== null || Boolean(helper.isTitleVerified?.());
+  let projectTitle: string | null = storeTitle;
+  if (!titleVerified) {
+    let cleaned = (document.title || "").trim();
+    for (let i = 0; i < 3; i++) {
+      const next = cleaned
+        .replace(/^(?:Google\s+)?Flow\s*[-–—|]\s*/i, "")
+        .replace(/\s*[-–—|]\s*(?:Google\s+)?Flow\s*$/i, "")
+        .trim();
+      if (next === cleaned) break;
+      cleaned = next;
+    }
+    projectTitle =
+      cleaned &&
+      !/^(?:google\s+flow|flow|untitled)$/i.test(cleaned) &&
+      !/^ai\s+creative\s+studio\b/i.test(cleaned)
+        ? cleaned
+        : null;
+  }
 
   const credits = readMappedCredits() ?? readDomAccountCredits();
 
-  return { ok: true, projectId, projectTitle, credits, assets, collections };
+  return {
+    ok: true,
+    projectId,
+    projectTitle,
+    projectTitleVerified: titleVerified,
+    credits,
+    assets,
+    collections,
+  };
 }
 
 /** Reads asset and collection details from the tile map. */

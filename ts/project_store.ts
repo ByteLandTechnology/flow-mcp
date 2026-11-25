@@ -94,11 +94,109 @@ export function currentProjectStore(projectId: string): ProjectStore | null {
   return active?.projectId === projectId ? active : null;
 }
 
+/** Returns the query cache object on `store` when available. */
+function storeQueryCache({ service, format }: ProjectStore): object | null {
+  const tiles = readOwn(service, format.tilesService);
+  const cache = readOwn(readOwn(tiles, format.queryClient), "queryCache");
+  return cache && typeof cache === "object" ? cache : null;
+}
+
+/** Finds an exact `[scope, projectId]` query entry in the query cache of `store`. */
+function findScopedProjectQuery(
+  store: ProjectStore,
+  scope: string,
+): { state?: { status?: string; fetchStatus?: string; data?: unknown } } | undefined {
+  const cache = storeQueryCache(store);
+  const find = readOwn(cache, "find");
+  if (typeof find !== "function") return undefined;
+  return find.call(cache, { queryKey: [scope, store.projectId], exact: true }) as
+    | { state?: { status?: string; fetchStatus?: string; data?: unknown } }
+    | undefined;
+}
+
+/** Extracts a title string (or `null` when explicitly empty) from a cached project object. */
+function extractCachedProjectTitle(data: unknown, projectId: string): string | null | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const candidates: unknown[] = [
+    data,
+    readOwn(data, "project"),
+    readOwn(data, "details"),
+    readOwn(data, "metadata"),
+  ];
+  for (const item of candidates) {
+    if (!item || typeof item !== "object") continue;
+    for (const key of ["title", "projectTitle", "displayName"]) {
+      const val = readOwn(item, key);
+      if (typeof val === "string") {
+        const trimmed = val.trim();
+        return trimmed.length > 0 ? trimmed : null;
+      }
+    }
+    const nameVal = readOwn(item, "name");
+    if (typeof nameVal === "string" && !nameVal.startsWith("projects/")) {
+      const trimmed = nameVal.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+  }
+  const toJson = readOwn(data, "toJSON");
+  if (typeof toJson === "function") {
+    try {
+      const raw: unknown = toJson.call(data);
+      if (Array.isArray(raw) && raw[0] === projectId && Array.isArray(raw[1])) {
+        const titleCell: unknown = raw[1][0];
+        if (titleCell === undefined || titleCell === null) return null;
+        if (typeof titleCell === "string") {
+          const trimmed = titleCell.trim();
+          return trimmed.length > 0 ? trimmed : null;
+        }
+      }
+    } catch {
+      // Ignore non-standard toJSON implementations.
+    }
+  }
+  return undefined;
+}
+
+/** Reads the active project title and whether the store or cache verified it. */
+function readProjectTitleState(store: ProjectStore): { title: string | null; verified: boolean } {
+  if (!isCurrent(store)) return { title: null, verified: false };
+  let signalVerified = false;
+  if (store.format.title) {
+    const titleSignal = readOwn(store.service, store.format.title);
+    if (typeof titleSignal === "function") {
+      try {
+        const value: unknown = titleSignal.call(store.service);
+        if (typeof value === "string") {
+          signalVerified = true;
+          const trimmed = value.trim();
+          if (trimmed.length > 0) return { title: trimmed, verified: true };
+        }
+      } catch {
+        // Fall through to query cache lookup.
+      }
+    } else if (typeof titleSignal === "string") {
+      signalVerified = true;
+      const trimmed = titleSignal.trim();
+      if (trimmed.length > 0) return { title: trimmed, verified: true };
+    }
+  }
+  for (const scope of ["PROJECT_DETAILS", "PROJECT"]) {
+    const entry = findScopedProjectQuery(store, scope);
+    if (!entry?.state || entry.state.data === undefined) continue;
+    const cached = extractCachedProjectTitle(entry.state.data, store.projectId);
+    if (cached !== undefined) {
+      return { title: cached, verified: true };
+    }
+  }
+  return { title: null, verified: signalVerified };
+}
+
 /** Finds the query by its full project key. */
-function projectQuery({ projectId, service, format }: ProjectStore): ProjectTileQuery | undefined {
+function projectQuery(store: ProjectStore): ProjectTileQuery | undefined {
+  const { projectId, service, format } = store;
   const tiles = readOwn(service, format.tilesService);
   const queryKey = readOwn(tiles, "queryKey");
-  const cache = readOwn(readOwn(tiles, format.queryClient), "queryCache");
+  const cache = storeQueryCache(store);
   const find = readOwn(cache, "find");
   if (typeof queryKey !== "function" || typeof find !== "function") return undefined;
   const key: unknown = queryKey.call(tiles, projectId);
@@ -112,7 +210,7 @@ function isProjectKey(key: unknown, projectId: string): boolean {
   return Array.isArray(key) && key.length === 2 && key[0] === "PROJECT_TILES" && key[1] === projectId;
 }
 
-/** Returns true while the verified tile query of `store` loads initial rows. */
+/** Returns true while the verified tile or metadata query of `store` loads initial data. */
 export function isProjectStorePending(store: ProjectStore): boolean {
   if (!isCurrent(store)) return false;
   const signalQuery = readOwn(store.service, store.format.tileQuery);
@@ -122,7 +220,9 @@ export function isProjectStorePending(store: ProjectStore): boolean {
       return true;
     }
   }
-  return projectQuery(store)?.state.status === "pending";
+  if (projectQuery(store)?.state.status === "pending") return true;
+  const projectMeta = findScopedProjectQuery(store, "PROJECT")?.state;
+  return projectMeta?.status === "pending" && projectMeta?.fetchStatus === "fetching";
 }
 
 /** Indexes a validated tile row array by tile ID. */
@@ -294,6 +394,8 @@ export function installProjectStore(store: ProjectStore, views?: Map<number, NgL
     projectId: store.projectId,
     isCurrent: () => isCurrent(store),
     getTileMap: () => readProjectStore(store),
+    getTitle: () => readProjectTitleState(store).title,
+    isTitleVerified: () => readProjectTitleState(store).verified,
     isReady: () => isCurrent(store) && !isProjectStorePending(store),
     mutate: (payload) => mutateStore(store, payload),
     rename: (id, displayName) =>
@@ -360,6 +462,7 @@ export function projectStoreStatus(projectId: string): ProjectStoreStatus {
   if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
   const store = currentProjectStore(projectId);
   if (!store) return { ok: false, error: "collection_store_not_bound" };
+  runtimeState.routePath = location.pathname;
   if (isProjectStorePending(store)) {
     return { ok: false, bound: true, error: "store_loading" };
   }

@@ -17,7 +17,7 @@ use crate::collections::{FlowCollection, find_collection};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
-use crate::project::{ensure_flow_store, read_snapshot};
+use crate::project::{clean_project_title, ensure_flow_store, read_snapshot};
 use crate::project_store::ProjectStoreSession;
 use crate::tile_menu::{rename_through_menu, tile_state, trash_through_menu};
 
@@ -246,16 +246,13 @@ async fn read_project_assets(engine: &ChromeEngine) -> Result<ProjectAssetsSnaps
     let snap = read_snapshot(engine).await?;
     let project_id = snap
         .get("projectId")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let project_title = snap
-        .get("projectTitle")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let verified = snap.get("projectTitleVerified").and_then(Value::as_bool) != Some(false);
+    let project_title =
+        clean_project_title(snap.get("projectTitle").and_then(Value::as_str), verified);
     let assets = serde_json::from_value(
         snap.get("assets")
             .cloned()
@@ -325,12 +322,14 @@ pub(crate) async fn resolve_asset(
     Ok((target, snap.project_id, snap.project_title))
 }
 
-/// Lists assets in the active Flow project matching optional query, kind, collection, and limit filters.
-pub(crate) async fn list_assets(
+/// Lists assets and active project metadata matching optional query, kind, collection, and limit filters.
+pub(crate) async fn list_assets_snapshot(
     engine: &ChromeEngine,
     request: &AssetsParams,
-) -> Result<Vec<FlowAsset>> {
+) -> Result<ProjectAssetsSnapshot> {
     let snap = read_project_assets(engine).await?;
+    let project_id = snap.project_id;
+    let project_title = snap.project_title;
     let all = snap.assets;
 
     let q_lower = request
@@ -396,7 +395,19 @@ pub(crate) async fn list_assets(
             filtered.truncate(lim);
         }
     }
-    Ok(filtered)
+    Ok(ProjectAssetsSnapshot {
+        project_id,
+        project_title,
+        assets: filtered,
+    })
+}
+
+/// Lists assets in the active Flow project matching optional query, kind, collection, and limit filters.
+pub(crate) async fn list_assets(
+    engine: &ChromeEngine,
+    request: &AssetsParams,
+) -> Result<Vec<FlowAsset>> {
+    Ok(list_assets_snapshot(engine, request).await?.assets)
 }
 
 /// Checks whether the asset snapshot shows the requested name.

@@ -272,6 +272,10 @@ export interface FlowStoreHandle {
   isCurrent: () => boolean;
   /** Returns the current project tile map if available. */
   getTileMap: () => Map<string, FlowTile> | null | undefined;
+  /** Returns the project title from the store signal or query cache when available. */
+  getTitle: () => string | null;
+  /** Returns true when a store title signal or project cache backs `getTitle`. */
+  isTitleVerified?: () => boolean;
   /** Returns true when pending store fetches have settled. */
   isReady: () => boolean;
   /** Dispatches a store mutation payload and waits for completion. */
@@ -573,6 +577,7 @@ export type StoreSnapshotResult =
       ok: true;
       projectId: string | null;
       projectTitle: string | null;
+      projectTitleVerified?: boolean;
       credits: number | null;
       assets: SnapshotAssetItem[];
       collections: SnapshotCollectionItem[];

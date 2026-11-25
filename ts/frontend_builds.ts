@@ -310,6 +310,8 @@ export interface ProjectStoreFormat {
   destroyed: string;
   /** Project ID signal. */
   projectId: string;
+  /** Project title signal when present on the store. */
+  title?: string;
   /** Service that owns the tile query and writes. */
   tilesService: string;
   /** Query client on the tile service. */
@@ -403,6 +405,7 @@ const NOVEMBER_20_STORE: ProjectStoreFormat = {
   lifecycle: "Ba",
   destroyed: "Va",
   projectId: "ua",
+  title: "Jk",
   tilesService: "ma",
   queryClient: "Wa",
   dispatcher: "YJ",

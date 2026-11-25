@@ -17,7 +17,8 @@ use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redir
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
 pub(crate) use crate::project_route::{
-    project_id_from_url, project_subroute_url, project_workspace_url,
+    clean_project_title, is_project_subroute_url, project_id_from_url, project_subroute_url,
+    project_workspace_url,
 };
 use crate::project_store::{bind_current_store, prepare_project_store_status};
 
@@ -86,32 +87,10 @@ pub(crate) struct FlowStatus {
     pub(crate) error: Option<String>,
 }
 
-/// Navigates back to `/project/<id>` when Chrome is on a non-grid project subroute.
+/// Navigates back to `/project/<id>` when Chrome is on any project subroute.
 pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
-    let is_subroute = |url: &str| {
-        let path = url.split(['?', '#']).next().unwrap_or_default();
-        let Some((_, project)) = path.split_once("/project/") else {
-            return false;
-        };
-        let mut segs = project.trim_end_matches('/').split('/');
-        if segs.next().is_none_or(str::is_empty) {
-            return false;
-        }
-        match (segs.next(), segs.next(), segs.next()) {
-            (
-                Some(
-                    "character" | "scene" | "edit" | "chat" | "tool" | "tools" | "create-tool"
-                    | "trash",
-                ),
-                _,
-                _,
-            ) => true,
-            (Some("collection"), Some(cid), Some("character")) => !cid.is_empty(),
-            _ => false,
-        }
-    };
     let current = engine.current_url().await?;
-    if !is_subroute(&current) {
+    if !is_project_subroute_url(&current, false) {
         return Ok(());
     }
     let project_id = project_id_from_url(&current)
@@ -119,7 +98,7 @@ pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Resu
     let workspace = project_workspace_url(&current, &project_id);
     let returned = |url: &str| {
         is_flow_host_url(url)
-            && !is_subroute(url)
+            && !is_project_subroute_url(url, false)
             && project_id_from_url(url).as_deref() == Some(project_id.as_str())
             && project_workspace_url(url, &project_id) == workspace
     };
@@ -241,11 +220,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let mut project = auth_check
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let mut project = None;
     let mut credits = None;
     let mut assets_count = None;
     let mut collections_count = None;
@@ -255,25 +230,34 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     }
 
     if in_project {
-        let snap = engine
+        let mut snap = engine
             .call_flow_js("readStoreSnapshot", json!([]))
             .await
             .unwrap_or(Value::Null);
-        if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-            if let Some(t) = snap.get("projectTitle").and_then(|v| v.as_str())
-                && !t.is_empty()
-            {
-                project = Some(t.to_string());
+        if !probe {
+            for _ in 0..8 {
+                if snap.get("error").and_then(Value::as_str) != Some("store_loading") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                snap = engine
+                    .call_flow_js("readStoreSnapshot", json!([]))
+                    .await
+                    .unwrap_or(Value::Null);
             }
-            credits = snap.get("credits").and_then(|v| v.as_i64());
-            assets_count = snap
-                .get("assets")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len());
+        }
+        if snap.get("ok").and_then(Value::as_bool) == Some(true) {
+            let verified = snap.get("projectTitleVerified").and_then(Value::as_bool) != Some(false);
+            project =
+                clean_project_title(snap.get("projectTitle").and_then(Value::as_str), verified);
+            credits = snap.get("credits").and_then(Value::as_i64);
+            assets_count = snap.get("assets").and_then(Value::as_array).map(Vec::len);
             collections_count = snap
                 .get("collections")
-                .and_then(|v| v.as_array())
-                .map(|c| c.len());
+                .and_then(Value::as_array)
+                .map(Vec::len);
+        } else {
+            project = clean_project_title(auth_check.get("title").and_then(Value::as_str), false);
         }
     }
 
@@ -640,26 +624,35 @@ async fn open_project(
 
     if target_id.is_none() {
         let want = title
-            .map(|s| s.trim().to_ascii_lowercase())
+            .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Provide `id` or `title` to open a project"))?;
         let listed = list_projects(engine).await?;
         let projects = listed
             .get("projects")
-            .and_then(|v| v.as_array())
+            .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let hit = projects.into_iter().find(|p| {
-            p.get("title")
-                .and_then(|v| v.as_str())
-                .map(|t| t.trim().to_ascii_lowercase().contains(&want))
-                .unwrap_or(false)
-        });
+        let hit = projects
+            .iter()
+            .find(|p| {
+                p.get("title")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.trim().to_lowercase() == want)
+            })
+            .cloned()
+            .or_else(|| {
+                projects.into_iter().find(|p| {
+                    p.get("title")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t.trim().to_lowercase().contains(&want))
+                })
+            });
         let Some(p) = hit else {
             anyhow::bail!("No Google Flow project matches title '{}'", want);
         };
-        target_id = p.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
-        if let Some(t) = p.get("title").and_then(|v| v.as_str()) {
+        target_id = p.get("id").and_then(Value::as_str).map(str::to_string);
+        if let Some(t) = p.get("title").and_then(Value::as_str) {
             matched_title = Some(t.to_string());
         }
     }
@@ -672,35 +665,39 @@ async fn open_project(
     tokio::time::sleep(Duration::from_millis(800)).await;
     ensure_flow_store(engine).await?;
     let snap = read_snapshot(engine).await?;
+    let verified = snap.get("projectTitleVerified").and_then(Value::as_bool) != Some(false);
+    let resolved_title =
+        clean_project_title(snap.get("projectTitle").and_then(Value::as_str), verified)
+            .or(matched_title);
     Ok(json!({
         "opened": true,
         "project_id": pid,
-        "title": snap.get("projectTitle").and_then(|v| v.as_str()).map(|s| s.to_string()).or(matched_title),
+        "title": resolved_title,
         "url": engine.current_url().await.unwrap_or(project_url),
-        "assets_count": snap.get("assets").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
-        "collections_count": snap.get("collections").and_then(|v| v.as_array()).map(|c| c.len()).unwrap_or(0),
+        "assets_count": snap.get("assets").and_then(Value::as_array).map_or(0, Vec::len),
+        "collections_count": snap.get("collections").and_then(Value::as_array).map_or(0, Vec::len),
     }))
 }
 
-/// Polls project snapshots until `projectTitle` holds `desired` after a short settle delay.
+/// Polls project snapshots until a verified `projectTitle` holds `desired` after a settle delay.
 async fn confirm_project_title(engine: &ChromeEngine, desired: &str) -> Result<String> {
-    let deadline = Instant::now() + Duration::from_secs(6);
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    while Instant::now() < deadline {
-        if let Ok(snap) = read_snapshot(engine).await
+    let matches_desired = |snap: &Value| {
+        snap.get("projectTitleVerified").and_then(Value::as_bool) != Some(false)
             && snap
                 .get("projectTitle")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 == Some(desired)
+    };
+    let deadline = Instant::now() + Duration::from_secs(6);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    while Instant::now() < deadline {
+        if let Ok(snap) = read_snapshot(engine).await
+            && matches_desired(&snap)
         {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if let Ok(settled) = read_snapshot(engine).await
-                && settled
-                    .get("projectTitle")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    == Some(desired)
+                && matches_desired(&settled)
             {
                 return Ok(desired.to_string());
             }
@@ -720,7 +717,10 @@ fn count_matching_project_entries(
     title: Option<&str>,
 ) -> usize {
     let want_id = id.map(str::trim).filter(|s| !s.is_empty());
-    let want_title = title.map(str::trim).filter(|s| !s.is_empty());
+    let want_title = title
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
     entries
         .iter()
         .filter(|entry| {
@@ -729,11 +729,11 @@ fn count_matching_project_entries(
             {
                 return true;
             }
-            if let Some(wtitle) = want_title
+            if let Some(wtitle) = want_title.as_deref()
                 && entry
                     .get("title")
                     .and_then(Value::as_str)
-                    .is_some_and(|t| t.trim().eq_ignore_ascii_case(wtitle))
+                    .is_some_and(|t| t.trim().to_lowercase() == wtitle)
             {
                 return true;
             }
@@ -750,7 +750,7 @@ async fn confirm_project_deleted(
     before_matches: usize,
 ) -> Result<()> {
     let want_id = deleted_id.map(str::trim).filter(|s| !s.is_empty());
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         let listed = run_projects_op(engine, json!({ "action": "list" })).await?;
         if listed.get("ok").and_then(Value::as_bool) == Some(true)
@@ -777,14 +777,19 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
     if trimmed.is_empty() {
         anyhow::bail!("New project title must not be empty");
     }
-    if let Some(pid) = id.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(pid) = id.map(str::trim).filter(|s| !s.is_empty()) {
         let cur = engine.current_url().await.unwrap_or_default();
         if project_id_from_url(&cur).as_deref() != Some(pid) {
             let _ = open_project(engine, Some(pid), None).await?;
+        } else {
+            ensure_project_workspace_root(engine).await?;
+            ensure_flow_store(engine).await?;
         }
     } else {
+        ensure_project_workspace_root(engine).await?;
         ensure_flow_store(engine).await?;
     }
+    ensure_project_workspace_root(engine).await?;
     let res = run_projects_op(engine, json!({ "action": "set_title", "title": trimmed })).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(

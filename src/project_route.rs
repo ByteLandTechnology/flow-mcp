@@ -15,6 +15,89 @@ pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
     (!id.is_empty()).then(|| id.to_string())
 }
 
+/// Returns `true` when `url` points to a child route under `/project/<id>`.
+///
+/// When `allow_collection` is `true`, `/project/<id>/collection/<cid>` counts as a grid view
+/// while deeper paths such as `/project/<id>/collection/<cid>/character` remain subroutes.
+pub(crate) fn is_project_subroute_url(url: &str, allow_collection: bool) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let Some((_, project)) = path.split_once("/project/") else {
+        return false;
+    };
+    let mut segs = project.trim_end_matches('/').split('/');
+    if segs.next().is_none_or(|id| id.trim().is_empty()) {
+        return false;
+    }
+    match (segs.next(), segs.next(), segs.next()) {
+        (None, _, _) => false,
+        (Some("collection"), Some(cid), None) if allow_collection && !cid.trim().is_empty() => {
+            false
+        }
+        (Some(seg), _, _) => !seg.trim().is_empty(),
+    }
+}
+
+/// Strips one case-insensitive ASCII `prefix` from the start of `text`.
+fn strip_ascii_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| text.get(prefix.len()..))
+        .flatten()
+}
+
+/// Strips one case-insensitive ASCII `suffix` from the end of `text`.
+fn strip_ascii_suffix_ci<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
+    let start = text.len().checked_sub(suffix.len())?;
+    let tail = text.get(start..)?;
+    tail.eq_ignore_ascii_case(suffix)
+        .then(|| text.get(..start))
+        .flatten()
+}
+
+/// Removes one leading `"Google Flow - "` or trailing `"- Google Flow"` affix from `text`.
+fn strip_flow_affix_once(text: &str) -> Option<&str> {
+    for brand in ["google flow", "flow"] {
+        if let Some(rest) = strip_ascii_prefix_ci(text, brand)
+            && rest
+                .starts_with(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '–' | '—' | '|'))
+            && let Some(stripped) = rest.trim_start().strip_prefix(['-', '–', '—', '|'])
+        {
+            return Some(stripped.trim());
+        }
+        if let Some(before) = strip_ascii_suffix_ci(text, brand)
+            && before
+                .ends_with(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '–' | '—' | '|'))
+            && let Some(stripped) = before.trim_end().strip_suffix(['-', '–', '—', '|'])
+        {
+            return Some(stripped.trim());
+        }
+    }
+    None
+}
+
+/// Returns a trimmed project title from the verified store or cleans a fallback document title.
+pub(crate) fn clean_project_title(raw: Option<&str>, verified: bool) -> Option<String> {
+    let text = raw?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if verified {
+        return Some(text.to_string());
+    }
+    let mut cleaned = text;
+    while let Some(next) = strip_flow_affix_once(cleaned) {
+        cleaned = next;
+    }
+    let lower = cleaned.to_ascii_lowercase();
+    if cleaned.is_empty()
+        || matches!(lower.as_str(), "google flow" | "flow" | "untitled")
+        || lower.starts_with("ai creative studio")
+    {
+        return None;
+    }
+    Some(cleaned.to_string())
+}
+
 /// Returns `true` when `host` is a Google Flow host (`flow.google.com` or `labs.google`).
 pub(crate) fn is_flow_origin_host(host: Option<&str>) -> bool {
     let Some(h) = host else {

@@ -97,12 +97,11 @@ export async function projectNav(action: string): Promise<unknown> {
     const isOriginalProject = (): boolean =>
       activeProject() === pid && buildProjectUrl(pid) === workspace;
     const isSubRoute = (): boolean =>
-      /\/project\/[^/?#]+\/(?:character|scene|edit|chat|tools?|create-tool|trash|collection\/[^/?#]+\/character)(?:\/|$)/.test(
-        location.pathname || "",
-      );
+      /\/project\/[^/?#]+\/[^/?#]+/.test(location.pathname || "");
     if (!isSubRoute()) {
       return { ok: true, exited: true, method: "already_root" };
     }
+    const startPath = location.pathname || "";
     const direct = Array.from(
       document.querySelectorAll(
         'button[aria-label="Done editing scene"], button[aria-label="Done editing"], flow-character-edit-header .back-button, flow-applet-view-header button[aria-label="Back"], button[aria-label="Back button to go to previous page"], flow-navigation-header .back-button:not([aria-label="Home"]), button[aria-label="Go back"]',
@@ -139,6 +138,9 @@ export async function projectNav(action: string): Promise<unknown> {
         if (!isSubRoute()) {
           clearStore();
           return { ok: true, exited: true, method: "ui_done" };
+        }
+        if ((location.pathname || "") !== startPath) {
+          break;
         }
       }
     }

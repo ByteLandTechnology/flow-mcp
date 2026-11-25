@@ -62,6 +62,200 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
     return null;
   }
 
+  const MAX_GRID_PAGES = 50;
+  const CARD_ICON_OR_META_SELECTOR =
+    'mat-icon, [class*="mat-icon"], .google-symbols, .material-icons, [class*="material-symbols"], button, [role="button"], flow-project-owner-badge, .comment-count-badge, [aria-hidden="true"]';
+  const ICON_LIGATURE_RE =
+    /^(?:more_vert|delete|edit|group|groups|person|people|share|lock|public|chat_bubble|add|check|close)$/i;
+
+  function cleanTitleElementText(el: Element | null): string | null {
+    if (!el) return null;
+    if (el instanceof HTMLInputElement) {
+      const val = el.value.trim();
+      return val.length > 0 ? val : null;
+    }
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+        if (
+          parent.matches(
+            'mat-icon, [class*="mat-icon"], .google-symbols, .material-icons, [class*="material-symbols"]',
+          )
+        ) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const metaAncestor =
+          parent !== el ? parent.closest(CARD_ICON_OR_META_SELECTOR) : null;
+        if (metaAncestor && metaAncestor !== el && el.contains(metaAncestor)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const parts: string[] = [];
+    let current = walker.nextNode();
+    while (current) {
+      const txt = (current.nodeValue || "").replace(/\s+/g, " ").trim();
+      if (txt) parts.push(txt);
+      current = walker.nextNode();
+    }
+    const line = parts
+      .join(" ")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .find((s) => s.length > 0 && !ICON_LIGATURE_RE.test(s));
+    return line || null;
+  }
+
+  function readCardTitle(card: HTMLElement): string | null {
+    const explicit = card.querySelector(".project-title-text");
+    if (explicit) {
+      return cleanTitleElementText(explicit);
+    }
+    const fallback = card.querySelector(
+      '.project-title-label, [data-testid="project-title"], h2, h3, h4',
+    );
+    return fallback ? cleanTitleElementText(fallback) : null;
+  }
+
+  function readLinkTitle(link: HTMLElement): string | null {
+    const parentCard = link.closest("flow-project-card");
+    if (parentCard instanceof HTMLElement) {
+      return readCardTitle(parentCard);
+    }
+    const explicit = link.querySelector(
+      ".project-title-text, .project-title-label, h2, h3, h4",
+    );
+    return cleanTitleElementText(explicit ?? link);
+  }
+
+  function findScrollContainers(target: HTMLElement): HTMLElement[] {
+    const containers: HTMLElement[] = [];
+    let cur: HTMLElement | null = target.parentElement;
+    while (cur) {
+      const style = window.getComputedStyle(cur);
+      if (
+        cur.scrollHeight > cur.clientHeight ||
+        /^(?:auto|scroll|overlay)$/i.test(style.overflowY)
+      ) {
+        containers.push(cur);
+      }
+      cur = cur.parentElement;
+    }
+    if (
+      document.scrollingElement instanceof HTMLElement &&
+      !containers.includes(document.scrollingElement)
+    ) {
+      containers.push(document.scrollingElement);
+    }
+    return containers;
+  }
+
+  function nudgeInfiniteGridQuery(grid: Element | null): boolean | null {
+    if (!grid) return null;
+    const lv = resolveLView(grid);
+    if (!Array.isArray(lv)) return null;
+    const seen = new Set<unknown>();
+    const inspect = (cand: unknown, depth: number): boolean | null => {
+      if (!cand || typeof cand !== "object" || depth > 2 || seen.has(cand)) {
+        return null;
+      }
+      seen.add(cand);
+      const hasNext = readOwn(cand, "hasNextPage");
+      const fetchNext = readOwn(cand, "fetchNextPage");
+      if (typeof hasNext === "function" && typeof fetchNext === "function") {
+        if (!hasNext.call(cand)) return false;
+        const isFetching = readOwn(cand, "isFetchingNextPage");
+        if (typeof isFetching !== "function" || !isFetching.call(cand)) {
+          void Promise.resolve(fetchNext.call(cand)).catch(() => null);
+        }
+        return true;
+      }
+      if (!Array.isArray(cand) && !(cand instanceof Node)) {
+        for (const k of Object.keys(cand).slice(0, 20)) {
+          const res = inspect(readOwn(cand, k), depth + 1);
+          if (res !== null) return res;
+        }
+      }
+      return null;
+    };
+    for (const slot of lv) {
+      const res = inspect(slot, 0);
+      if (res !== null) return res;
+    }
+    return null;
+  }
+
+  async function scrollGridSentinelPages(): Promise<void> {
+    const countEntries = (): number =>
+      document.querySelectorAll('flow-project-card, a[href*="/project/"]')
+        .length;
+    let settledAttempts = 0;
+    for (let page = 0; page < MAX_GRID_PAGES; page++) {
+      const grid = document.querySelector("flow-projects-grid");
+      const sentinel =
+        grid?.querySelector(".load-more-sentinel") ??
+        document.querySelector("flow-projects-grid .load-more-sentinel");
+      if (!(sentinel instanceof HTMLElement)) break;
+
+      const beforeCount = countEntries();
+      const scrollers = findScrollContainers(sentinel);
+      if (settledAttempts > 0) {
+        for (const scroller of scrollers) {
+          scroller.scrollTop = Math.max(
+            0,
+            scroller.scrollTop - Math.max(240, window.innerHeight),
+          );
+          scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+        await delay(40);
+      }
+      sentinel.scrollIntoView({ block: "end", inline: "nearest" });
+      for (const scroller of scrollers) {
+        scroller.scrollTop = scroller.scrollHeight;
+        scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+      }
+      window.dispatchEvent(new Event("scroll"));
+
+      let advanced = false;
+      let nudgedQuery = false;
+      for (let tick = 0; tick < 30; tick++) {
+        await delay(100);
+        if (countEntries() > beforeCount) {
+          advanced = true;
+          break;
+        }
+        const liveSentinel =
+          grid?.querySelector(".load-more-sentinel") ??
+          document.querySelector("flow-projects-grid .load-more-sentinel");
+        if (!liveSentinel) {
+          advanced = true;
+          break;
+        }
+        const busy = Boolean(
+          liveSentinel.querySelector('mat-spinner, [role="progressbar"]'),
+        );
+        if (!busy && tick === 3 && !nudgedQuery) {
+          nudgedQuery = true;
+          if (nudgeInfiniteGridQuery(grid) === false) {
+            return;
+          }
+        }
+        if (!busy && tick >= 8) {
+          break;
+        }
+      }
+      if (advanced && countEntries() > beforeCount) {
+        settledAttempts = 0;
+        await delay(60);
+      } else {
+        settledAttempts++;
+        if (settledAttempts >= 2) break;
+      }
+    }
+  }
+
   async function scanCards(): Promise<ScannedProjectCard[]> {
     let lastCount = -1;
     let stableTicks = 0;
@@ -92,12 +286,14 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       await delay(150);
     }
 
+    await scrollGridSentinelPages();
+
     const seenMaps = new Set<Map<unknown, unknown>>();
     await withMapCapture((map, _key, _value, write) => {
       if (!write) seenMaps.add(map);
     }, async () => {
       const cards = Array.from(document.querySelectorAll("flow-project-card"));
-      for (const card of cards.slice(0, 50)) {
+      for (const card of cards) {
         const r = card.getBoundingClientRect();
         card.dispatchEvent(
           new PointerEvent("pointerenter", {
@@ -119,7 +315,8 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
 
     const byId = new Map<string, ScannedProjectCard>();
     const cards = Array.from(document.querySelectorAll("flow-project-card"));
-    for (const card of cards) {
+    for (let idx = 0; idx < cards.length; idx++) {
+      const card = cards[idx];
       if (!(card instanceof HTMLElement)) continue;
       const link = card.querySelector('a[href*="/project/"]');
       const href = link?.getAttribute("href") || "";
@@ -154,23 +351,12 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
           }
         }
       }
-      const titleNode =
-        card.querySelector(
-          'input[aria-label="Editable text"], [class*="title"], h2, h3, h4',
-        ) || card;
-      const rawText = (
-        (titleNode instanceof HTMLInputElement ? titleNode.value : "") ||
-        elText(titleNode) ||
-        ""
-      )
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .find((s) => s.length > 0 && !/^(?:more_vert|delete)$/i.test(s));
-      const key = pid || `card:${rawText || byId.size}`;
+      const title = readCardTitle(card);
+      const key = pid || `card:${idx}`;
       if (!byId.has(key)) {
         byId.set(key, {
           id: pid,
-          title: rawText || null,
+          title,
           url: pid ? buildProjectUrl(pid) : null,
           _card: card,
         });
@@ -184,14 +370,10 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       if (!m) continue;
       const pid = m[1];
       if (!byId.has(pid)) {
-        const title = elText(a)
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .find(Boolean);
         const cardParent = a.closest("flow-project-card");
         byId.set(pid, {
           id: pid,
-          title: title || null,
+          title: readLinkTitle(a),
           url: new URL(href, location.origin).href,
           _card: cardParent instanceof HTMLElement ? cardParent : a,
         });
@@ -299,33 +481,64 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
   if (action === "set_title") {
     const desired = String(req?.title || "").trim();
     if (!desired) return { ok: false, error: "empty_title" };
+    const isSubroutePath = (): boolean =>
+      /\/project\/[^/?#]+\/[^/?#]+/.test(location.pathname || "");
+    const isProjectRootPath = (): boolean =>
+      /\/project\/[^/?#]+\/?$/.test(location.pathname || "");
+    if (isSubroutePath()) {
+      return { ok: false, error: "project_subroute_active" };
+    }
+    if (!isProjectRootPath()) {
+      return { ok: false, error: "not_in_project_root" };
+    }
+    const headerHostSelector =
+      "flow-project-page flow-tile-view-header flow-navigation-header flow-editable-text";
+    const headerInputSelector = `${headerHostSelector} input.editable-text-input, ${headerHostSelector} input[aria-label="Editable text"], ${headerHostSelector} input`;
     let input: HTMLInputElement | null = null;
     for (let i = 0; i < 40; i++) {
-      const cand = document.querySelector(
-        'flow-editable-text input.editable-text-input, input[aria-label="Editable text"], .editable-text-input',
+      if (isSubroutePath()) {
+        return { ok: false, error: "project_subroute_active" };
+      }
+      if (!isProjectRootPath()) {
+        return { ok: false, error: "not_in_project_root" };
+      }
+      const candidates = Array.from(
+        document.querySelectorAll(headerInputSelector),
       );
-      if (cand instanceof HTMLInputElement && cand.getClientRects().length > 0) {
-        input = cand;
+      const found = candidates.find(
+        (cand): cand is HTMLInputElement =>
+          cand instanceof HTMLInputElement &&
+          !cand.closest(
+            "flow-project-sidenav-container, mat-sidenav, aside",
+          ) &&
+          cand.getClientRects().length > 0,
+      );
+      if (found) {
+        input = found;
         break;
       }
       await delay(100);
     }
     if (!input) return { ok: false, error: "project_title_input_not_found" };
     const titleInput = input;
-    const host = titleInput.closest("flow-editable-text");
+    const host = titleInput.closest(headerHostSelector);
+    if (!host) return { ok: false, error: "project_title_input_not_found" };
     if ((titleInput.value || "").trim() === desired) {
       return { ok: true, title: desired };
     }
+    let abortedOnRoute = false;
     await runAndAwaitNetwork(
       async () => {
+        if (isSubroutePath() || !isProjectRootPath()) {
+          abortedOnRoute = true;
+          return;
+        }
         titleInput.focus();
         titleInput.dispatchEvent(new FocusEvent("focus", { bubbles: false }));
         await delay(50);
         setNativeValue(titleInput, desired);
         await delay(50);
-        const doneBtn = (host || document).querySelector(
-          'button[aria-label="Done"]',
-        );
+        const doneBtn = host.querySelector('button[aria-label="Done"]');
         if (doneBtn instanceof HTMLElement) {
           doneBtn.click();
         } else {
@@ -342,9 +555,8 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         }
         await delay(60);
         if (
-          host &&
-          (host.querySelector(".editable-text-container.editing") ||
-            (titleInput.value || "").trim() !== desired)
+          host.querySelector(".editable-text-container.editing") ||
+          (titleInput.value || "").trim() !== desired
         ) {
           try {
             const lv = resolveLView(host);
@@ -375,8 +587,14 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       400,
       6000,
     );
+    if (abortedOnRoute || isSubroutePath()) {
+      return { ok: false, error: "project_subroute_active" };
+    }
+    if (!isProjectRootPath()) {
+      return { ok: false, error: "not_in_project_root" };
+    }
     const isSettledTitle = (): boolean =>
-      !host?.querySelector(".editable-text-container.editing") &&
+      !host.querySelector(".editable-text-container.editing") &&
       (titleInput.value || "").trim() === desired;
     await delay(300);
     for (let i = 0; i < 30; i++) {
