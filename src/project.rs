@@ -405,7 +405,8 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
             );
         }
         input_pending |= discovery_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
-        if discovery["bound"].as_bool() == Some(true) {
+        store_loading |= discovery_err == Some("store_loading");
+        if discovery["bound"].as_bool() == Some(true) || store_loading {
             tokio::time::sleep(Duration::from_millis(250)).await;
             continue;
         }

@@ -37,20 +37,29 @@ impl<'a> ProjectStoreSession<'a> {
         let guard = engine.lock_project_store().await;
         let mut dom_probed = false;
         let mut status = store_loading_result(bind_current_store(engine, &project_id).await)?;
-        for _ in 0..25 {
+        for _ in 0..30 {
             let err = status.get("error").and_then(Value::as_str);
             if err == Some("collection_store_not_bound") && !dom_probed {
                 dom_probed = true;
-                let _ =
+                let discovery =
                     store_loading_result(engine.call_flow_async("discoverStore", json!([])).await)?;
                 status = store_loading_result(
                     engine
                         .call_flow_js("projectStoreStatus", json!([project_id]))
                         .await,
                 )?;
+                if status.get("error").and_then(Value::as_str) == Some("collection_store_not_bound")
+                    && matches!(
+                        discovery.get("error").and_then(Value::as_str),
+                        Some("store_loading" | ANGULAR_REQUIRED_INPUT_ERROR)
+                    )
+                {
+                    status = json!({ "ok": false, "error": "store_loading" });
+                }
                 continue;
             }
             if matches!(err, Some("store_loading" | ANGULAR_REQUIRED_INPUT_ERROR)) {
+                dom_probed = false;
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 status = store_loading_result(bind_current_store(engine, &project_id).await)?;
                 continue;
