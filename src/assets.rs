@@ -166,11 +166,12 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
+        let primary_succeeded = asset.media_status.as_deref() == Some("success");
         if !matches!(
             asset.kind.as_str(),
             "video" | "image" | "character" | "audio"
         ) || asset.url.is_some()
-            || asset.media_error.is_some()
+            || (!primary_succeeded && asset.media_error.is_some())
             || matches!(
                 asset.media_status.as_deref(),
                 Some("pending" | "scheduled" | "failed" | "canceled")

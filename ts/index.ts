@@ -37,12 +37,14 @@ import { projectUpload, stageMediaFiles } from "./project_upload";
 import { projectsOp } from "./projects_ops";
 import { readStoreSnapshot } from "./read_store_snapshot";
 import { resolveVideoUrl } from "./resolve_video_url";
+import { drainRpcErrors, installBatchRpcInterceptor } from "./rpc_errors";
 import { sceneOp } from "./scene_ops";
 import { setupGeneration } from "./setup_generation";
 import { submitGeneration } from "./submit_generation";
 import { videoOp } from "./video_ops";
 
 if (!window.__flowMcp) {
+  installBatchRpcInterceptor();
   window.__flowMcp = {
     checkAuth,
     buildLabel: readBuildLabel,
@@ -83,5 +85,6 @@ if (!window.__flowMcp) {
     characterVoiceOp,
     characterMediaOp,
     characterExtraOp,
+    drainRpcErrors,
   };
 }

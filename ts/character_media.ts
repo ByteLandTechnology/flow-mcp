@@ -24,18 +24,11 @@ import {
   pickTileUrl,
   setNativeValue,
 } from "./dom";
-import {
-  characterPreviewFormat,
-  frontendBuild,
-  readBuildLabel,
-} from "./frontend_builds";
+import { characterPreviewFormat, frontendBuild, readBuildLabel } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
+import { clearRpcErrors, drainTrackedRpcErrorMessage } from "./rpc_errors";
 import { runtimeState } from "./state";
-import type {
-  CharacterMediaOpRequest,
-  FlowMediaPayload,
-  NgLView,
-} from "./types";
+import type { CharacterMediaOpRequest, FlowMediaPayload, NgLView } from "./types";
 
 /** Image slot in the character editor. */
 type CharacterSlot = "portrait" | "body";
@@ -252,6 +245,7 @@ export async function characterMediaOp(
   const action = String(req?.action || "").toLowerCase();
 
   if (action === "open_upload") {
+    clearRpcErrors();
     const wantSlot = normSlot(req?.slot);
     const deadline = performance.now() + UPLOAD_SLOT_TIMEOUT_MS;
     for (const prev of document.querySelectorAll("[data-flow-mcp-upload]")) {
@@ -377,6 +371,8 @@ export async function characterMediaOp(
       await delay(150);
       return { ok: true, done: false, accepted_consent: true };
     }
+    const uploadRpcErr = drainTrackedRpcErrorMessage();
+    if (uploadRpcErr) return { ok: false, error: "character_upload_failed", slot, detail: uploadRpcErr };
     const prevSrc = String(req?.prev_src || "").trim();
     const prevMediaId = String(req?.prev_media_id || "").trim();
     const { slotMedia, slotMediaId, compSrc, imgSrc, isAreaBusy } = readPreviewSlotState(slot);
@@ -401,6 +397,8 @@ export async function characterMediaOp(
   }
 
   if (action === "check_look") {
+    const lookRpcErr = drainTrackedRpcErrorMessage();
+    if (lookRpcErr) return { ok: false, error: lookRpcErr };
     const errSnack = findSnackbarMatch(/failed to generate|couldn't generate|unable to generate|policy|violat/i);
     if (errSnack) return { ok: false, error: errSnack.text };
     const errTile = document.querySelector("flow-character-image-preview flow-error-tile");
@@ -846,15 +844,9 @@ export async function characterMediaOp(
         id: charId,
       };
     }
-    lookSubmitPoint = {
-      x: r.left + r.width / 2,
-      y: r.top + r.height / 2,
-    };
-    lookMeta = {
-      look_slot: lookSlot,
-      prev_look_media_id: prevLookMediaId,
-      prev_look_src: prevLookSrc,
-    };
+    clearRpcErrors();
+    lookSubmitPoint = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    lookMeta = { look_slot: lookSlot, prev_look_media_id: prevLookMediaId, prev_look_src: prevLookSrc };
     applied.push("look_prompt_prepared");
     await delay(100);
   }

@@ -371,6 +371,26 @@ pub(crate) async fn run_video_extend(
             .call_flow_async("videoOp", json!([{ "action": "poll_extend" }]))
             .await
             .unwrap_or_default();
+        if let Some(err_msg) = poll_res
+            .get("error")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            extend_err = Some(
+                match poll_res
+                    .get("failed_workflow_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(wf_id) => {
+                        anyhow::anyhow!("Flow video extend failed on tile {wf_id}: {err_msg}")
+                    }
+                    None => anyhow::anyhow!("Flow video extend failed: {err_msg}"),
+                },
+            );
+            break;
+        }
         let extending = poll_res
             .get("extending")
             .and_then(|v| v.as_bool())

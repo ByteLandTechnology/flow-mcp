@@ -14,6 +14,7 @@ import {
   settingsOpen,
 } from "./composer";
 import { delay, elText, hoverProbe, isVisibleEnabled } from "./dom";
+import { clearRpcErrors } from "./rpc_errors";
 import { runtimeState } from "./state";
 import type { GenerationConfig, NgLView } from "./types";
 
@@ -232,6 +233,7 @@ async function ensureLViewCapture(allowSettingsClick = false): Promise<void> {
 export async function setupGeneration(
   cfg: GenerationConfig,
 ): Promise<{ ok: boolean; error?: string }> {
+  clearRpcErrors();
   const onEditPage = /\/edit\//.test(location.pathname || "");
 
   if (!onEditPage) {

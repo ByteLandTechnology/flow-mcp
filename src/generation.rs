@@ -21,10 +21,10 @@ use crate::engine::{ChromeEngine, NetworkResponseEvent, validate_local_files};
 use crate::project::{ensure_flow_store, ensure_project_workspace_root};
 use crate::queue::{ProgressCallback, SceneParams};
 
-/// Batchexecute RPC IDs associated with Google Flow generation requests.
+/// Batchexecute RPC IDs associated with Google Flow generation and upload requests.
 const BATCH_GENERATION_RPC_IDS: &[&str] = &[
     "Z9cAtf", "ogiZ0b", "YhhmEf", "MZZa6b", "eb1hJf", "nprQif", "jIps6", "fZytfe", "p0UkFb",
-    "IJhj9c", "xNyCid",
+    "IJhj9c", "xNyCid", "LcEY2c", "SPrCad", "sAVZzc", "jeNy9c", "maseQ",
 ];
 
 /// Parameters for `flow_generate`.
@@ -77,8 +77,8 @@ pub(crate) struct EditParams {
 struct AssetWaitSpec<'a> {
     /// Asset IDs already present before submission.
     before_ids: &'a HashSet<String>,
-    /// Optional existing tile `(asset_id, primary_media_id, url)` watched for replacement updates.
-    watch_updated: Option<(&'a str, Option<&'a str>, Option<&'a str>)>,
+    /// Optional baseline asset watched for replacement or appended failure updates.
+    watch_updated: Option<&'a FlowAsset>,
     /// Target number of generated outputs in the batch.
     expected_count: usize,
     /// Maximum wait time in seconds before failing with timeout.
@@ -322,6 +322,37 @@ pub(crate) fn inspect_generation_network(
     Ok(accepted_status)
 }
 
+/// Drains structured `batchexecute` RPC errors buffered inside `window.__flowMcp`.
+async fn inspect_buffered_rpc_errors(engine: &ChromeEngine) -> Result<()> {
+    let Ok(drained) = engine
+        .call_flow_js("drainRpcErrors", json!([BATCH_GENERATION_RPC_IDS]))
+        .await
+    else {
+        return Ok(());
+    };
+    let Some(first) = drained.as_array().and_then(|items| items.first()) else {
+        return Ok(());
+    };
+    let rpc_id = first
+        .get("rpc_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("batchexecute");
+    let message = first
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("RPC failed");
+    let code = first.get("code").and_then(|v| v.as_i64());
+    if message.to_ascii_lowercase().contains("recaptcha") {
+        anyhow::bail!(
+            "Google Flow blocked generation in ChromeEngine due to a reCAPTCHA Enterprise error (RPC {rpc_id}: {message})"
+        );
+    }
+    match code {
+        Some(c) => anyhow::bail!("Flow generation RPC {rpc_id} failed (code {c}): {message}"),
+        None => anyhow::bail!("Flow generation RPC {rpc_id} failed: {message}"),
+    }
+}
+
 /// Polls project snapshots until expected generated outputs resolve or fail.
 async fn wait_for_new_assets(
     engine: &ChromeEngine,
@@ -341,6 +372,7 @@ async fn wait_for_new_assets(
         if let Some(code) = inspect_generation_network(net_rx, on_progress)? {
             accepted_status = Some(code);
         }
+        inspect_buffered_rpc_errors(engine).await?;
         let snap = match list_assets_with_project(engine).await {
             Ok(s) => {
                 consecutive_errors = 0;
@@ -363,15 +395,15 @@ async fn wait_for_new_assets(
                 if !spec.before_ids.contains(&a.id) && a.url.is_some() {
                     return true;
                 }
-                if let Some((tid, prev_pmid, prev_url)) = spec.watch_updated
-                    && a.id == tid
+                if let Some(prev) = spec.watch_updated
+                    && a.id == prev.id
                     && a.url.is_some()
                 {
                     let pmid_changed = a
                         .primary_media_id
                         .as_deref()
-                        .is_some_and(|p| Some(p) != prev_pmid);
-                    let url_changed = a.url.as_deref() != prev_url;
+                        .is_some_and(|p| Some(p) != prev.primary_media_id.as_deref());
+                    let url_changed = a.url != prev.url;
                     return pmid_changed || url_changed;
                 }
                 false
@@ -387,10 +419,10 @@ async fn wait_for_new_assets(
                 .collect();
             last_pending_count = new_tiles.len();
             last_pending_info = if new_tiles.is_empty() {
-                if let Some((tid, _, _)) = spec.watch_updated {
+                if let Some(prev) = spec.watch_updated {
                     snap.assets
                         .iter()
-                        .find(|a| a.id == tid)
+                        .find(|a| a.id == prev.id)
                         .map(|a| {
                             format!("{}:{}", a.id, a.media_status.as_deref().unwrap_or("none"))
                         })
@@ -406,9 +438,10 @@ async fn wait_for_new_assets(
                     .join(",")
             };
             if !new_tiles.is_empty()
-                && new_tiles
-                    .iter()
-                    .all(|a| matches!(a.media_status.as_deref(), Some("failed" | "canceled")))
+                && new_tiles.iter().all(|a| {
+                    matches!(a.media_status.as_deref(), Some("failed" | "canceled"))
+                        || (a.url.is_none() && a.media_error.is_some())
+                })
             {
                 let first = new_tiles[0];
                 anyhow::bail!(
@@ -420,15 +453,16 @@ async fn wait_for_new_assets(
                         .unwrap_or(first.media_status.as_deref().unwrap_or("failed"))
                 );
             }
-            if let Some((tid, prev_pmid, _)) = spec.watch_updated
-                && let Some(watched) = snap.assets.iter().find(|a| a.id == tid)
-                && matches!(watched.media_status.as_deref(), Some("failed" | "canceled"))
-                && (watched.primary_media_id.as_deref() != prev_pmid
-                    || watched.media_error.is_some())
+            if let Some(prev) = spec.watch_updated
+                && let Some(watched) = snap.assets.iter().find(|a| a.id == prev.id)
+                && ((matches!(watched.media_status.as_deref(), Some("failed" | "canceled"))
+                    && (watched.primary_media_id != prev.primary_media_id
+                        || watched.media_error.is_some()))
+                    || (watched.media_error.is_some() && watched.media_error != prev.media_error))
             {
                 anyhow::bail!(
                     "Flow edit failed on {}: {}",
-                    tid,
+                    prev.id,
                     watched
                         .media_error
                         .as_deref()
@@ -700,11 +734,7 @@ pub(crate) async fn run_edit(
         engine,
         AssetWaitSpec {
             before_ids: &before,
-            watch_updated: Some((
-                target.id.as_str(),
-                target.primary_media_id.as_deref(),
-                target.url.as_deref(),
-            )),
+            watch_updated: Some(&target),
             expected_count: 1,
             timeout_secs: 420,
             submit_summary: &submit_summary,

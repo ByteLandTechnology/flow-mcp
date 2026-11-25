@@ -404,7 +404,14 @@ fn handle_network_event(
 
 /// Returns `true` when `url` belongs to a Flow or Google auth host worth fetching on HTTP errors.
 fn is_error_body_candidate(url: &str) -> bool {
-    url.contains("aisandbox-pa.googleapis.com")
+    let flow_host = crate::config::FLOW_URL
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .filter(|host| !host.is_empty())
+        .unwrap_or("flow.google.com");
+    url.contains(flow_host)
+        || url.contains("aisandbox-pa.googleapis.com")
         || url.contains("labs.google")
         || url.contains("recaptcha")
 }

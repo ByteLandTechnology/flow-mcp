@@ -3,13 +3,157 @@
 
 // Trim Flow videos and drive the scene builder extend workflow.
 
-import { buildProjectUrl, createScene, findRouter, navigateSpa, readAngularTooltip, withLViewMapCapture } from "./angular";
+import { buildProjectUrl, createScene, findRouter, navigateSpa, readAngularTooltip, readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { findComposerWarning } from "./composer";
-import { delay, elText, hoverProbe, isDisabledProp, isVisibleEnabled, legacyTile, videoTrimBounds } from "./dom";
+import { discoverStore } from "./discover_store";
+import { cleanMediaId, delay, elText, hoverProbe, isDisabledProp, isTrashedTile, isVisibleEnabled, legacyMedia, legacyTile, videoTrimBounds } from "./dom";
 import { activeProjectStoreFormat } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
+import { clearRpcErrors, drainTrackedRpcErrorMessage } from "./rpc_errors";
+import { sceneContents } from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
-import type { FlowTile, VideoOpRequest } from "./types";
+import type { FlowMediaPayload, FlowTile, VideoOpRequest } from "./types";
+
+/** Per-workflow status snapshot used to detect newly appended extend failures. */
+interface ExtendWorkflowSummary {
+  /** Number of pending or scheduled media entries on the workflow. */
+  pendingCount: number;
+  /** Number of failed or canceled media entries on the workflow. */
+  failedCount: number;
+  /** Identifiers of failed or canceled media entries on the workflow. */
+  failedIds: Set<string>;
+  /** Formatted message of the most recent failed entry on the workflow. */
+  latestError: string | null;
+}
+
+/** Baseline workflow state captured right before clicking Start generation in `prepare_extend`. */
+let extendBaseline: Map<string, ExtendWorkflowSummary> | null = null;
+
+/** Formats a media failure payload into a readable string, or returns null. */
+function formatExtendMediaError(errVal: unknown): string | null {
+  if (errVal == null || errVal === "") return null;
+  if (typeof errVal === "string") return errVal.trim() || null;
+  const msg = readOwn(errVal, "message");
+  if (typeof msg === "string" && msg.trim()) return msg.trim();
+  try {
+    return JSON.stringify(errVal);
+  } catch {
+    return String(errVal);
+  }
+}
+
+/** Collects workflow media item lists from the project store and live scene builder view. */
+function collectExtendWorkflowItems(): Map<string, FlowMediaPayload[]> {
+  const workflows = new Map<string, FlowMediaPayload[]>();
+  const appendItems = (wfId: string, items: readonly FlowMediaPayload[]): void => {
+    if (!wfId || items.length === 0) return;
+    const list = workflows.get(wfId) ?? [];
+    for (const raw of items) {
+      if (!raw || typeof raw !== "object") continue;
+      const norm = legacyMedia(raw);
+      const itemId = cleanMediaId(String(norm.id ?? norm.mediaId ?? ""));
+      if (
+        itemId &&
+        list.some((prev) => cleanMediaId(String(prev.id ?? prev.mediaId ?? "")) === itemId)
+      ) {
+        continue;
+      }
+      list.push(norm);
+    }
+    if (list.length > 0) workflows.set(wfId, list);
+  };
+
+  const activeSceneId = /\/scene\/([^/?#]+)/.exec(location.pathname || "")?.[1] ?? null;
+  const tileMap = runtimeState.store?.getTileMap?.();
+  if (tileMap instanceof Map) {
+    for (const [id, rawTile] of tileMap.entries()) {
+      const tile = legacyTile(rawTile);
+      if (!tile || isTrashedTile(tile)) continue;
+      const tid = String(tile.id ?? id);
+      const ttype = String(tile.type ?? "").toUpperCase();
+      if (ttype === "SCENE") {
+        if (activeSceneId && tid !== activeSceneId) continue;
+        const { history } = sceneContents(rawTile);
+        for (const [wfId, hist] of history.entries()) {
+          if (Array.isArray(hist)) appendItems(wfId, hist);
+        }
+      } else if (ttype === "VIDEO") {
+        const hist = readOwn(rawTile, "history");
+        if (Array.isArray(hist)) {
+          appendItems(tid, hist as FlowMediaPayload[]);
+        }
+        if (tile.Fb) {
+          appendItems(tid, [tile.Fb]);
+        }
+      }
+    }
+  }
+
+  const sb = document.querySelector("flow-scene-builder");
+  const lv = sb ? resolveLView(sb) : null;
+  if (Array.isArray(lv)) {
+    for (const slot of lv) {
+      if (!slot || typeof slot !== "object" || slot instanceof Node || Array.isArray(slot)) {
+        continue;
+      }
+      for (const key of Object.keys(slot)) {
+        const val = readOwn(slot, key);
+        if (!(val instanceof Map) || val.size === 0) continue;
+        const sample = val.entries().next().value as [unknown, unknown] | undefined;
+        const firstItem = Array.isArray(sample?.[1]) ? sample[1][0] : undefined;
+        if (
+          !sample ||
+          typeof sample[0] !== "string" ||
+          !Array.isArray(sample[1]) ||
+          !firstItem ||
+          typeof firstItem !== "object" ||
+          firstItem instanceof Node ||
+          !(
+            "id" in firstItem ||
+            "od" in firstItem ||
+            "Zc" in firstItem ||
+            "Bf" in firstItem ||
+            "nf" in firstItem
+          )
+        ) {
+          continue;
+        }
+        for (const [wfId, hist] of val.entries()) {
+          if (typeof wfId === "string" && Array.isArray(hist)) {
+            appendItems(wfId, hist as FlowMediaPayload[]);
+          }
+        }
+      }
+    }
+  }
+
+  return workflows;
+}
+
+/** Summarizes pending and failed history counts per workflow for extend polling. */
+function captureExtendWorkflowSummary(): Map<string, ExtendWorkflowSummary> {
+  const summaries = new Map<string, ExtendWorkflowSummary>();
+  for (const [wfId, items] of collectExtendWorkflowItems().entries()) {
+    let pendingCount = 0;
+    let failedCount = 0;
+    const failedIds = new Set<string>();
+    let latestError: string | null = null;
+    items.forEach((item, index) => {
+      const status = String(item.Zc ?? "").toLowerCase();
+      const err = formatExtendMediaError(item.nf);
+      if (status === "pending" || status === "scheduled") {
+        pendingCount += 1;
+      } else if (status === "failed" || status === "canceled" || Boolean(err)) {
+        failedCount += 1;
+        const fid = cleanMediaId(String(item.id ?? item.mediaId ?? "")) || `#${index}`;
+        failedIds.add(fid);
+        latestError = err || status || "failed";
+      }
+    });
+    summaries.set(wfId, { pendingCount, failedCount, failedIds, latestError });
+  }
+  return summaries;
+}
 
 /** Checks whether an observed start trim bound matches the requested start time. */
 function startBoundMatches(
@@ -459,10 +603,49 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     if (!submitBtn.contains(document.elementFromPoint(x, y))) {
       return { ok: false, error: "extend_submit_button_obscured" };
     }
+    if (activeProjectStoreFormat()) {
+      if (!runtimeState.store || !runtimeState.store.isCurrent()) {
+        await discoverStore();
+      }
+      for (let i = 0; i < 20 && runtimeState.store && !runtimeState.store.isReady(); i++) {
+        await delay(100);
+      }
+    }
+    clearRpcErrors();
+    extendBaseline = captureExtendWorkflowSummary();
     return { ok: true, submit_point: { x, y } };
   }
 
   if (action === "poll_extend") {
+    const rpcError = drainTrackedRpcErrorMessage();
+    if (rpcError) {
+      return { ok: true, extending: false, error: rpcError };
+    }
+    if ((!runtimeState.store || !runtimeState.store.isCurrent()) && activeProjectStoreFormat()) {
+      await discoverStore();
+    }
+    const currentWorkflows = captureExtendWorkflowSummary();
+    let busyHistory = false;
+    for (const [wfId, cur] of currentWorkflows.entries()) {
+      if (cur.pendingCount > 0) {
+        busyHistory = true;
+      }
+      if (cur.failedCount > 0) {
+        const prior = extendBaseline?.get(wfId);
+        const hasNewFailedId = prior
+          ? Array.from(cur.failedIds).some((fid) => !prior.failedIds.has(fid))
+          : true;
+        if (!prior || cur.failedCount > prior.failedCount || hasNewFailedId) {
+          extendBaseline = currentWorkflows;
+          return {
+            ok: true,
+            extending: false,
+            error: cur.latestError || "failed",
+            failed_workflow_id: wfId,
+          };
+        }
+      }
+    }
     const busyDom = Boolean(
       document.querySelector(
         "flow-scene-timeline .is-extend-generating, flow-scene-timeline .pending-placeholder, flow-scene-timeline [aria-busy='true']",
@@ -478,7 +661,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         !el.closest('[contenteditable="true"], textarea, input') &&
         /\bExtending\b|Extending…/i.test(elText(el)),
     );
-    return { ok: true, extending: busyDom || extendingText };
+    return { ok: true, extending: busyDom || extendingText || busyHistory };
   }
 
   if (action === "done_scene") {

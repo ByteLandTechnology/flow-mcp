@@ -256,6 +256,8 @@ export interface FlowTile extends FlowMediaPayload {
   Oc?: SceneClipItem[];
   /** Scene clip workflow history lookup. */
   Yf?: Map<string, FlowMediaPayload[]> | Record<string, FlowMediaPayload[]>;
+  /** Media generation history array on workflow tiles. */
+  history?: FlowMediaPayload[];
   /** Tile width alias. */
   width?: number;
   /** Tile height alias. */
@@ -785,6 +787,24 @@ export interface StoreProbeResult {
   operations: Record<string, { ok: boolean; failed_checks: StoreProbeCheck[] }>;
 }
 
+/** One structured `batchexecute` RPC error stored in the runtime ring buffer. */
+export interface BufferedRpcError {
+  /** Envelope tag (`wrb.fr` or `er`). */
+  kind: "wrb.fr" | "er";
+  /** Primary RPC identifier associated with the error. */
+  rpc_id: string;
+  /** All RPC identifiers associated with the request or frame. */
+  rpc_ids: string[];
+  /** Numeric gRPC or HTTP error code when present. */
+  code: number | null;
+  /** HTTP status code of the transport response. */
+  status: number;
+  /** Truncated error message (at most 500 characters). */
+  message: string;
+  /** Monotonic sequence counter assigned on insertion. */
+  seq: number;
+}
+
 /** Public browser runtime API exposed at `window.__flowMcp`. */
 export interface FlowMcpRuntime {
   /** Returns the temporary input for a local media upload. */
@@ -877,6 +897,8 @@ export interface FlowMcpRuntime {
   locatePoint: (req: LocatePointRequest) => ViewportPoint | null;
   /** Locates a project tile in the page, reads its trash state, or closes an open menu. */
   tileDomOp: (req: TileDomOpRequest) => Promise<unknown>;
+  /** Drains buffered `batchexecute` `wrb.fr` and `er` errors matching optional RPC IDs. */
+  drainRpcErrors: (rpcIds?: readonly string[] | null) => BufferedRpcError[];
 }
 
 declare global {
