@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::time::{Duration, Instant};
 
 use crate::assets::{
@@ -137,6 +137,72 @@ fn clip_entered_error(asset: &FlowAsset, before: &HashMap<String, ClipBaseline>)
     }
 }
 
+/// Splits a `<sceneId>:<wfId>` clip asset ID into its scene ID and workflow ID.
+fn split_scene_clip_id(id: &str) -> Option<(&str, &str)> {
+    let (scene_id, wf_id) = id.split_once(':')?;
+    (!scene_id.is_empty() && !wf_id.is_empty()).then_some((scene_id, wf_id))
+}
+
+/// Returns `true` when `asset` is a settled video whose media ID or URL changed since `before`.
+fn clip_updated_since(asset: &FlowAsset, before: &HashMap<String, ClipBaseline>) -> bool {
+    if asset.kind != "video"
+        || clip_is_failed(asset)
+        || matches!(asset.media_status.as_deref(), Some("pending" | "scheduled"))
+        || (asset.url.is_none() && asset.primary_media_id.is_none())
+    {
+        return false;
+    }
+    before.get(&asset.id).is_none_or(|prior| {
+        asset.primary_media_id.as_deref().map_or_else(
+            || asset.url.is_some() && asset.url != prior.url,
+            |media_id| prior.primary_media_id.as_deref() != Some(media_id),
+        )
+    })
+}
+
+/// Collects updated video assets, prioritizing watched IDs and deduplicating by `primary_media_id`.
+fn collect_extended_videos(
+    assets: &[FlowAsset],
+    before: &HashMap<String, ClipBaseline>,
+    watched_ids: &[String],
+    opened_scene_id: Option<&str>,
+) -> Vec<FlowAsset> {
+    let mut ordered: Vec<&FlowAsset> = Vec::new();
+    for watched in watched_ids {
+        if let Some(asset) = assets.iter().find(|a| &a.id == watched)
+            && clip_updated_since(asset, before)
+        {
+            ordered.push(asset);
+        }
+    }
+    let scene_prefix = opened_scene_id.map(|sid| format!("{sid}:"));
+    for asset in assets {
+        if watched_ids.iter().any(|w| w == &asset.id) || !clip_updated_since(asset, before) {
+            continue;
+        }
+        let in_opened_scene = scene_prefix
+            .as_deref()
+            .is_some_and(|prefix| asset.id.starts_with(prefix));
+        if !asset.id.contains(':') || in_opened_scene {
+            ordered.push(asset);
+        }
+    }
+    let mut seen_media = HashSet::new();
+    let mut fresh = Vec::new();
+    for asset in ordered {
+        if let Some(media_id) = asset
+            .primary_media_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            && !seen_media.insert(media_id.to_string())
+        {
+            continue;
+        }
+        fresh.push(asset.clone());
+    }
+    fresh
+}
+
 /// Parameters for `flow_scenes`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub(crate) struct ScenesParams {
@@ -192,6 +258,7 @@ pub(crate) async fn handle_scenes(
         "create" => {
             let asset_ids = req.asset_ids.unwrap_or_default();
             let _ = read_snapshot(engine).await?;
+            let _store_guard = engine.lock_project_store().await;
             let payload = json!({
                 "action": "create",
                 "asset_ids": asset_ids,
@@ -215,6 +282,7 @@ pub(crate) async fn handle_scenes(
                 .filter(|v| !v.is_empty())
                 .context("flow_scenes add_clips requires non-empty 'asset_ids'")?;
             let _ = read_snapshot(engine).await?;
+            let _store_guard = engine.lock_project_store().await;
             let payload = json!({
                 "action": "add_clips",
                 "scene_id": scene_id,
@@ -302,18 +370,28 @@ pub(crate) async fn run_video_extend(
     );
     let project_id = snap.project_id.clone();
 
+    let (implied_scene_id, implied_wf_id) = split_scene_clip_id(&target.id)
+        .map(|(sid, wf)| (Some(sid), Some(wf)))
+        .unwrap_or((None, None));
+    let requested_scene_id = scene_id.or(implied_scene_id);
+
     on_progress(format!("opening extend editor for {}", target.id));
     let req_payload = json!({
         "action": "prepare_extend",
         "asset_id": target.id,
-        "scene_id": scene_id,
+        "scene_id": requested_scene_id,
         "prompt": prompt,
     });
     let mut res = engine
         .call_flow_async("videoOp", json!([req_payload]))
         .await?;
-    let opened_scene_id = res
+    let mut opened_scene_id = res
         .get("scene_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| requested_scene_id.map(str::to_string));
+    let mut workflow_id = res
+        .get("workflow_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
 
@@ -330,6 +408,12 @@ pub(crate) async fn run_video_extend(
         res = engine
             .call_flow_async("videoOp", json!([retry_payload]))
             .await?;
+        if let Some(sid) = res.get("scene_id").and_then(|v| v.as_str()) {
+            opened_scene_id = Some(sid.to_string());
+        }
+        if let Some(wf) = res.get("workflow_id").and_then(|v| v.as_str()) {
+            workflow_id = Some(wf.to_string());
+        }
     }
 
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
@@ -343,6 +427,17 @@ pub(crate) async fn run_video_extend(
     let point = res
         .get("submit_point")
         .context("Video extend did not return a submit point")?;
+    let target_wf_id = workflow_id
+        .or_else(|| implied_wf_id.map(str::to_string))
+        .unwrap_or_else(|| target.id.clone());
+    let mut watched_ids = vec![target.id.clone()];
+    if let Some(ref sid) = opened_scene_id {
+        let clip_asset_id = format!("{sid}:{target_wf_id}");
+        if !watched_ids.contains(&clip_asset_id) {
+            watched_ids.push(clip_asset_id);
+        }
+    }
+
     // Scene creation can copy the input clip to a new workflow before submission.
     let prepared = list_assets_with_project(engine).await?;
     anyhow::ensure!(
@@ -354,6 +449,9 @@ pub(crate) async fn run_video_extend(
         .iter()
         .map(|asset| (asset.id.clone(), ClipBaseline::from_asset(asset)))
         .collect();
+    before
+        .entry(target.id.clone())
+        .or_insert_with(|| ClipBaseline::from_asset(&target));
     let mut net_rx = engine.subscribe_network().await?;
     engine.click_point(point).await?;
 
@@ -390,11 +488,18 @@ pub(crate) async fn run_video_extend(
                     prior.media_error = None;
                 }
             }
-            if let Some(failed_tile) = cur_snap
-                .assets
-                .iter()
-                .find(|a| clip_entered_error(a, &before))
-            {
+            let watched_failure = watched_ids.iter().find_map(|watched| {
+                cur_snap
+                    .assets
+                    .iter()
+                    .find(|a| &a.id == watched && clip_entered_error(a, &before))
+            });
+            if let Some(failed_tile) = watched_failure.or_else(|| {
+                cur_snap
+                    .assets
+                    .iter()
+                    .find(|a| clip_entered_error(a, &before))
+            }) {
                 extend_err = Some(anyhow::anyhow!(
                     "Flow video extend failed on tile {}: {}",
                     failed_tile.id,
@@ -407,21 +512,12 @@ pub(crate) async fn run_video_extend(
                 break;
             }
             if !extending {
-                let fresh: Vec<FlowAsset> = cur_snap
-                    .assets
-                    .iter()
-                    .filter(|a| {
-                        a.kind == "video"
-                            && a.url.is_some()
-                            && before.get(&a.id).is_none_or(|prior| {
-                                a.primary_media_id.as_deref().map_or_else(
-                                    || a.url != prior.url,
-                                    |media_id| prior.primary_media_id.as_deref() != Some(media_id),
-                                )
-                            })
-                    })
-                    .cloned()
-                    .collect();
+                let fresh = collect_extended_videos(
+                    &cur_snap.assets,
+                    &before,
+                    &watched_ids,
+                    opened_scene_id.as_deref(),
+                );
                 if !fresh.is_empty() {
                     new_assets = fresh;
                     break;

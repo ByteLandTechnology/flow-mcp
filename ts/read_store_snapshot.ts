@@ -25,7 +25,6 @@ import { clearStore, runtimeState } from "./state";
 import type {
   FlowMediaPayload,
   FlowTile,
-  SceneClipItem,
   SnapshotAssetItem,
   SnapshotCollectionItem,
   StoreSnapshotResult,
@@ -237,6 +236,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
   const cols = new Map<string, string>();
   const counts = new Map<string, number>();
   const byId = new Map<string, Omit<SnapshotAssetItem, "collection_name">>();
+  const videoByWorkflow = new Map<string, Omit<SnapshotAssetItem, "collection_name">>();
   const sceneTiles: FlowTile[] = [];
   const rawList: Omit<SnapshotAssetItem, "collection_name">[] = [];
   const env = getFifeEnv();
@@ -455,67 +455,81 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     };
     rawList.push(topEntry);
     byId.set(tid, topEntry);
+    if (ttype === "VIDEO") {
+      videoByWorkflow.set(tid, topEntry);
+      const wfKey = t.workflowId ? String(t.workflowId) : "";
+      if (wfKey) videoByWorkflow.set(wfKey, topEntry);
+    }
   }
 
   for (const st of sceneTiles) {
+    const sceneId = String(st.id ?? "").trim();
+    if (!sceneId) continue;
+    const sceneGridEntry = byId.get(sceneId);
     const sceneCid = collectionIdOf(st, isCollectionId);
     const { clips, history } = sceneContents(st);
-    const candidates: Array<
-      [string, SceneClipItem | null, FlowMediaPayload | null]
-    > = [];
+
     for (const clip of clips) {
-      const wfId = clip?.workflowId ? String(clip.workflowId) : null;
+      const wfId = clip?.workflowId ? String(clip.workflowId).trim() : "";
       if (!wfId) continue;
+      const clipAssetId = `${sceneId}:${wfId}`;
       const hist = history.get(wfId);
-      const primaryId = clip?.primaryMediaId
+      const requestedPrimaryId = clip?.primaryMediaId
         ? String(clip.primaryMediaId)
         : null;
-      const mObj = Array.isArray(hist)
-        ? hist.find((x) => x && String(x.id || "") === primaryId) ||
-          hist[0] ||
-          null
+      const rawMedia = Array.isArray(hist)
+        ? (requestedPrimaryId
+            ? hist.find(
+                (x) =>
+                  x &&
+                  (String(x.id ?? "") === requestedPrimaryId ||
+                    String(x.mediaId ?? "") === requestedPrimaryId),
+              ) ?? null
+            : hist[0] ?? null)
         : null;
-      candidates.push([wfId, clip, mObj]);
-    }
-    for (const [wfId, hist] of history) {
-      const mObj = Array.isArray(hist) ? hist[0] || null : null;
-      candidates.push([wfId, null, mObj]);
-    }
-
-    for (const [wfId, clip, rawMedia] of candidates) {
-      if (!wfId) continue;
       const mObj = legacyMedia(rawMedia);
       const cObj = legacyMedia(clip as FlowMediaPayload | null);
       const mStatus = String(
         mObj?.Zc ?? cObj?.Zc ?? clip?.Zc ?? "",
       ).toLowerCase();
       const mError = formatMediaError(mObj?.nf ?? cObj?.nf ?? clip?.nf);
-      const existing = byId.get(wfId);
-      if (existing) {
-        if (mStatus === "failed" || mStatus === "canceled" || mError) {
-          if (
-            existing.media_status !== "failed" &&
-            existing.media_status !== "canceled"
-          ) {
-            existing.media_status = mStatus || existing.media_status;
-          }
-          if (!existing.media_error && mError) {
-            existing.media_error = mError;
-          }
+      if (
+        sceneGridEntry &&
+        (mStatus === "failed" || mStatus === "canceled" || mError)
+      ) {
+        if (
+          sceneGridEntry.media_status !== "failed" &&
+          sceneGridEntry.media_status !== "canceled"
+        ) {
+          sceneGridEntry.media_status = mStatus || sceneGridEntry.media_status;
         }
-        continue;
+        if (!sceneGridEntry.media_error && mError) {
+          sceneGridEntry.media_error = mError;
+        }
       }
+
+      const topVideo = videoByWorkflow.get(wfId);
+      const clipPrimaryMediaId =
+        requestedPrimaryId ||
+        (mObj?.id ? String(mObj.id) : null) ||
+        (mObj?.mediaId ? String(mObj.mediaId) : null) ||
+        topVideo?.primary_media_id ||
+        null;
+      const sameMediaAsTop = Boolean(
+        topVideo &&
+          (!clipPrimaryMediaId ||
+            topVideo.primary_media_id === clipPrimaryMediaId),
+      );
+      const effectiveStatus =
+        mStatus || (sameMediaAsTop ? (topVideo?.media_status ?? "") : "");
+      const effectiveError =
+        mError ?? (sameMediaAsTop ? (topVideo?.media_error ?? null) : null);
       const mNotReady =
-        mStatus === "pending" ||
-        mStatus === "scheduled" ||
-        mStatus === "failed" ||
-        mStatus === "canceled" ||
-        Boolean(mObj?.nf || cObj?.nf || clip?.nf);
-      const clipPrimaryMediaId = clip?.primaryMediaId
-        ? String(clip.primaryMediaId)
-        : mObj?.id
-          ? String(mObj.id)
-          : null;
+        effectiveStatus === "pending" ||
+        effectiveStatus === "scheduled" ||
+        effectiveStatus === "failed" ||
+        effectiveStatus === "canceled" ||
+        Boolean(effectiveError);
       const cachedClipVideoUrl = clipPrimaryMediaId
         ? asHttpOrDataUrl(
             runtimeState.mediaInfoCache.get(clipPrimaryMediaId)?.url,
@@ -526,7 +540,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         readMediaUrl(clip, true) ||
         readMediaUrl(mObj) ||
         readMediaUrl(clip) ||
-        null;
+        (sameMediaAsTop ? topVideo?.url ?? null : null);
       const rawClipUrl = isSignedUrlStr(tileClipUrl)
         ? tileClipUrl
         : isSignedUrlStr(cachedClipVideoUrl)
@@ -563,12 +577,14 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               ? mObj.duration
               : typeof mObj?.Lf === "number"
                 ? mObj.Lf
-                : null;
+                : sameMediaAsTop
+                  ? (topVideo?.duration ?? null)
+                  : null;
       const clipPrompt = mObj?.prompt
         ? String(mObj.prompt)
         : mObj?.inputs?.prompt
           ? String(mObj.inputs.prompt)
-          : null;
+          : topVideo?.prompt ?? null;
       const clipCreated =
         mObj?.hc instanceof Date
           ? mObj.hc.toISOString()
@@ -578,10 +594,16 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
               ? st.hc.toISOString()
               : st.hc
                 ? String(st.hc)
-                : null;
-      const sceneEntry: Omit<SnapshotAssetItem, "collection_name"> = {
-        id: wfId,
-        name: String((mObj as FlowTile | null)?.displayName || st.displayName || ""),
+                : topVideo?.created_at ?? null;
+      const clipName = String(
+        (mObj as FlowTile | null)?.displayName ||
+          topVideo?.name ||
+          st.displayName ||
+          "",
+      );
+      const clipEntry: Omit<SnapshotAssetItem, "collection_name"> = {
+        id: clipAssetId,
+        name: clipName,
         kind: "video",
         prompt: clipPrompt,
         url: clipUrl ? normalizeFlowMediaUrl(String(clipUrl), "video", env) : null,
@@ -591,25 +613,30 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         voice: null,
         trim_start_seconds: trimStartVal,
         trim_end_seconds: trimEndVal,
-        media_status: mStatus || null,
-        media_error: mError,
+        media_status: effectiveStatus || null,
+        media_error: effectiveError,
         width:
           typeof mObj?.width === "number"
             ? mObj.width
             : typeof mObj?.tc?.width === "number"
               ? mObj.tc.width
-              : null,
+              : topVideo?.width ?? null,
         height:
           typeof mObj?.height === "number"
             ? mObj.height
             : typeof mObj?.tc?.height === "number"
               ? mObj.tc.height
-              : null,
+              : topVideo?.height ?? null,
         duration: durVal,
         created_at: clipCreated,
       };
-      rawList.push(sceneEntry);
-      byId.set(wfId, sceneEntry);
+      const existingClipEntry = byId.get(clipAssetId);
+      if (existingClipEntry) {
+        Object.assign(existingClipEntry, clipEntry);
+      } else {
+        rawList.push(clipEntry);
+        byId.set(clipAssetId, clipEntry);
+      }
     }
   }
 

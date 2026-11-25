@@ -94,6 +94,11 @@ export function currentProjectStore(projectId: string): ProjectStore | null {
   return active?.projectId === projectId ? active : null;
 }
 
+/** Returns the live bound store for the active session when present. */
+export function activeProjectStore(): ProjectStore | null {
+  return activeBoundStore();
+}
+
 /** Finds the query by its full project key. */
 function projectQuery({ projectId, service, format }: ProjectStore): ProjectTileQuery | undefined {
   const tiles = readOwn(service, format.tilesService);
@@ -435,12 +440,13 @@ function storeDispatcher({ service, format }: ProjectStore): unknown {
 /** Sends one mutation to the server with the bound project ID. */
 async function submitProjectMutation(
   store: ProjectStore,
-  payload: Record<string, unknown>,
+  rawPayload: Record<string, unknown>,
 ): Promise<void> {
   const dispatch = storeDispatcher(store);
   if (!isCurrent(store) || activeBoundStore() !== store || typeof dispatch !== "function") {
     throw new Error("project_store_changed");
   }
+  const payload = withMutationAliases(rawPayload);
   await dispatch.call(readOwn(store.service, store.format.tilesService), store.projectId, payload);
 }
 

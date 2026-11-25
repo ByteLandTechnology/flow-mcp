@@ -8,6 +8,8 @@ import type { AgentExport } from "./agent_protocol";
 import type { AgentWireFormat } from "./agent_wire";
 import type { AgentSettingsExport } from "./agent_settings_protocol";
 import type { MediaUploadExport } from "./project_upload";
+import type { SceneBuilderFormat, SceneTileFormat } from "./scene_tiles";
+export type { SceneBuilderFormat, SceneTileFormat };
 
 /** Field names for the collection write requests of one build. */
 export interface CollectionWriteFormat {
@@ -330,16 +332,10 @@ export interface ProjectStoreFormat {
   lContextView: string;
   /** Field names of a scene tile and its workflow history. */
   scene?: SceneTileFormat;
+  /** Native scene builder controller, timeline, and player signal names. */
+  sceneBuilder?: SceneBuilderFormat;
   /** Native names for mutations that use the general store adapter. */
   mutations?: ProjectMutationFormat;
-}
-
-/** Fields that identify the contents of a scene tile. */
-export interface SceneTileFormat {
-  /** Clip array on a scene tile. */
-  clips: string;
-  /** Workflow history map on a scene tile. */
-  history: string;
 }
 
 /** Names of fields used by the general project mutations. */
@@ -413,9 +409,13 @@ const NOVEMBER_20_STORE: ProjectStoreFormat = {
   componentSlots: ["fh", "ha", "Ew", "la", "ka"],
   lContextView: "zp",
   scene: { clips: "Uc", history: "Cg" },
+  sceneBuilder: {
+    controller: "su", timeline: "B6", player: "Gc", playerReady: "Dx",
+    selectedClip: "la", clips: "Uc", extendDisabledReason: "Yo",
+  },
   mutations: {
     tileId: "Xc", tileChange: "mf", sceneWorkflows: "ng", sceneCollection: "Dc",
-    sceneCreated: "t6a", sceneId: "yc", trimStart: "dh", trimEnd: "ug",
+    sceneCreated: "y6a", sceneId: "yc", trimStart: "dh", trimEnd: "ug",
   },
 };
 

@@ -18,6 +18,7 @@ import type {
 } from "./frontend_builds";
 import { findProjectPage } from "./project_upload";
 import { projectWriteChecks } from "./project_store";
+import { sceneBuilderChecks } from "./scene_tiles";
 import { legacyTile, pickTileUrl } from "./dom";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, StoreProbeCheck, StoreProbeResult } from "./types";
@@ -441,6 +442,7 @@ export function probeStore(): StoreProbeResult {
       detail: views ? `${views.size} views` : "not captured",
     },
     ...trashChecks,
+    ...sceneBuilderChecks(build),
   ];
   const pageChecks = projectPageOperationChecks(build);
   const operations: Record<

@@ -12,6 +12,11 @@ import {
   readMediaUrl,
 } from "./dom";
 import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import {
+  findVideoTileByIdOrWorkflow,
+  readSceneAspectRatio,
+  readSceneCollectionId,
+} from "./scene_tiles";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
@@ -25,7 +30,7 @@ export interface NgContextCarrier {
 
 /** Reads an own or prototype property safely without triggering exceptions. */
 export function readOwn(obj: unknown, key: string): unknown {
-  if (!obj || typeof obj !== "object") return undefined;
+  if (!obj || (typeof obj !== "object" && typeof obj !== "function")) return undefined;
   try {
     return Reflect.get(obj as object, key);
   } catch {
@@ -437,7 +442,11 @@ export async function createScene(
   getMap: () => Map<string, FlowTile> | null | undefined,
   workflowIds: string[],
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
-  const before = new Set(sceneIds(getMap()));
+  const currentMap = getMap();
+  const before = new Set(sceneIds(currentMap));
+  const clip0 = findVideoTileByIdOrWorkflow(currentMap, workflowIds[0]);
+  const aspectRatio = readSceneAspectRatio(clip0);
+  const collectionId = readSceneCollectionId(clip0);
   const resultField = frontendBuild(readBuildLabel())?.projectStore.mutations?.sceneCreated ?? "VWa";
   let confirmedId: string | undefined;
   let failure: string | undefined;
@@ -451,13 +460,13 @@ export async function createScene(
   void Promise.resolve().then(() => helper.mutate({
     type: "create_scene",
     rg: workflowIds,
-    Fc: undefined,
-    wc: undefined,
-    aspectRatio: 1,
+    Fc: collectionId,
+    wc: collectionId,
+    aspectRatio,
     De: completion,
     ve: completion,
   })).then((response) => {
-    completion.resolve(readOwn(response, resultField));
+    completion.resolve(readOwn(response, resultField) ?? readOwn(response, "t6a"));
   }, completion.reject);
 
   while (performance.now() < deadline) {
