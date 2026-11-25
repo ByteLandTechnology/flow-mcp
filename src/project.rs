@@ -17,9 +17,10 @@ use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redir
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
 pub(crate) use crate::project_route::{
-    project_id_from_url, project_subroute_url, project_workspace_url,
+    clean_flow_page_title, ensure_project_workspace_root, project_id_from_url,
+    project_subroute_url, project_workspace_url,
 };
-use crate::project_store::{bind_current_store, prepare_project_store_status};
+use crate::project_store::{ProjectStoreSession, bind_current_store, prepare_project_store_status};
 
 /// Angular error code for a required input that has no value yet.
 const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
@@ -84,57 +85,6 @@ pub(crate) struct FlowStatus {
     /// Error message when page startup or probing fails.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
-}
-
-/// Navigates back to `/project/<id>` when Chrome is on a non-grid project subroute.
-pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
-    let is_subroute = |url: &str| {
-        let path = url.split(['?', '#']).next().unwrap_or_default();
-        let Some((_, project)) = path.split_once("/project/") else {
-            return false;
-        };
-        let mut segs = project.trim_end_matches('/').split('/');
-        if segs.next().is_none_or(str::is_empty) {
-            return false;
-        }
-        match (segs.next(), segs.next(), segs.next()) {
-            (
-                Some(
-                    "character" | "scene" | "edit" | "chat" | "tool" | "tools" | "create-tool"
-                    | "trash",
-                ),
-                _,
-                _,
-            ) => true,
-            (Some("collection"), Some(cid), Some("character")) => !cid.is_empty(),
-            _ => false,
-        }
-    };
-    let current = engine.current_url().await?;
-    if !is_subroute(&current) {
-        return Ok(());
-    }
-    let project_id = project_id_from_url(&current)
-        .ok_or_else(|| anyhow::anyhow!("Cannot identify the active Flow project"))?;
-    let workspace = project_workspace_url(&current, &project_id);
-    let returned = |url: &str| {
-        is_flow_host_url(url)
-            && !is_subroute(url)
-            && project_id_from_url(url).as_deref() == Some(project_id.as_str())
-            && project_workspace_url(url, &project_id) == workspace
-    };
-    let _ = eval_project_nav(engine, "exit_subroute").await;
-    if returned(&engine.current_url().await.unwrap_or_default()) {
-        return Ok(());
-    }
-    engine.navigate(&workspace).await?;
-    for _ in 0..10 {
-        if returned(&engine.current_url().await.unwrap_or_default()) {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    anyhow::bail!("Cannot return to the active Flow project workspace")
 }
 
 /// Opens a Flow page and verifies access with the active Chrome profile.
@@ -241,11 +191,19 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let mut project = auth_check
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let mut project = if in_project {
+        auth_check
+            .get("title")
+            .and_then(Value::as_str)
+            .and_then(clean_flow_page_title)
+    } else {
+        auth_check
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     let mut credits = None;
     let mut assets_count = None;
     let mut collections_count = None;
@@ -260,11 +218,10 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
             .await
             .unwrap_or(Value::Null);
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-            if let Some(t) = snap.get("projectTitle").and_then(|v| v.as_str())
-                && !t.is_empty()
-            {
-                project = Some(t.to_string());
-            }
+            project = snap
+                .get("projectTitle")
+                .and_then(Value::as_str)
+                .and_then(clean_flow_page_title);
             credits = snap.get("credits").and_then(|v| v.as_i64());
             assets_count = snap
                 .get("assets")
@@ -571,23 +528,7 @@ pub(crate) async fn create_project(engine: &ChromeEngine, title: Option<&str>) -
     if project_id.is_some() {
         let _ = ensure_flow_store(engine).await;
         if let Some(desired_title) = final_title.as_deref() {
-            let res = run_projects_op(
-                engine,
-                json!({
-                    "action": "set_title",
-                    "title": desired_title,
-                }),
-            )
-            .await?;
-            if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                anyhow::bail!(
-                    "Failed to set project title: {}",
-                    res.get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                );
-            }
-            final_title = Some(confirm_project_title(engine, desired_title).await?);
+            final_title = Some(apply_project_title(engine, desired_title).await?);
         }
     }
     Ok(json!({
@@ -617,6 +558,7 @@ async fn open_signed_in_home_page(engine: &ChromeEngine) -> Result<()> {
 /// Lists all existing Flow projects from the Flow home page.
 async fn list_projects(engine: &ChromeEngine) -> Result<Value> {
     open_signed_in_home_page(engine).await?;
+    let _ = engine.bind_angular_views("flow-projects-grid").await;
     let res = run_projects_op(engine, json!({ "action": "list" })).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
@@ -649,12 +591,21 @@ async fn open_project(
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        let hit = projects.into_iter().find(|p| {
-            p.get("title")
-                .and_then(|v| v.as_str())
-                .map(|t| t.trim().to_ascii_lowercase().contains(&want))
-                .unwrap_or(false)
-        });
+        let hit = projects
+            .iter()
+            .find(|p| {
+                p.get("title")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case(&want))
+            })
+            .or_else(|| {
+                projects.iter().find(|p| {
+                    p.get("title")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t.trim().to_ascii_lowercase().contains(&want))
+                })
+            })
+            .cloned();
         let Some(p) = hit else {
             anyhow::bail!("No Google Flow project matches title '{}'", want);
         };
@@ -675,11 +626,62 @@ async fn open_project(
     Ok(json!({
         "opened": true,
         "project_id": pid,
-        "title": snap.get("projectTitle").and_then(|v| v.as_str()).map(|s| s.to_string()).or(matched_title),
+        "title": snap
+            .get("projectTitle")
+            .and_then(Value::as_str)
+            .and_then(clean_flow_page_title)
+            .or(matched_title),
         "url": engine.current_url().await.unwrap_or(project_url),
         "assets_count": snap.get("assets").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
         "collections_count": snap.get("collections").and_then(|v| v.as_array()).map(|c| c.len()).unwrap_or(0),
     }))
+}
+
+/// Applies `desired` through `ProjectStoreSession` on verified builds, or header DOM on legacy builds.
+async fn apply_project_title(engine: &ChromeEngine, desired: &str) -> Result<String> {
+    let verified = engine
+        .call_flow_js("probeBuild", json!([]))
+        .await
+        .ok()
+        .and_then(|v| v.get("checks").and_then(Value::as_array).cloned())
+        .is_some_and(|checks| {
+            checks.iter().any(|c| {
+                c.get("name").and_then(Value::as_str) == Some("verified_build")
+                    && c.get("ok").and_then(Value::as_bool) == Some(true)
+            })
+        });
+    if verified {
+        let session = ProjectStoreSession::open(engine).await?;
+        let outcome = session
+            .call(
+                "projectMetadataOp",
+                json!({ "action": "set_title", "title": desired }),
+                Some("set project title"),
+            )
+            .await;
+        match outcome {
+            Ok(res) => {
+                return Ok(res
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or(desired)
+                    .to_string());
+            }
+            Err(err) if !err.to_string().starts_with("legacy_project_title") => return Err(err),
+            Err(_) => {}
+        }
+    }
+    ensure_project_workspace_root(engine).await?;
+    let res = run_projects_op(engine, json!({ "action": "set_title", "title": desired })).await?;
+    if res.get("ok").and_then(Value::as_bool) != Some(true) {
+        anyhow::bail!(
+            "Failed to set project title: {}",
+            res.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        );
+    }
+    confirm_project_title(engine, desired).await
 }
 
 /// Polls project snapshots until `projectTitle` holds `desired` after a short settle delay.
@@ -777,28 +779,19 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
     if trimmed.is_empty() {
         anyhow::bail!("New project title must not be empty");
     }
-    if let Some(pid) = id.map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        let cur = engine.current_url().await.unwrap_or_default();
+    let cur = engine.current_url().await.unwrap_or_default();
+    if let Some(pid) = id.map(str::trim).filter(|s| !s.is_empty()) {
         if project_id_from_url(&cur).as_deref() != Some(pid) {
             let _ = open_project(engine, Some(pid), None).await?;
         }
-    } else {
+    } else if project_id_from_url(&cur).is_none() {
         ensure_flow_store(engine).await?;
     }
-    let res = run_projects_op(engine, json!({ "action": "set_title", "title": trimmed })).await?;
-    if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        anyhow::bail!(
-            "Failed to rename project: {}",
-            res.get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-    }
-    let confirmed_title = confirm_project_title(engine, trimmed).await?;
-    let cur = engine.current_url().await.unwrap_or_default();
+    let confirmed_title = apply_project_title(engine, trimmed).await?;
+    let active_url = engine.current_url().await.unwrap_or_default();
     Ok(json!({
         "ok": true,
-        "project_id": project_id_from_url(&cur),
+        "project_id": project_id_from_url(&active_url),
         "title": confirmed_title,
     }))
 }
@@ -815,6 +808,7 @@ async fn delete_project(
         anyhow::bail!("Provide `id` or `title` to delete a project");
     }
     open_signed_in_home_page(engine).await?;
+    let _ = engine.bind_angular_views("flow-projects-grid").await;
 
     let before_list = run_projects_op(engine, json!({ "action": "list" })).await?;
     let before_matches = before_list

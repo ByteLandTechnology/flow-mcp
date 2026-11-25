@@ -33,6 +33,7 @@ import { uploadUiAction } from "./open_upload_trigger";
 import { tileDomOp } from "./tile_dom";
 import { locatePoint } from "./locate";
 import { projectNav } from "./project_nav";
+import { projectMetadataOp } from "./project_metadata";
 import { projectUpload, stageMediaFiles } from "./project_upload";
 import { projectsOp } from "./projects_ops";
 import { readStoreSnapshot } from "./read_store_snapshot";
@@ -54,6 +55,7 @@ if (!window.__flowMcp) {
     readStoreSnapshot,
     projectNav,
     projectsOp,
+    projectMetadataOp,
     assetOps,
     trashAssetOp,
     stageMediaFiles,

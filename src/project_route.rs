@@ -3,9 +3,14 @@
 
 //! Parse and build Google Flow workspace routes.
 
+use anyhow::Result;
+use serde_json::json;
+use tokio::time::Duration;
 use url::Url;
 
+use crate::auth::is_flow_host_url;
 use crate::config::FLOW_URL;
+use crate::engine::ChromeEngine;
 
 /// Extracts the `/project/<id>` segment from a Flow project URL.
 pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
@@ -13,6 +18,144 @@ pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
     let (_, project) = path.split_once("/project/")?;
     let id = project.split('/').next()?.trim();
     (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Returns `true` when `url` points to any `/project/<id>/...` subroute (including `/collection/<cid>`).
+pub(crate) fn is_project_subroute_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let Some((_, project)) = path.split_once("/project/") else {
+        return false;
+    };
+    let mut segs = project.trim_end_matches('/').split('/');
+    if segs.next().is_none_or(str::is_empty) {
+        return false;
+    }
+    segs.next().is_some_and(|seg| !seg.is_empty())
+}
+
+/// Returns `true` when `url` points to a non-upload `/project/<id>/...` subroute while keeping `/collection/<cid>`.
+pub(crate) fn is_upload_subroute_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let Some((_, project)) = path.split_once("/project/") else {
+        return false;
+    };
+    let mut segs = project.trim_end_matches('/').split('/');
+    if segs.next().is_none_or(str::is_empty) {
+        return false;
+    }
+    match (segs.next(), segs.next(), segs.next()) {
+        (None, _, _) => false,
+        (Some("collection"), Some(cid), None) => cid.is_empty(),
+        (Some(seg), _, _) => !seg.is_empty(),
+    }
+}
+
+/// Strips `"Google Flow - "` wrappers and rejects generic application or trash document titles.
+pub(crate) fn clean_flow_page_title(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(after) = lower.strip_prefix("google flow")
+        && let Some(rest) = after
+            .trim_start()
+            .strip_prefix(['-', '–', '—', '|', ':'])
+            .map(str::trim_start)
+        && rest.starts_with("ai creative studio")
+    {
+        return None;
+    }
+    let without_prefix = strip_flow_title_prefix(trimmed);
+    let stripped = strip_flow_title_suffix(without_prefix).trim();
+    if stripped.is_empty()
+        || stripped.eq_ignore_ascii_case("google flow")
+        || stripped.eq_ignore_ascii_case("flow")
+        || stripped.eq_ignore_ascii_case("trash")
+    {
+        return None;
+    }
+    Some(stripped.to_string())
+}
+
+/// Strips a leading `"Google Flow - "` or `"Flow - "` prefix from `value`.
+fn strip_flow_title_prefix(value: &str) -> &str {
+    for prefix in ["google flow", "flow"] {
+        if value.len() >= prefix.len()
+            && value
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+            && let Some(tail) = value.get(prefix.len()..)
+        {
+            let rest = tail.trim_start();
+            if let Some(after_sep) = rest.strip_prefix(['-', '–', '—', '|', ':']) {
+                return after_sep.trim_start();
+            }
+        }
+    }
+    value
+}
+
+/// Strips a trailing `"- Google Flow"` or `"- Flow"` suffix from `value`.
+fn strip_flow_title_suffix(value: &str) -> &str {
+    for suffix in ["google flow", "flow"] {
+        if value.len() >= suffix.len()
+            && value
+                .get(value.len() - suffix.len()..)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+            && let Some(head) = value.get(..value.len() - suffix.len())
+        {
+            let before = head.trim_end();
+            if let Some(before_sep) = before.strip_suffix(['-', '–', '—', '|', ':']) {
+                return before_sep.trim_end();
+            }
+        }
+    }
+    value
+}
+
+/// Exits active project subroutes matched by `is_subroute` back to `/project/<id>`.
+async fn exit_matching_subroute(
+    engine: &ChromeEngine,
+    is_subroute: fn(&str) -> bool,
+) -> Result<()> {
+    let current = engine.current_url().await?;
+    if !is_subroute(&current) {
+        return Ok(());
+    }
+    let project_id = project_id_from_url(&current)
+        .ok_or_else(|| anyhow::anyhow!("Cannot identify the active Flow project"))?;
+    let workspace = project_workspace_url(&current, &project_id);
+    let returned = |url: &str| {
+        is_flow_host_url(url)
+            && !is_subroute(url)
+            && project_id_from_url(url).as_deref() == Some(project_id.as_str())
+            && project_workspace_url(url, &project_id) == workspace
+    };
+    let _ = engine
+        .call_flow_async("projectNav", json!(["exit_subroute"]))
+        .await;
+    if returned(&engine.current_url().await.unwrap_or_default()) {
+        return Ok(());
+    }
+    engine.navigate(&workspace).await?;
+    for _ in 0..10 {
+        if returned(&engine.current_url().await.unwrap_or_default()) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("Cannot return to the active Flow project workspace")
+}
+
+/// Navigates back to `/project/<id>` when Chrome is on any `/project/<id>/...` subroute.
+pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
+    exit_matching_subroute(engine, is_project_subroute_url).await
+}
+
+/// Navigates back to `/project/<id>` from editor subroutes while keeping `/project/<id>/collection/<cid>`.
+pub(crate) async fn ensure_project_upload_route(engine: &ChromeEngine) -> Result<()> {
+    exit_matching_subroute(engine, is_upload_subroute_url).await
 }
 
 /// Returns `true` when `host` is a Google Flow host (`flow.google.com` or `labs.google`).

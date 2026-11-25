@@ -97,9 +97,7 @@ export async function projectNav(action: string): Promise<unknown> {
     const isOriginalProject = (): boolean =>
       activeProject() === pid && buildProjectUrl(pid) === workspace;
     const isSubRoute = (): boolean =>
-      /\/project\/[^/?#]+\/(?:character|scene|edit|chat|tools?|create-tool|trash|collection\/[^/?#]+\/character)(?:\/|$)/.test(
-        location.pathname || "",
-      );
+      /\/project\/[^/?#]+\/[^/?#]+/.test(location.pathname || "");
     if (!isSubRoute()) {
       return { ok: true, exited: true, method: "already_root" };
     }

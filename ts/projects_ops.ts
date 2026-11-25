@@ -1,7 +1,7 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-// List, rename, and delete Google Flow projects from the Flow UI.
+// List, rename, and delete Google Flow projects from the Flow UI and query caches.
 
 import {
   buildProjectUrl,
@@ -12,18 +12,102 @@ import {
 } from "./angular";
 import { delay, elText, setNativeValue } from "./dom";
 import { projectTitleFormat } from "./frontend_builds";
+import {
+  MAX_GRID_PAGES,
+  advanceProjectsGridPage,
+  listCachedProjects,
+  snapshotLoadedGridProjects,
+} from "./project_metadata";
 import type { ProjectsOpRequest } from "./types";
 
 /** Internal card descriptor captured on the Flow projects grid. */
 interface ScannedProjectCard {
   /** Resolved project UUID if discovered. */
   id: string | null;
-  /** Visible project card title. */
+  /** Visible or cached project card title. */
   title: string | null;
   /** Navigable project URL. */
   url: string | null;
   /** Underlying card DOM element for delete triggers. */
   _card: HTMLElement;
+}
+
+/** Material icon ligatures excluded from card and anchor title extraction. */
+const ICON_LIGATURE_RE =
+  /^(?:group|edit|more_vert|more_horiz|delete|share|visibility|visibility_off|lock|public|check|close|add|arrow_back|arrow_forward|folder|home_storage|push_pin)$/i;
+
+/** Selector matching icon and action elements stripped before reading card or link text. */
+const STRIPPED_LABEL_NODES =
+  'mat-icon, flow-material-icon, .shared-project-icon, .google-symbols, .material-icons, button, [role="button"], [aria-hidden="true"]';
+
+/** Selector matching non-header containers where fallback `set_title` must never edit inputs. */
+const FORBIDDEN_TITLE_ANCESTOR =
+  'mat-sidenav, [flow-sidenav], aside, flow-project-nav-list, flow-agent-panel, flow-applet-chat-sidebar, flow-project-card, flow-grid-tile-container, flow-character-edit-header, flow-character-header, flow-applet-view-header, main, [role="dialog"], .cdk-overlay-container';
+
+/** Selector matching workspace header containers that host the legacy project title input. */
+const WORKSPACE_HEADER_SELECTOR =
+  "flow-navigation-header, flow-project-header, nav.nav-header, header.header-base, header";
+
+/** Extracts clean text from `node` after stripping `mat-icon` ligatures and action buttons. */
+function cleanCardOrLinkTitle(node: Element | null): string | null {
+  if (!node) return null;
+  const clone = node.cloneNode(true);
+  if (clone instanceof Element) {
+    for (const icon of Array.from(clone.querySelectorAll(STRIPPED_LABEL_NODES))) {
+      icon.remove();
+    }
+    const line = (clone.textContent || "")
+      .split(/\r?\n/)
+      .map((part) => part.trim())
+      .find((part) => part.length > 0 && !ICON_LIGATURE_RE.test(part));
+    if (line) return line;
+  }
+  const fallback = elText(node)
+    .split(/\r?\n/)
+    .map((part) => part.trim())
+    .find((part) => part.length > 0 && !ICON_LIGATURE_RE.test(part));
+  return fallback || null;
+}
+
+/** Scrolls `.load-more-sentinel` and its scrollable ancestors so `IntersectionObserver` fires. */
+function scrollLoadMoreSentinel(): HTMLElement | null {
+  const sentinel = document.querySelector(
+    "flow-projects-grid .load-more-sentinel, .load-more-sentinel",
+  );
+  if (!(sentinel instanceof HTMLElement)) return null;
+  sentinel.scrollIntoView({ block: "end", inline: "nearest" });
+  let parent: HTMLElement | null = sentinel.parentElement;
+  while (parent) {
+    if (parent.scrollHeight > parent.clientHeight) {
+      parent.scrollTop = parent.scrollHeight;
+    }
+    parent = parent.parentElement;
+  }
+  window.scrollTo(0, document.documentElement.scrollHeight);
+  return sentinel;
+}
+
+/** Finds the visible `<flow-editable-text>` input inside the workspace header only. */
+function findWorkspaceHeaderTitleInput(): HTMLInputElement | null {
+  const headers = Array.from(document.querySelectorAll(WORKSPACE_HEADER_SELECTOR));
+  for (const header of headers) {
+    if (header.closest(FORBIDDEN_TITLE_ANCESTOR)) continue;
+    const candidates = Array.from(
+      header.querySelectorAll(
+        'flow-editable-text input.editable-text-input, input[aria-label="Editable text"], .editable-text-input',
+      ),
+    );
+    for (const candidate of candidates) {
+      if (
+        candidate instanceof HTMLInputElement &&
+        !candidate.closest(FORBIDDEN_TITLE_ANCESTOR) &&
+        candidate.getClientRects().length > 0
+      ) {
+        return candidate;
+      }
+    }
+  }
+  return null;
 }
 
 /** Lists, renames, or deletes Google Flow projects on home or workspace pages. */
@@ -40,6 +124,17 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       return null;
     }
     seen.add(obj);
+    const ubFn = readOwn(obj, "Ub");
+    if (typeof ubFn === "function") {
+      try {
+        const rawUb: unknown = ubFn.call(obj);
+        if (typeof rawUb === "string" && rawUb.trim()) {
+          return rawUb.trim();
+        }
+      } catch {
+        // Ignore getter failure and inspect plain keys.
+      }
+    }
     for (const k of ["projectId", "id", "uuid", "workflowId"]) {
       const val = readOwn(obj, k);
       if (typeof val === "string") {
@@ -62,34 +157,36 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
     return null;
   }
 
-  async function scanCards(): Promise<ScannedProjectCard[]> {
-    let lastCount = -1;
-    let stableTicks = 0;
-    for (let i = 0; i < 60; i++) {
-      const loading = Boolean(
-        document.querySelector(
-          "flow-loading-page, .projects-loading-container",
-        ),
-      );
-      const hasCreateBtn = Boolean(
-        document.querySelector(
-          "button.projects-grid-new-project-button, button.new-project-button",
-        ),
-      );
-      const cnt = document.querySelectorAll(
-        'flow-project-card, a[href*="/project/"]',
-      ).length;
-      if (cnt > 0 && cnt === lastCount) {
-        stableTicks++;
-        if (stableTicks >= 3) break;
-      } else if (!loading && hasCreateBtn && cnt === 0) {
-        stableTicks++;
-        if (stableTicks >= 3) break;
-      } else {
-        lastCount = cnt;
-        stableTicks = 0;
+  async function scanCards(waitInitial = true): Promise<ScannedProjectCard[]> {
+    if (waitInitial) {
+      let lastCount = -1;
+      let stableTicks = 0;
+      for (let i = 0; i < 60; i++) {
+        const loading = Boolean(
+          document.querySelector(
+            "flow-loading-page, .projects-loading-container",
+          ),
+        );
+        const hasCreateBtn = Boolean(
+          document.querySelector(
+            "button.projects-grid-new-project-button, button.new-project-button",
+          ),
+        );
+        const cnt = document.querySelectorAll(
+          'flow-project-card, a[href*="/project/"]',
+        ).length;
+        if (cnt > 0 && cnt === lastCount) {
+          stableTicks++;
+          if (stableTicks >= 3) break;
+        } else if (!loading && hasCreateBtn && cnt === 0) {
+          stableTicks++;
+          if (stableTicks >= 3) break;
+        } else {
+          lastCount = cnt;
+          stableTicks = 0;
+        }
+        await delay(150);
       }
-      await delay(150);
     }
 
     const seenMaps = new Set<Map<unknown, unknown>>();
@@ -114,9 +211,10 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
           }),
         );
       }
-      await delay(80);
+      await delay(60);
     });
 
+    const cachedById = snapshotLoadedGridProjects();
     const byId = new Map<string, ScannedProjectCard>();
     const cards = Array.from(document.querySelectorAll("flow-project-card"));
     for (const card of cards) {
@@ -154,23 +252,18 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
           }
         }
       }
+      const cachedTitle = pid ? (cachedById.get(pid)?.title ?? null) : null;
       const titleNode =
-        card.querySelector(
-          'input[aria-label="Editable text"], [class*="title"], h2, h3, h4',
-        ) || card;
-      const rawText = (
-        (titleNode instanceof HTMLInputElement ? titleNode.value : "") ||
-        elText(titleNode) ||
-        ""
-      )
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .find((s) => s.length > 0 && !/^(?:more_vert|delete)$/i.test(s));
-      const key = pid || `card:${rawText || byId.size}`;
+        card.querySelector(".project-title-text") ||
+        card.querySelector('[class*="title"]:not(.project-card-edit-form *), h2, h3, h4') ||
+        card;
+      const domTitle = cleanCardOrLinkTitle(titleNode);
+      const resolvedTitle = cachedTitle ?? domTitle;
+      const key = pid || `card:${resolvedTitle || byId.size}`;
       if (!byId.has(key)) {
         byId.set(key, {
           id: pid,
-          title: rawText || null,
+          title: resolvedTitle,
           url: pid ? buildProjectUrl(pid) : null,
           _card: card,
         });
@@ -184,14 +277,16 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       if (!m) continue;
       const pid = m[1];
       if (!byId.has(pid)) {
-        const title = elText(a)
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .find(Boolean);
         const cardParent = a.closest("flow-project-card");
+        const titleTarget =
+          a.querySelector(".project-title-text") ||
+          cardParent?.querySelector(".project-title-text") ||
+          a;
+        const title =
+          cachedById.get(pid)?.title ?? cleanCardOrLinkTitle(titleTarget);
         byId.set(pid, {
           id: pid,
-          title: title || null,
+          title,
           url: new URL(href, location.origin).href,
           _card: cardParent instanceof HTMLElement ? cardParent : a,
         });
@@ -289,7 +384,34 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
   const action = String(req?.action || "list").toLowerCase();
 
   if (action === "list") {
-    const items = await scanCards();
+    const cached = await listCachedProjects();
+    if (cached !== null) {
+      const merged = new Map<string, { id: string | null; title: string | null; url: string | null }>();
+      for (const item of cached) {
+        merged.set(item.id, { id: item.id, title: item.title, url: item.url });
+      }
+      const domCards = await scanCards(cached.length === 0);
+      for (const dom of domCards) {
+        const key = dom.id || `dom:${dom.title || merged.size}`;
+        const existing = dom.id ? merged.get(dom.id) : undefined;
+        if (!existing) {
+          merged.set(key, { id: dom.id, title: dom.title, url: dom.url });
+        } else if (!existing.title && dom.title) {
+          existing.title = dom.title;
+        }
+      }
+      return { ok: true, projects: Array.from(merged.values()) };
+    }
+
+    await scanCards(true);
+    for (let page = 0; page < MAX_GRID_PAGES; page += 1) {
+      const before = document.querySelectorAll("flow-project-card").length;
+      if (!scrollLoadMoreSentinel()) break;
+      await delay(250);
+      const after = document.querySelectorAll("flow-project-card").length;
+      if (after <= before) break;
+    }
+    const items = await scanCards(false);
     return {
       ok: true,
       projects: items.map(({ id, title, url }) => ({ id, title, url })),
@@ -297,17 +419,19 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
   }
 
   if (action === "set_title") {
+    const pathname = location.pathname || "";
+    if (/\/project\/[^/?#]+\/[^/?#]+/.test(pathname)) {
+      return { ok: false, error: "project_title_subroute" };
+    }
+    if (!/\/project\/[^/?#]+\/?$/.test(pathname)) {
+      return { ok: false, error: "not_in_project" };
+    }
     const desired = String(req?.title || "").trim();
     if (!desired) return { ok: false, error: "empty_title" };
     let input: HTMLInputElement | null = null;
     for (let i = 0; i < 40; i++) {
-      const cand = document.querySelector(
-        'flow-editable-text input.editable-text-input, input[aria-label="Editable text"], .editable-text-input',
-      );
-      if (cand instanceof HTMLInputElement && cand.getClientRects().length > 0) {
-        input = cand;
-        break;
-      }
+      input = findWorkspaceHeaderTitleInput();
+      if (input) break;
       await delay(100);
     }
     if (!input) return { ok: false, error: "project_title_input_not_found" };
@@ -323,9 +447,7 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         await delay(50);
         setNativeValue(titleInput, desired);
         await delay(50);
-        const doneBtn = (host || document).querySelector(
-          'button[aria-label="Done"]',
-        );
+        const doneBtn = host?.querySelector('button[aria-label="Done"]');
         if (doneBtn instanceof HTMLElement) {
           doneBtn.click();
         } else {
@@ -394,7 +516,7 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
   if (action === "delete") {
     const targetId = req?.project_id ? String(req.project_id).trim() : "";
     const targetTitle = req?.title ? String(req.title).trim() : "";
-    const matchesTarget = (p: ScannedProjectCard): boolean => {
+    const matchesTarget = (p: { id: string | null; title: string | null }): boolean => {
       if (targetId && p.id === targetId) return true;
       if (
         targetTitle &&
@@ -405,12 +527,36 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       }
       return false;
     };
-    const items = await scanCards();
-    const hit = items.find(matchesTarget);
+
+    let items = await scanCards(true);
+    let hit = items.find(matchesTarget);
+    for (let page = 0; !hit && page < MAX_GRID_PAGES; page += 1) {
+      const beforeCount = document.querySelectorAll("flow-project-card").length;
+      const sentinel = scrollLoadMoreSentinel();
+      const advanced = await advanceProjectsGridPage();
+      await delay(200);
+      items = await scanCards(false);
+      hit = items.find(matchesTarget);
+      if (hit) break;
+      const afterCount = document.querySelectorAll("flow-project-card").length;
+      if (!advanced && afterCount <= beforeCount) {
+        if (!sentinel) break;
+        scrollLoadMoreSentinel();
+        await delay(250);
+        if (document.querySelectorAll("flow-project-card").length <= beforeCount) {
+          break;
+        }
+        items = await scanCards(false);
+        hit = items.find(matchesTarget);
+      }
+    }
+
     if (!hit || !hit._card) {
       return { ok: false, error: "project_card_not_found" };
     }
-    const beforeMatches = items.filter(matchesTarget).length;
+    const beforeCached = await listCachedProjects();
+    const beforePool = beforeCached ?? items;
+    const beforeMatches = beforePool.filter(matchesTarget).length;
     const deletedId = hit.id;
     const card = hit._card;
     card.scrollIntoView({ block: "center" });
@@ -493,15 +639,19 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       if (!document.body.contains(card)) break;
       await delay(100);
     }
-    const entryRemoved = (entries: ScannedProjectCard[]): boolean =>
-      deletedId
+    const isRemovedNow = async (): Promise<boolean> => {
+      if (document.body.contains(card)) return false;
+      const currentCached = await listCachedProjects();
+      const entries = currentCached ?? (await scanCards(false));
+      return deletedId
         ? !entries.some((p) => p.id === deletedId)
         : entries.filter(matchesTarget).length < beforeMatches;
+    };
     await delay(300);
     for (let i = 0; i < 20; i++) {
-      if (entryRemoved(await scanCards())) {
+      if (await isRemovedNow()) {
         await delay(250);
-        if (entryRemoved(await scanCards())) {
+        if (await isRemovedNow()) {
           return {
             ok: true,
             confirmed: true,
