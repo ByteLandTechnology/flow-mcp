@@ -200,13 +200,13 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `prompt` | `string` | 是 | `flow-mcp` 发送给 Google Flow 的文本提示词。 |
 | `mode` | `string` | 否 | `"video"`（默认）或 `"image"`。 |
-| `model` | `string` | 否 | 模型覆盖。默认为 `"veo-3.1-fast"`（`video`）或 `"nano-banana-2"`（`image`）。 |
-| `aspect` | `string` | 否 | 画面比例：`"16:9"`（默认）、`"9:16"` 或 `"1:1"`。 |
+| `model` | `string` | 否 | 模型覆盖。默认为 `"Veo 3.1 Lite"`（`video`）或 `"Nano Banana 2"`（`image`），并映射 `"veo-3.1-fast"` 等旧标识。 |
+| `aspect` | `string` | 否 | 画面比例：`"16:9"`（默认）、`"9:16"` 或 `"1:1"`（仅限 `image` 模式）。 |
 | `count` | `integer` | 否 | 输出批次数量，范围 `1..=4`。默认 `2`。 |
 | `frames` | `string[]` | 否 | 提交前上传的本地参考图像或关键帧路径。 |
 | `asset_ids` | `string[]` | 否 | 作为素材或关键帧附加的既有项目图像资产 ID。 |
-| `characters` | `string[]` | 否 | 附加到提示词控件的角色 ID 或名称。 |
-| `video_type` | `string` | 否 | 视频生成模式：`"frames"` 或 `"ingredients"`。 |
+| `characters` | `string[]` | 否 | 在 `"ingredients"` 或 `"image"` 模式下附加的角色 ID 或名称。 |
+| `video_type` | `string` | 否 | 视频生成模式：`"ingredients"`（默认）或 `"frames"`。 |
 | `duration` | `string` | 否 | 视频时长设置（例如 `"5s"` 或 `"8s"`）。 |
 | `resolution` | `string` | 否 | 视频分辨率设置（例如 `"720p"`、`"1080p"` 或 `"4K"`）。 |
 | `name` | `string` | 否 | 任务的可选场景或资产标签。 |

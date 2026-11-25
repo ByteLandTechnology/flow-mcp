@@ -28,6 +28,7 @@ import {
   elText,
   fifeBase,
   hoverProbe,
+  isDisabledProp,
   isVisibleEnabled,
   pickTileUrl,
   setNativeValue,
@@ -68,14 +69,72 @@ function itemMatchesTarget(item: unknown, target: IngredientTarget): boolean {
     name.trim().toLowerCase() === target.name.toLowerCase());
 }
 
-/** Returns true while a prompt item is loading or when it cannot be submitted. */
-function itemNotReady(item: unknown): boolean {
-  const invalid = /^(?:INVALID|ERROR|FAILED|PENDING|LOADING)(?:_|$)/i;
-  return readOwn(item, "isLoading") === true ||
-    ["Rp", "tl"].some((field) => {
-      const state = readOwn(item, field);
-      return typeof state === "string" && invalid.test(state);
-    });
+/** Live `Rp` ingredient disable codes defined in `level1.js` (`n7b` / `l7b`). */
+const LIVE_RP_DISABLE_CODES: ReadonlySet<string> = new Set([
+  "CAPACITY_EXCEEDED",
+  "AGENT_CAPACITY_EXCEEDED",
+  "IMAGE_REFERENCES_EXCEEDED",
+  "AUDIO_REFERENCES_EXCEEDED",
+  "DURATION_NOT_SUPPORTED",
+  "TYPE_NOT_SUPPORTED",
+  "IMAGE_MODE_NOT_SUPPORTED",
+  "MISSING_VISUAL_INGREDIENT",
+  "INVALID_CHARACTER_NO_IMAGES",
+  "MISSING_PAIRED_FRAME",
+  "DIFFERENT_AGENT_SESSION",
+]);
+
+/** Selector matching `flow-ingredient-chip`, all 7 `flow-*-ingredient-chip` tags, and `.upload-slot-filled-chip`. */
+const COMPOSER_CHIP_HOST_SELECTOR = [
+  "flow-ingredient-chip",
+  "flow-image-ingredient-chip",
+  "flow-character-ingredient-chip",
+  "flow-video-ingredient-chip",
+  "flow-audio-ingredient-chip",
+  "flow-likeness-ingredient-chip",
+  "flow-style-pack-ingredient-chip",
+  "flow-file-ingredient-chip",
+  ".upload-slot-filled-chip",
+].join(", ");
+
+/** Selector matching buttons inside composer ingredient and upload-slot chips. */
+const COMPOSER_CHIP_BUTTON_SELECTOR = [
+  "flow-prompt-box flow-ingredient-chip button",
+  "flow-prompt-box flow-image-ingredient-chip button",
+  "flow-prompt-box flow-character-ingredient-chip button",
+  "flow-prompt-box flow-video-ingredient-chip button",
+  "flow-prompt-box flow-audio-ingredient-chip button",
+  "flow-prompt-box flow-likeness-ingredient-chip button",
+  "flow-prompt-box flow-style-pack-ingredient-chip button",
+  "flow-prompt-box flow-file-ingredient-chip button",
+  "flow-prompt-box .upload-slot-filled-chip button",
+  'flow-prompt-box button[aria-label*="Remove" i]',
+].join(", ");
+
+/** Selector excluding Flow Agent drawer composers from manual composer cleanup. */
+const AGENT_COMPOSER_EXCLUSION_SELECTOR =
+  "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+
+/** Returns true while a prompt item is still loading asynchronously. */
+function itemLoading(item: unknown): boolean {
+  return readOwn(item, "isLoading") === true;
+}
+
+/** Returns the terminal `Rp` disable code (or legacy invalid `tl` state) when an item cannot be submitted. */
+function itemDisabledReason(item: unknown): string | null {
+  const rp = readOwn(item, "Rp");
+  if (typeof rp === "string" && rp.trim().length > 0) {
+    const code = rp.trim();
+    return LIVE_RP_DISABLE_CODES.has(code) ? code : code;
+  }
+  const tl = readOwn(item, "tl");
+  if (
+    typeof tl === "string" &&
+    /^(?:INVALID|ERROR|FAILED)(?:_|$)/i.test(tl.trim())
+  ) {
+    return tl.trim();
+  }
+  return null;
 }
 
 /** Verifies the requested frame in each slot before the prompt can be submitted. */
@@ -85,7 +144,7 @@ function framesReady(items: unknown[] | null, targets: IngredientTarget[]): bool
   return targets.every((target, index) => {
     const slot = index === 0 ? "FIRST_FRAME" : "LAST_FRAME";
     const item = hasSlots ? items.find((entry) => readOwn(entry, "Ud") === slot) : items[index];
-    return !itemNotReady(item) && itemMatchesTarget(item, target);
+    return !itemLoading(item) && !itemDisabledReason(item) && itemMatchesTarget(item, target);
   });
 }
 
@@ -188,17 +247,57 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   const initialTb = onEditPage ? findTextbox(true) : await ensureManualComposer();
   if (!onEditPage && !initialTb) return { ok: false, error: "manual_prompt_not_ready" };
 
-  if (ingredientTargets.length > 0 && !onEditPage) {
-    for (let pass = 0; pass < 4; pass += 1) {
+  const readPageItems = (
+    page: ReturnType<typeof findProjectPageInstance>,
+    ux?: ReturnType<typeof findLiveBasePromptBox>,
+  ): Array<Record<string, unknown>> | null => {
+    const raw =
+      page?.Qa?.oc?.all?.() ??
+      page?.Qa?.kc?.all?.() ??
+      page?.oc?.all?.() ??
+      ux?.Qa?.oc?.all?.() ??
+      ux?.Qa?.kc?.all?.() ??
+      runtimeState.promptState?.oc?.all?.() ??
+      runtimeState.promptState?.kc?.all?.();
+    return Array.isArray(raw) ? raw : null;
+  };
+
+  if (!onEditPage && !(runtimeState.ngLViewMap instanceof Map)) {
+    const tipEls = Array.from(
+      document.querySelectorAll("[mattooltip], button[aria-label]"),
+    ).slice(0, 8);
+    if (tipEls.length > 0) {
+      await withLViewMapCapture(async () => {
+        await hoverProbe(tipEls, 50);
+      });
+    }
+  }
+
+  if (!onEditPage) {
+    const clearBtn = Array.from(
+      document.querySelectorAll(
+        'flow-prompt-box button[aria-label="Clear prompt"], button[aria-label="Clear prompt"]',
+      ),
+    ).find(
+      (el): el is HTMLElement =>
+        isVisibleEnabled(el) && !el.closest(AGENT_COMPOSER_EXCLUSION_SELECTOR),
+    );
+    if (clearBtn) {
+      clearBtn.click();
+      await delay(120);
+    }
+
+    for (let pass = 0; pass < 6; pass += 1) {
       const staleRemoveBtns = Array.from(
-        document.querySelectorAll(
-          'flow-prompt-box flow-image-ingredient-chip button, flow-prompt-box button[aria-label*="Remove" i], flow-prompt-box [class*="chip"] button',
-        ),
+        document.querySelectorAll(COMPOSER_CHIP_BUTTON_SELECTOR),
       ).filter((el): el is HTMLElement => {
+        if (!(el instanceof HTMLElement)) return false;
+        if (el.closest(AGENT_COMPOSER_EXCLUSION_SELECTOR)) return false;
+        if (isDisabledProp(el) || el.getClientRects().length === 0) return false;
+        if (el.closest(COMPOSER_CHIP_HOST_SELECTOR)) return true;
         if (!isVisibleEnabled(el)) return false;
-        if (el.closest("flow-image-ingredient-chip")) return true;
         const lbl = (el.getAttribute("aria-label") || elText(el)).trim();
-        return /^remove\b|remove ingredient|remove reference|remove frame/i.test(
+        return /^remove\b|remove ingredient|remove reference|remove frame|remove uploaded/i.test(
           lbl,
         );
       });
@@ -207,6 +306,34 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         btn.click();
       }
       await delay(100);
+    }
+
+    const cleanupPage = findProjectPageInstance();
+    const cleanupUx = findLiveBasePromptBox(false, findPromptBoxHost(cleanupPage));
+    const remainingChips = Array.from(
+      document.querySelectorAll(`flow-prompt-box ${COMPOSER_CHIP_HOST_SELECTOR}`),
+    ).filter(
+      (el) =>
+        !el.closest(AGENT_COMPOSER_EXCLUSION_SELECTOR) &&
+        el.getClientRects().length > 0,
+    );
+    let remainingItems = readPageItems(cleanupPage, cleanupUx);
+    if (
+      (remainingItems && remainingItems.length > 0) ||
+      remainingChips.length > 0
+    ) {
+      const clearFn =
+        cleanupUx?.Qa?.clear ??
+        cleanupPage?.Qa?.clear ??
+        runtimeState.promptState?.clear;
+      if (typeof clearFn === "function") {
+        clearFn.call(cleanupUx?.Qa ?? cleanupPage?.Qa ?? runtimeState.promptState);
+        await delay(100);
+      }
+      remainingItems = readPageItems(cleanupPage, cleanupUx);
+    }
+    if (remainingItems && remainingItems.length > 0) {
+      return { ok: false, error: "stale_composer_items_not_cleared" };
     }
   }
 
@@ -223,32 +350,6 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     }
     return document;
   })();
-
-  const readPageItems = (
-    page: ReturnType<typeof findProjectPageInstance>,
-    ux?: ReturnType<typeof findLiveBasePromptBox>,
-  ): Array<Record<string, unknown>> | null => {
-    const raw =
-      page?.Qa?.oc?.all?.() ??
-      page?.Qa?.kc?.all?.() ??
-      page?.oc?.all?.() ??
-      ux?.Qa?.oc?.all?.() ??
-      ux?.Qa?.kc?.all?.();
-    return Array.isArray(raw) ? raw : null;
-  };
-
-  if (
-    ingredientTargets.length > 0 &&
-    !onEditPage &&
-    !(runtimeState.ngLViewMap instanceof Map)
-  ) {
-    const tipEls = Array.from(
-      document.querySelectorAll("[mattooltip], button[aria-label]"),
-    ).slice(0, 8);
-    await withLViewMapCapture(async () => {
-      await hoverProbe(tipEls, 50);
-    });
-  }
 
   const promptBoxEl = !onEditPage
     ? document.querySelector("flow-prompt-box")
@@ -575,13 +676,35 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
       ? findLiveBasePromptBox(false, findPromptBoxHost(projPage))
       : null;
     let finalItems = !onEditPage ? readPageItems(projPage, liveUx) : null;
-    const ready = (): boolean => isVideoFrames
-      ? framesReady(finalItems, ingredientTargets)
-      : finalItems === null ||
-        (finalItems.length >= ingredientTargets.length && !finalItems.some(itemNotReady));
-    for (let attempt = 0; attachedSteps === ingredientTargets.length && !ready() && attempt < 25; attempt++) {
+    const findDisabledError = (items: unknown[] | null): string | null => {
+      if (!items) return null;
+      for (const item of items) {
+        const reason = itemDisabledReason(item);
+        if (reason) return reason;
+      }
+      return null;
+    };
+    const ready = (): boolean =>
+      isVideoFrames
+        ? framesReady(finalItems, ingredientTargets)
+        : finalItems === null ||
+          (finalItems.length >= ingredientTargets.length &&
+            !finalItems.some(itemLoading) &&
+            !findDisabledError(finalItems));
+    for (
+      let attempt = 0;
+      attachedSteps === ingredientTargets.length &&
+      !ready() &&
+      !findDisabledError(finalItems) &&
+      attempt < 25;
+      attempt++
+    ) {
       await delay(100);
       finalItems = readPageItems(projPage, liveUx);
+    }
+    const disabledCode = findDisabledError(finalItems);
+    if (disabledCode) {
+      return { ok: false, error: disabledCode };
     }
     if (attachedSteps < ingredientTargets.length || !ready()) {
       return { ok: false, error: "ingredient_attach_failed" };

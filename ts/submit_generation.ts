@@ -4,10 +4,49 @@
 // Locate the enabled Flow generation submit button and compute its viewport click point.
 
 import { readAngularTooltip, readOwn, resolveLView } from "./angular";
-import { findComposerWarning } from "./composer";
+import {
+  findComposerWarning,
+  findLiveBasePromptBox,
+  findProjectPageInstance,
+  findPromptBoxHost,
+} from "./composer";
 import { delay, elText, isVisibleEnabled } from "./dom";
 import { runtimeState } from "./state";
 import type { NgLView } from "./types";
+
+/** Inspects `Qa.oc.all()` for loading or `Rp`-disabled attachments before submit. */
+function inspectPromptAttachments(onEditPage: boolean): {
+  loading: boolean;
+  disabledReason: string | null;
+} {
+  if (onEditPage) {
+    return { loading: false, disabledReason: null };
+  }
+  const projPage = findProjectPageInstance();
+  const liveUx = findLiveBasePromptBox(false, findPromptBoxHost(projPage));
+  const raw =
+    projPage?.Qa?.oc?.all?.() ??
+    projPage?.Qa?.kc?.all?.() ??
+    projPage?.oc?.all?.() ??
+    liveUx?.Qa?.oc?.all?.() ??
+    liveUx?.Qa?.kc?.all?.() ??
+    runtimeState.promptState?.oc?.all?.() ??
+    runtimeState.promptState?.kc?.all?.();
+  if (!Array.isArray(raw)) {
+    return { loading: false, disabledReason: null };
+  }
+  let loading = false;
+  for (const item of raw) {
+    const rp = readOwn(item, "Rp");
+    if (typeof rp === "string" && rp.trim().length > 0) {
+      return { loading: false, disabledReason: rp.trim() };
+    }
+    if (readOwn(item, "isLoading") === true) {
+      loading = true;
+    }
+  }
+  return { loading, disabledReason: null };
+}
 
 /** Extracts a disabled submit validator message from a component or controller candidate. */
 function readCandidateValidatorReason(cand: unknown): string {
@@ -24,17 +63,23 @@ function readCandidateValidatorReason(cand: unknown): string {
       if (msg) return msg;
     }
     const qa = readOwn(cand, "Qa");
-    const qaFf = readOwn(qa, "Ff") as { N7a?: () => string } | undefined;
+    const qaFf = readOwn(qa, "Ff") as
+      | { N7a?: () => string; S7a?: () => string }
+      | undefined;
     const qaLf = readOwn(qa, "lf") as { jYa?: () => string } | undefined;
-    const qaMsg = String(qaFf?.N7a?.() || qaLf?.jYa?.() || "").trim();
+    const qaMsg = String(
+      qaFf?.N7a?.() || qaFf?.S7a?.() || qaLf?.jYa?.() || "",
+    ).trim();
     if (qaMsg) return qaMsg;
 
     const applyFn = readOwn(cand, "Gp") ?? readOwn(cand, "Wn");
     if (typeof applyFn === "function") {
-      const directFf = readOwn(cand, "Ff") as { N7a?: () => string } | undefined;
+      const directFf = readOwn(cand, "Ff") as
+        | { N7a?: () => string; S7a?: () => string }
+        | undefined;
       const directLf = readOwn(cand, "lf") as { jYa?: () => string } | undefined;
       const directMsg = String(
-        directFf?.N7a?.() || directLf?.jYa?.() || "",
+        directFf?.N7a?.() || directFf?.S7a?.() || directLf?.jYa?.() || "",
       ).trim();
       if (directMsg) return directMsg;
     }
@@ -167,17 +212,41 @@ export async function submitGeneration(): Promise<unknown> {
   };
 
   for (let i = 0; i < 120; i += 1) {
+    const attachmentState = inspectPromptAttachments(onEditPage);
+    if (attachmentState.disabledReason) {
+      return {
+        ok: false,
+        error: attachmentState.disabledReason,
+        detail: "ingredient_disabled",
+      };
+    }
     const exact = findStartButton();
     if (isVisibleEnabled(exact)) {
+      if (attachmentState.loading) {
+        await delay(100);
+        continue;
+      }
       return await prepareTarget(exact, "aria_start_generation");
     }
     const warning = checkWarning();
     if (warning) return warning;
-    if (exact && isVisible(exact)) {
+    if ((exact && isVisible(exact)) || attachmentState.loading) {
       await delay(100);
     } else {
       break;
     }
+  }
+
+  const attachmentAfter = inspectPromptAttachments(onEditPage);
+  if (attachmentAfter.disabledReason) {
+    return {
+      ok: false,
+      error: attachmentAfter.disabledReason,
+      detail: "ingredient_disabled",
+    };
+  }
+  if (attachmentAfter.loading) {
+    return { ok: false, error: "ingredient_loading_timeout" };
   }
 
   const warningAfter = checkWarning();

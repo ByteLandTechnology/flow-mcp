@@ -34,9 +34,9 @@ pub(crate) struct GenerateParams {
     pub(crate) prompt: String,
     /// Generation mode: "video" (default) or "image".
     pub(crate) mode: Option<String>,
-    /// Model name override (defaults to "veo-3.1-fast" for video or "nano-banana-2" for image).
+    /// Model name override (defaults to "Veo 3.1 Lite" for video or "Nano Banana 2" for image; maps legacy slugs such as "veo-3.1-fast").
     pub(crate) model: Option<String>,
-    /// Output aspect ratio: "16:9" (default), "9:16", or "1:1".
+    /// Output aspect ratio: "16:9" (default), "9:16", or "1:1" (image mode only).
     pub(crate) aspect: Option<String>,
     /// Output count from 1 to 4 (default 2).
     #[schemars(range(min = 1, max = 4))]
@@ -55,7 +55,7 @@ pub(crate) struct GenerateParams {
     pub(crate) asset_ids: Option<Vec<String>>,
     /// Existing character IDs or names to attach to video or image generation.
     pub(crate) characters: Option<Vec<String>>,
-    /// Video generation mode (`"frames"` or `"ingredients"`).
+    /// Video generation mode ("ingredients" default or "frames").
     pub(crate) video_type: Option<String>,
     /// Video duration setting (for example `"5s"` or `"8s"`).
     pub(crate) duration: Option<String>,
@@ -87,35 +87,150 @@ struct AssetWaitSpec<'a> {
     submit_summary: &'a str,
 }
 
+/// Validated and normalized control parameters sent to the browser generation runtime.
+struct NormalizedControls {
+    /// Canonical mode string (`"video"` or `"image"`).
+    mode: &'static str,
+    /// Canonical aspect ratio label.
+    aspect: String,
+    /// Live `Select model family` display name or caller override.
+    model: String,
+    /// Normalized video mode (`Some("ingredients")` or `Some("frames")`) for video runs.
+    video_type: Option<&'static str>,
+    /// Clamped batch output count in `1..=4`.
+    count: u32,
+}
+
+/// Maps legacy model slugs and defaults to live `Select model family` display names.
+fn normalize_model_name(raw: Option<&str>, mode: &str) -> String {
+    let trimmed = raw.map(str::trim).unwrap_or("");
+    if trimmed.is_empty() {
+        return if mode == "image" {
+            "Nano Banana 2".to_string()
+        } else {
+            "Veo 3.1 Lite".to_string()
+        };
+    }
+    let key = trimmed
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '_' | '.'))
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("_");
+    match key.as_str() {
+        "veo_3_1_fast" | "veo_3_1_lite" => "Veo 3.1 Lite".to_string(),
+        "veo_3_1" | "veo_3_1_quality" => "Veo 3.1".to_string(),
+        "veo_3_fast" => "Veo 3 Fast".to_string(),
+        "veo_3" => "Veo 3".to_string(),
+        "veo_2" | "veo_2_fast" | "veo_2_quality" => "Veo 2".to_string(),
+        "gemini_omni" | "macaron_cookie" => "Gemini Omni".to_string(),
+        "nano_banana" => "Nano Banana".to_string(),
+        "nano_banana_2" => "Nano Banana 2".to_string(),
+        "nano_banana_pro" => "Nano Banana Pro".to_string(),
+        "imagen_3" => "Imagen 3".to_string(),
+        "imagen_4" => "Imagen 4".to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
+/// Normalizes generation parameters and rejects invalid video aspect, character, and frame combinations.
+fn resolve_generation_controls(scene: &SceneParams) -> Result<NormalizedControls> {
+    let raw_mode = scene
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("video");
+    let mode = if raw_mode.eq_ignore_ascii_case("image")
+        || raw_mode.eq_ignore_ascii_case("character")
+        || raw_mode.eq_ignore_ascii_case("scene")
+    {
+        "image"
+    } else {
+        "video"
+    };
+    let aspect = scene
+        .aspect
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("16:9");
+    if mode == "video" && (aspect == "1:1" || aspect.eq_ignore_ascii_case("square")) {
+        anyhow::bail!("Video mode does not support aspect ratio '{aspect}'; use '16:9' or '9:16'");
+    }
+    let video_type = if mode == "video" {
+        match scene
+            .video_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            None => Some("ingredients"),
+            Some(vt)
+                if vt.eq_ignore_ascii_case("ingredients")
+                    || vt.eq_ignore_ascii_case("ingredient")
+                    || vt.eq_ignore_ascii_case("video_ingredients")
+                    || vt.eq_ignore_ascii_case("video_references") =>
+            {
+                Some("ingredients")
+            }
+            Some(vt)
+                if vt.eq_ignore_ascii_case("frames")
+                    || vt.eq_ignore_ascii_case("frame")
+                    || vt.eq_ignore_ascii_case("video_frames") =>
+            {
+                Some("frames")
+            }
+            Some(vt) => anyhow::bail!(
+                "Unsupported video_type '{vt}' for video mode; use 'ingredients' or 'frames'"
+            ),
+        }
+    } else {
+        None
+    };
+    if video_type == Some("frames") {
+        let has_characters = scene
+            .characters
+            .as_ref()
+            .is_some_and(|chars| chars.iter().any(|c| !c.trim().is_empty()) || !chars.is_empty());
+        if has_characters {
+            anyhow::bail!(
+                "Video frames mode does not support character references; use video_type 'ingredients'"
+            );
+        }
+        let ref_count = scene.frames.as_ref().map_or(0, Vec::len)
+            + scene.asset_ids.as_ref().map_or(0, Vec::len);
+        anyhow::ensure!(
+            ref_count <= 2,
+            "Frame mode accepts at most two references, got {ref_count}"
+        );
+    }
+    Ok(NormalizedControls {
+        mode,
+        aspect: aspect.to_string(),
+        model: normalize_model_name(scene.model.as_deref(), mode),
+        video_type,
+        count: scene.count.unwrap_or(2).clamp(1, 4),
+    })
+}
+
 /// Configures generation controls, uploads reference frames, writes prompt text, and submits.
 async fn apply_generation_controls(
     engine: &ChromeEngine,
     scene: &SceneParams,
 ) -> Result<serde_json::Value> {
+    let controls = resolve_generation_controls(scene)?;
     validate_local_files(scene.frames.as_deref(), "Reference image").await?;
 
-    let raw_mode = scene.mode.as_deref().unwrap_or("video");
-    let mode = match raw_mode {
-        "image" | "character" | "scene" => "image",
-        _ => "video",
-    };
-    let aspect = scene.aspect.as_deref().unwrap_or("16:9");
-    let model = scene.model.as_deref().unwrap_or(if mode == "image" {
-        "nano-banana-2"
-    } else {
-        "veo-3.1-fast"
-    });
-    let count = scene.count.unwrap_or(2).clamp(1, 4);
-
     let cfg = json!({
-        "mode": mode,
-        "aspect": aspect,
-        "model": model,
-        "count": count,
+        "mode": controls.mode,
+        "aspect": controls.aspect,
+        "model": controls.model,
+        "count": controls.count,
         "prompt": scene.prompt,
         "asset_ids": scene.asset_ids,
         "characters": scene.characters,
-        "video_type": scene.video_type,
+        "video_type": controls.video_type,
         "duration": scene.duration,
         "resolution": scene.resolution,
     });
@@ -525,17 +640,12 @@ pub(crate) async fn run_generation(
     scene: &SceneParams,
     on_progress: ProgressCallback,
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+    let controls = resolve_generation_controls(scene)?;
     ensure_project_workspace_root(engine).await?;
     ensure_flow_store(engine).await?;
-    if scene.video_type.as_deref() == Some("frames") {
-        let count = scene.frames.as_ref().map_or(0, Vec::len)
-            + scene.asset_ids.as_ref().map_or(0, Vec::len)
-            + scene.characters.as_ref().map_or(0, Vec::len);
-        anyhow::ensure!(
-            count <= 2,
-            "Frame mode accepts at most two references, got {count}"
-        );
-    }
+    let mut normalized_scene = scene.clone();
+    normalized_scene.video_type = controls.video_type.map(str::to_string);
+    let scene = &normalized_scene;
     // Upload local frames into the library first and attach them as assets, so that the
     // uploaded tiles are not counted as generated outputs.
     let uploaded_scene;

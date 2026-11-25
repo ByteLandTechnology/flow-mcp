@@ -322,12 +322,36 @@ export interface PromptStateController {
   /** Validator status object in earlier builds. */
   lf?: { isValid?: () => boolean; jYa?: () => string };
   /** Validator status object in build 20261120.00. */
-  Ff?: { isValid?: () => boolean; N7a?: () => string };
-  /** Mode, output count, and model config signals. */
-  config?: {
-    mode?: () => string;
-    outputCount?: () => number;
+  Ff?: { isValid?: () => boolean; N7a?: () => string; S7a?: () => string };
+  /** Mode, output count, and aspect ratio config signals. */
+  readonly config?: {
+    readonly mode?: () => string;
+    readonly outputCount?: () => number;
+    readonly aspectRatio?: () => string;
   };
+  /** Active model family and picker option signals. */
+  readonly model?: {
+    /** Active model family ID signal in build 20261120.00. */
+    readonly ala?: () => string | undefined;
+    /** Active model family ID signal in refreshed build 20261120.00 chunks. */
+    readonly cla?: () => string | undefined;
+    /** Active model family descriptor signal. */
+    readonly family?: () => { readonly id?: string; readonly displayName?: string } | undefined;
+    /** Model picker options signal in build 20261120.00. */
+    readonly Wqa?: () => ReadonlyArray<{
+      readonly hg?: string;
+      readonly displayName?: string;
+      readonly isDisabled?: boolean;
+    }>;
+    /** Model picker options signal in refreshed build 20261120.00 chunks. */
+    readonly Yqa?: () => ReadonlyArray<{
+      readonly hg?: string;
+      readonly displayName?: string;
+      readonly isDisabled?: boolean;
+    }>;
+  };
+  /** Clears prompt segments and attached composer ingredients. */
+  readonly clear?: () => void;
   /** Attached item signal container in legacy builds. */
   kc?: { all?: () => Array<Record<string, unknown>> };
   /** Attached item signal container in build 20261120.00 and later. */

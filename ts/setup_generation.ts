@@ -15,11 +15,161 @@ import {
 } from "./composer";
 import { delay, elText, hoverProbe, isVisibleEnabled } from "./dom";
 import { runtimeState } from "./state";
-import type { GenerationConfig, NgLView } from "./types";
+import type { GenerationConfig, NgLView, PromptStateController } from "./types";
+
+/** Aspect ratio label-to-enum table matching `SKb` / `_.OE` in Google Flow. */
+const SKB_ASPECT_RATIO_MAP: Readonly<Record<string, string>> = {
+  "8:1": "LANDSCAPE_8_1",
+  "4:1": "LANDSCAPE_4_1",
+  "21:9": "ULTRAWIDE",
+  "16:9": "LANDSCAPE",
+  "3:2": "LANDSCAPE_3_2",
+  "4:3": "LANDSCAPE_4_3",
+  "5:4": "LANDSCAPE_5_4",
+  "1:1": "SQUARE",
+  "4:5": "PORTRAIT_4_5",
+  "3:4": "PORTRAIT_3_4",
+  "2:3": "PORTRAIT_2_3",
+  "9:16": "PORTRAIT",
+  "1:4": "PORTRAIT_1_4",
+  "1:8": "PORTRAIT_1_8",
+};
+
+/** Reverse lookup of valid `SKb` aspect ratio enum values. */
+const SKB_ASPECT_ENUM_VALUES: ReadonlySet<string> = new Set(
+  Object.values(SKB_ASPECT_RATIO_MAP),
+);
+
+/** Canonical display name and family ID pair for known Google Flow models. */
+interface ModelFamilyAlias {
+  /** Primary label rendered in `Select model family`. */
+  readonly displayName: string;
+  /** Family ID stored on `Qa.model` (`hg` / `ala`). */
+  readonly hg: string;
+}
+
+/** Legacy model slugs and family IDs mapped to live `Select model family` names. */
+const MODEL_FAMILY_ALIASES: Readonly<Record<string, ModelFamilyAlias>> = {
+  veo_3_1_fast: { displayName: "Veo 3.1 Lite", hg: "veo_3_1_lite" },
+  veo_3_1_lite: { displayName: "Veo 3.1 Lite", hg: "veo_3_1_lite" },
+  veo_3_1: { displayName: "Veo 3.1", hg: "veo_3_1" },
+  veo_3_1_quality: { displayName: "Veo 3.1", hg: "veo_3_1" },
+  veo_3_fast: { displayName: "Veo 3 Fast", hg: "veo_3_fast" },
+  veo_3: { displayName: "Veo 3", hg: "veo_3" },
+  veo_2: { displayName: "Veo 2", hg: "veo_2" },
+  veo_2_fast: { displayName: "Veo 2", hg: "veo_2" },
+  veo_2_quality: { displayName: "Veo 2", hg: "veo_2" },
+  gemini_omni: { displayName: "Gemini Omni", hg: "macaron_cookie" },
+  macaron_cookie: { displayName: "Gemini Omni", hg: "macaron_cookie" },
+  nano_banana: { displayName: "Nano Banana", hg: "nano_banana" },
+  nano_banana_2: { displayName: "Nano Banana 2", hg: "nano_banana_2" },
+  nano_banana_pro: { displayName: "Nano Banana Pro", hg: "nano_banana_pro" },
+  imagen_3: { displayName: "Imagen 3", hg: "imagen_3" },
+  imagen_4: { displayName: "Imagen 4", hg: "imagen_4" },
+};
 
 /** Escapes regular expression metacharacters in literal labels. */
 function escapeRegex(s: unknown): string {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Normalizes a model string into an underscore-separated lookup key. */
+function modelAliasKey(raw: string): string {
+  return raw
+    .trim()
+    .split(/[\s\-_.]+/)
+    .filter(Boolean)
+    .map((part) => part.toLowerCase())
+    .join("_");
+}
+
+/** Builds anchored `^...$` matchers for model `displayName` and `hg` values. */
+function buildModelMatchers(rawModel: string): {
+  displayName: string;
+  expectedHg: string | null;
+  labelRe: RegExp;
+  hgRe: RegExp;
+} {
+  const trimmed = rawModel.trim();
+  const alias = MODEL_FAMILY_ALIASES[modelAliasKey(trimmed)];
+  const displayName = alias ? alias.displayName : trimmed;
+  const flexLabel = escapeRegex(displayName).replace(/[-_\s]+/g, "[\\s\\-_]*");
+  const labelRe = new RegExp(`^${flexLabel}$`, "i");
+  const hgPattern = alias
+    ? `^${escapeRegex(alias.hg)}$`
+    : `^(?:${flexLabel}|${escapeRegex(modelAliasKey(trimmed))})$`;
+  return {
+    displayName,
+    expectedHg: alias ? alias.hg : null,
+    labelRe,
+    hgRe: new RegExp(hgPattern, "i"),
+  };
+}
+
+/** Resolves a requested aspect ratio string against `SKb` (`SKB_ASPECT_RATIO_MAP`). */
+function resolveExpectedAspect(rawAspect: string): {
+  enumValue: string | null;
+  toggleRe: RegExp;
+} {
+  const trimmed = rawAspect.trim();
+  const direct = SKB_ASPECT_RATIO_MAP[trimmed];
+  if (direct) {
+    const toggleRe =
+      trimmed === "16:9"
+        ? /^(?:16:9|landscape)$/i
+        : trimmed === "9:16"
+          ? /^(?:9:16|portrait)$/i
+          : trimmed === "1:1"
+            ? /^(?:1:1|square)$/i
+            : new RegExp(`^(?:${escapeRegex(trimmed)}|${escapeRegex(direct)})$`, "i");
+    return { enumValue: direct, toggleRe };
+  }
+  const upper = trimmed.toUpperCase();
+  if (upper === "LANDSCAPE") {
+    return { enumValue: "LANDSCAPE", toggleRe: /^(?:16:9|landscape)$/i };
+  }
+  if (upper === "PORTRAIT") {
+    return { enumValue: "PORTRAIT", toggleRe: /^(?:9:16|portrait)$/i };
+  }
+  if (upper === "SQUARE") {
+    return { enumValue: "SQUARE", toggleRe: /^(?:1:1|square)$/i };
+  }
+  if (SKB_ASPECT_ENUM_VALUES.has(upper)) {
+    const pair = Object.entries(SKB_ASPECT_RATIO_MAP).find(([, v]) => v === upper);
+    const lbl = pair ? pair[0] : trimmed;
+    return {
+      enumValue: upper,
+      toggleRe: new RegExp(`^(?:${escapeRegex(lbl)}|${escapeRegex(upper)})$`, "i"),
+    };
+  }
+  return {
+    enumValue: null,
+    toggleRe: new RegExp(`^${escapeRegex(trimmed)}$`, "i"),
+  };
+}
+
+/** Resolves the active `PromptStateController` (`Qa`) from the project composer. */
+function resolvePromptState(): PromptStateController | null {
+  const projPage = findProjectPageInstance();
+  const liveUx = findLiveBasePromptBox(false, findPromptBoxHost(projPage));
+  return liveUx?.Qa ?? projPage?.Qa ?? runtimeState.promptState ?? null;
+}
+
+/** Reads the model picker option array from `Qa.model.Wqa()` or `Qa.model.Yqa()`. */
+function readModelOptions(qa: PromptStateController | null): ReadonlyArray<{
+  readonly hg?: string;
+  readonly displayName?: string;
+  readonly isDisabled?: boolean;
+}> | null {
+  const opts = qa?.model?.Wqa?.() ?? qa?.model?.Yqa?.();
+  return Array.isArray(opts) ? opts : null;
+}
+
+/** Reads the active model family identifier from `Qa.model.ala()` or `Qa.model.cla()`. */
+function readActiveModelId(qa: PromptStateController | null): string {
+  const id =
+    qa?.model?.ala?.() ?? qa?.model?.cla?.() ?? qa?.model?.family?.()?.id ?? "";
+  return typeof id === "string" ? id.trim() : "";
 }
 
 /** Walks up from `tb` to locate the enclosing composer panel container. */
@@ -53,17 +203,49 @@ function clickByText(
   const interactiveSel =
     'button, [role="tab"], [role="option"], [role="menuitem"], [role="radio"]';
   const isExcludedButton = (el: Element): boolean => {
+    if (el.closest("flow-menu-item-actions")) return true;
     const aria = (el.getAttribute("aria-label") || "").trim();
     return aria === "Select model family" || aria === "Settings trigger";
+  };
+  const isDisabledMenuItem = (menuItem: Element): boolean => {
+    const attr = menuItem.getAttribute("disabled");
+    if (attr === "true" || (attr !== null && attr !== "false")) return true;
+    if (menuItem.getAttribute("aria-disabled") === "true") return true;
+    const innerBtn = menuItem.querySelector(
+      ".flow-internal-menu-item, .flow-internal-menu-item-link, button",
+    );
+    return Boolean(innerBtn && !isVisibleEnabled(innerBtn));
   };
   for (const root of searchRoots) {
     const els = Array.from(
       root.querySelectorAll(
-        'button, [role="tab"], [role="option"], [role="menuitem"], [role="radio"], .model-select-option',
+        'flow-menu-item, .model-select-option, button, [role="tab"], [role="option"], [role="menuitem"], [role="menuitemradio"], [role="radio"]',
       ),
     );
     const hit = els.find((el): el is HTMLElement => {
       if (!isVisibleEnabled(el) || isExcludedButton(el)) return false;
+      const menuItem = el.matches("flow-menu-item, .model-select-option")
+        ? el
+        : el.closest("flow-menu-item, .model-select-option");
+      if (menuItem) {
+        if (isDisabledMenuItem(menuItem)) return false;
+        const labelNode = menuItem.querySelector(".label");
+        const primaryLabel = (
+          (labelNode ? elText(labelNode) : "") ||
+          menuItem.getAttribute("label") ||
+          ""
+        ).trim();
+        const menuAria = (
+          el.getAttribute("aria-label") ||
+          menuItem.getAttribute("aria-label") ||
+          ""
+        ).trim();
+        if (primaryLabel) {
+          return (
+            regex.test(primaryLabel) || (menuAria.length > 0 && regex.test(menuAria))
+          );
+        }
+      }
       if (!el.matches(interactiveSel)) {
         const inner = el.querySelector(interactiveSel);
         if (inner && (!isVisibleEnabled(inner) || isExcludedButton(inner))) {
@@ -71,6 +253,8 @@ function clickByText(
         }
       }
       const aria = (el.getAttribute("aria-label") || "").trim();
+      const toggleNode = el.querySelector(".toggle-text");
+      const toggleLabel = toggleNode ? elText(toggleNode).trim() : "";
       const raw = elText(el);
       const tail =
         raw
@@ -78,7 +262,12 @@ function clickByText(
           .map((s) => s.trim())
           .filter(Boolean)
           .pop() || "";
-      return regex.test(aria) || regex.test(raw) || regex.test(tail);
+      return (
+        (toggleLabel.length > 0 && regex.test(toggleLabel)) ||
+        (aria.length > 0 && regex.test(aria)) ||
+        regex.test(raw) ||
+        regex.test(tail)
+      );
     });
     if (hit) {
       const targetBtn = hit.matches(interactiveSel)
@@ -256,7 +445,15 @@ export async function setupGeneration(
         "flow-prompt-box-settings, .settings-content-overlay",
       ) || scope;
     const mode = String(cfg.mode || "video").toLowerCase();
-    if (mode === "image" || mode === "character" || mode === "scene") {
+    const wantImageMode =
+      mode === "image" || mode === "character" || mode === "scene";
+    const effectiveVideoType = !wantImageMode
+      ? String(cfg.video_type || "ingredients").trim().toLowerCase()
+      : "";
+    const wantVideoIngredients =
+      !wantImageMode && !/^(?:frames?|video[\s_-]*frames?)$/i.test(effectiveVideoType);
+
+    if (wantImageMode) {
       clickInsideGroup(
         "Mode",
         /\b(image|images|create image)\b/i,
@@ -272,36 +469,43 @@ export async function setupGeneration(
     await delay(140);
 
     try {
-      if (cfg.video_type && mode === "video") {
-        const vt = String(cfg.video_type).trim();
-        const vtRe = /ingredient/i.test(vt)
-          ? /\bingredients?\b/i
-          : /\bframes?\b/i;
-        if (clickInsideGroup("Video type", vtRe, settingsScope())) {
-          await delay(120);
+      if (!wantImageMode) {
+        const qaMode = String(resolvePromptState()?.config?.mode?.() || "");
+        const needsSwitch = wantVideoIngredients
+          ? !qaMode || qaMode === "VIDEO_FRAMES" || Boolean(cfg.video_type)
+          : qaMode !== "VIDEO_FRAMES";
+        if (needsSwitch) {
+          const vtRe = wantVideoIngredients
+            ? /^(?:ingredients?|video[\s_-]*ingredients?)$/i
+            : /^(?:frames?|video[\s_-]*frames?)$/i;
+          if (clickInsideGroup("Video type", vtRe, settingsScope())) {
+            await delay(120);
+          }
         }
       }
     } catch {
       // Optional video_type control may not be rendered.
     }
 
-    try {
-      if (cfg.aspect) {
-        const a = String(cfg.aspect).trim();
-        const aspectRe =
-          a === "16:9"
-            ? /\b16:9\b|\blandscape\b/i
-            : a === "9:16"
-              ? /\b9:16\b|\bportrait\b/i
-              : a === "1:1"
-                ? /\b1:1\b|\bsquare\b/i
-                : new RegExp(escapeRegex(a), "i");
-        if (clickInsideGroup("Aspect ratio", aspectRe, settingsScope())) {
+    const rawAspect = cfg.aspect != null ? String(cfg.aspect).trim() : "";
+    const aspectSpec = rawAspect ? resolveExpectedAspect(rawAspect) : null;
+    if (aspectSpec) {
+      if (
+        !aspectSpec.enumValue ||
+        (!wantImageMode && aspectSpec.enumValue === "SQUARE")
+      ) {
+        if (settingsOpen()) {
+          await closeSettingsAndMenus();
+        }
+        return { ok: false, error: "unsupported_aspect_ratio" };
+      }
+      try {
+        if (clickInsideGroup("Aspect ratio", aspectSpec.toggleRe, settingsScope())) {
           await delay(120);
         }
+      } catch {
+        // Optional aspect ratio control may be unavailable.
       }
-    } catch {
-      // Optional aspect ratio control may be unavailable.
     }
 
     try {
@@ -354,13 +558,23 @@ export async function setupGeneration(
       // Optional resolution control may be unavailable.
     }
 
+    const rawModel = cfg.model != null ? String(cfg.model).trim() : "";
+    const modelSpec = rawModel ? buildModelMatchers(rawModel) : null;
+    let hadModelPickerItems = false;
+    let clickedModelItem = false;
     try {
-      if (cfg.model) {
-        const flexPattern = escapeRegex(String(cfg.model).trim()).replace(
-          /[-_\s]+/g,
-          "[\\s\\-_]*",
-        );
-        const modelRe = new RegExp(flexPattern, "i");
+      if (modelSpec) {
+        const preQa = resolvePromptState();
+        const preOptions = readModelOptions(preQa);
+        const matchedOption = preOptions?.find((opt) => {
+          const disp = String(opt?.displayName || "").trim();
+          const hg = String(opt?.hg || "").trim();
+          return modelSpec.labelRe.test(disp) || modelSpec.hgRe.test(hg);
+        });
+        const exactDisplay = String(matchedOption?.displayName || "").trim();
+        const menuRe = exactDisplay
+          ? new RegExp(`^${escapeRegex(exactDisplay)}$`, "i")
+          : modelSpec.labelRe;
         const familyBtn = document.querySelector(
           'button[aria-label="Select model family"]',
         );
@@ -381,11 +595,23 @@ export async function setupGeneration(
             if (pickerPane) break;
           }
           if (pickerPane) {
-            clickByText(modelRe, pickerPane, false);
+            hadModelPickerItems =
+              pickerPane.querySelectorAll(
+                'flow-menu-item, .model-select-option, [role="menuitem"], [role="option"]',
+              ).length > 0;
+            clickedModelItem =
+              clickByText(menuRe, pickerPane, false) ||
+              (menuRe !== modelSpec.labelRe &&
+                clickByText(modelSpec.labelRe, pickerPane, false)) ||
+              clickByText(modelSpec.hgRe, pickerPane, false);
           }
           await delay(120);
           await closeModelMenu();
-        } else if (clickByText(modelRe, settingsScope(), false)) {
+        } else if (
+          clickByText(menuRe, settingsScope(), false) ||
+          clickByText(modelSpec.hgRe, settingsScope(), false)
+        ) {
+          clickedModelItem = true;
           await delay(120);
         }
       }
@@ -395,7 +621,7 @@ export async function setupGeneration(
 
     try {
       // Some models show the resolution toggle and the length slider only after the model changes.
-      if (mode === "video" && cfg.model) {
+      if (!wantImageMode && modelSpec) {
         if (cfg.resolution) {
           const rRe = new RegExp(escapeRegex(String(cfg.resolution).trim()), "i");
           if (clickInsideGroup("Video resolution", rRe, settingsScope())) {
@@ -414,29 +640,53 @@ export async function setupGeneration(
     }
 
     try {
-      const liveUx = findLiveBasePromptBox(
-        false,
-        findPromptBoxHost(findProjectPageInstance()),
-      );
-      const curMode = String(liveUx?.Qa?.config?.mode?.() || "");
-      const wantImageMode =
-        mode === "image" || mode === "character" || mode === "scene";
+      let qa = resolvePromptState();
+      let curMode = String(qa?.config?.mode?.() || "");
       if (wantImageMode && curMode && curMode !== "IMAGE") {
         clickInsideGroup("Mode", /\bimage\b/i, settingsScope());
         await delay(140);
-      } else if (!wantImageMode && curMode && !curMode.startsWith("VIDEO")) {
-        clickInsideGroup("Mode", /\bvideo\b/i, settingsScope());
-        await delay(140);
-        if (cfg.video_type) {
-          const vt = String(cfg.video_type).trim();
-          const vtRe = /ingredient/i.test(vt)
-            ? /\bingredients?\b/i
-            : /\bframes?\b/i;
-          if (clickInsideGroup("Video type", vtRe, settingsScope())) {
+      } else if (!wantImageMode) {
+        if (curMode && !curMode.startsWith("VIDEO")) {
+          clickInsideGroup("Mode", /\bvideo\b/i, settingsScope());
+          await delay(140);
+          qa = resolvePromptState();
+          curMode = String(qa?.config?.mode?.() || "");
+        }
+        if (wantVideoIngredients && curMode === "VIDEO_FRAMES") {
+          if (
+            clickInsideGroup(
+              "Video type",
+              /^(?:ingredients?|video[\s_-]*ingredients?)$/i,
+              settingsScope(),
+            )
+          ) {
+            await delay(120);
+          }
+        } else if (!wantVideoIngredients && curMode && curMode !== "VIDEO_FRAMES") {
+          if (
+            clickInsideGroup(
+              "Video type",
+              /^(?:frames?|video[\s_-]*frames?)$/i,
+              settingsScope(),
+            )
+          ) {
             await delay(120);
           }
         }
       }
+      if (
+        aspectSpec?.enumValue &&
+        typeof qa?.config?.aspectRatio === "function" &&
+        String(qa.config.aspectRatio() || "") !== aspectSpec.enumValue
+      ) {
+        if (clickInsideGroup("Aspect ratio", aspectSpec.toggleRe, settingsScope())) {
+          await delay(120);
+        }
+      }
+      const liveUx = findLiveBasePromptBox(
+        false,
+        findPromptBoxHost(findProjectPageInstance()),
+      );
       if (
         cfg.count != null &&
         typeof liveUx?.Qa?.config?.outputCount === "function" &&
@@ -480,6 +730,61 @@ export async function setupGeneration(
       }
     } catch {
       // Ignore non-fatal post-settings sync check.
+    }
+
+    const verifiedQa = resolvePromptState();
+    if (aspectSpec?.enumValue && typeof verifiedQa?.config?.aspectRatio === "function") {
+      const actualAspect = String(verifiedQa.config.aspectRatio() || "").trim();
+      if (actualAspect && actualAspect !== aspectSpec.enumValue) {
+        if (settingsOpen()) {
+          await closeSettingsAndMenus();
+        }
+        return { ok: false, error: "unsupported_aspect_ratio" };
+      }
+    }
+
+    if (modelSpec) {
+      const postOptions = readModelOptions(verifiedQa);
+      const activeId = readActiveModelId(verifiedQa);
+      const activeFamilyName = String(
+        verifiedQa?.model?.family?.()?.displayName || "",
+      ).trim();
+      let modelVerified = true;
+      if (postOptions && postOptions.length > 0) {
+        const matchedOpt = postOptions.find((opt) => {
+          const disp = String(opt?.displayName || "").trim();
+          const hg = String(opt?.hg || "").trim();
+          return modelSpec.labelRe.test(disp) || modelSpec.hgRe.test(hg);
+        });
+        if (!matchedOpt || matchedOpt.isDisabled === true) {
+          modelVerified = false;
+        } else if (activeId) {
+          const targetHg = String(matchedOpt.hg || "").trim();
+          if (
+            targetHg
+              ? activeId !== targetHg
+              : !modelSpec.hgRe.test(activeId) && !modelSpec.labelRe.test(activeId)
+          ) {
+            modelVerified = false;
+          }
+        }
+      } else if (activeId) {
+        if (
+          !modelSpec.hgRe.test(activeId) &&
+          !modelSpec.labelRe.test(activeId) &&
+          !(activeFamilyName && modelSpec.labelRe.test(activeFamilyName))
+        ) {
+          modelVerified = false;
+        }
+      } else if (hadModelPickerItems && !clickedModelItem) {
+        modelVerified = false;
+      }
+      if (!modelVerified) {
+        if (settingsOpen()) {
+          await closeSettingsAndMenus();
+        }
+        return { ok: false, error: "unsupported_model" };
+      }
     }
 
     if (settingsOpen()) {
