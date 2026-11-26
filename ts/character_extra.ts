@@ -468,7 +468,9 @@ async function saveCustomVoice(
 
 /** Returns the text of the character voice button. */
 function voiceButtonText(): string {
-  return elText(document.querySelector("flow-character-voice-button")).replace(/\s+/g, " ").trim();
+  const button = document.querySelector("flow-character-voice-button");
+  const name = cleanVoiceLabel(button?.querySelector(".voice-card-name, .asset-title") ?? null);
+  return (name || cleanVoiceLabel(button) || elText(button)).replace(/\s+/g, " ").trim();
 }
 
 /** Selects a base voice, optionally saves a custom voice with sample dialogue and performance text, and adds it to the character. */
@@ -657,35 +659,51 @@ async function auditionVoice(req: CharacterExtraOpRequest): Promise<Record<strin
   if (!base) return { ok: false, error: "audition_needs_voice" };
   if (sample.length > 120) return { ok: false, error: "voice_sample_over_120_characters" };
   const beforeOpen = new Set(knownAudioUrls());
-  const pane = await openDialog();
-  if (!pane) return { ok: false, error: "voice_dialog_not_available" };
-  const paneSrcBeforeSelect = previewPaneAudioSrc(pane, false);
+  let openedPane = await openDialog();
+  if (!openedPane) return { ok: false, error: "voice_dialog_not_available" };
+  let paneSrcBeforeSelect = previewPaneAudioSrc(openedPane, false);
   let before = new Set(knownAudioUrls());
-  const selected = await selectRow(pane, base);
-  if (!selected) {
+  let selected = await selectRow(openedPane, base);
+  if (selected && !selected.wasActive && !voicePane()) {
+    openedPane = await openDialog();
+    const other = openedPane && renderedRows(openedPane).find((r) => !voiceRowMatches(r, base));
+    if (!openedPane || (other && !(await selectRow(openedPane, other.name)))) {
+      await dismissOverlay();
+      return { ok: false, error: "voice_dialog_not_available" };
+    }
+    paneSrcBeforeSelect = previewPaneAudioSrc(openedPane, false);
+    before = new Set(knownAudioUrls());
+    selected = await selectRow(openedPane, base);
+  }
+  if (!selected || !openedPane) {
     await dismissOverlay();
     return { ok: false, error: `voice_not_found:${base}` };
   }
+  const pane = openedPane;
+  const activeVoice = selected;
+  const sampleSuffix = `/samples/${activeVoice.name.toLowerCase()}.wav`;
+  const matchPreloaded = (): string =>
+    activeVoice.custom ? "" : knownAudioUrls(false).find((u) => u.toLowerCase().includes(sampleSuffix)) || "";
   const pollAuditionSrc = (requireNew: boolean): string => {
-    const paneSrc = previewPaneAudioSrc(voicePane() ?? pane, selected.custom);
-    const allowPane = requireNew ? !before.has(paneSrc) : (selected.wasActive || paneSrc !== paneSrcBeforeSelect);
+    const paneSrc = previewPaneAudioSrc(voicePane() ?? pane, activeVoice.custom);
+    const allowPane = requireNew ? !before.has(paneSrc) : (activeVoice.wasActive || paneSrc !== paneSrcBeforeSelect);
     const direct = paneSrc && allowPane ? paneSrc : "";
-    const baseline = !requireNew && selected.wasActive ? beforeOpen : before;
-    return direct || knownAudioUrls(selected.custom).find((u) => !baseline.has(u)) || "";
+    const baseline = !requireNew && activeVoice.wasActive ? beforeOpen : before;
+    return direct || knownAudioUrls(activeVoice.custom).find((u) => !baseline.has(u)) || "";
   };
   let src = "";
   if (!sample && !performance) {
     for (let i = 0; i < 20 && !src; i++) {
-      src = pollAuditionSrc(false);
+      src = pollAuditionSrc(false) || (i >= 4 ? matchPreloaded() : "");
       if (!src) await delay(150);
     }
-    if (!src && selected.custom) src = await resolveCustomAudioUrl(selected.mediaId ?? selected.id);
+    if (!src && activeVoice.custom) src = await resolveCustomAudioUrl(activeVoice.mediaId ?? activeVoice.id);
     if (!src) {
       const play = paneButton(voicePane() ?? pane, /preview/i);
       if (play) {
         play.click();
-        for (let i = 0; i < 40 && !src; i++) { await delay(250); src = pollAuditionSrc(false); }
-      }
+        for (let i = 0; i < 40 && !src; i++) { await delay(250); src = pollAuditionSrc(false) || matchPreloaded(); }
+      } else src = matchPreloaded();
     }
   } else {
     const livePane = voicePane() ?? pane;
@@ -694,8 +712,8 @@ async function auditionVoice(req: CharacterExtraOpRequest): Promise<Record<strin
     if (sample && sampleEl) setNativeValue(sampleEl, sample);
     if (performance && perfEl) setNativeValue(perfEl, performance);
     await delay(400);
-    before = new Set(knownAudioUrls(selected.custom));
-    const initialPaneSrc = previewPaneAudioSrc(voicePane() ?? livePane, selected.custom);
+    before = new Set(knownAudioUrls(activeVoice.custom));
+    const initialPaneSrc = previewPaneAudioSrc(voicePane() ?? livePane, activeVoice.custom);
     if (initialPaneSrc) before.add(initialPaneSrc);
     const play = paneButton(voicePane() ?? livePane, /preview/i);
     if (!play) { await dismissOverlay(); return { ok: false, error: "voice_preview_button_not_found" }; }
@@ -709,7 +727,7 @@ async function auditionVoice(req: CharacterExtraOpRequest): Promise<Record<strin
     result = { ok: false, error: `voice_audition_fetch_failed:${String(e)}` };
   }
   await dismissOverlay();
-  return { ...result, voice: selected.name };
+  return { ...result, voice: activeVoice.name };
 }
 
 /** Returns the character preview panel root outside `flow-character-prompt-box`, or null. */
