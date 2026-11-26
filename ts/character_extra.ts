@@ -300,9 +300,9 @@ async function saveCustomVoice(
 
 /** Returns the text of the character voice button. */
 function voiceButtonText(): string {
-  return elText(document.querySelector("flow-character-voice-button"))
-    .replace(/\s+/g, " ")
-    .trim();
+  const button = document.querySelector("flow-character-voice-button");
+  const name = elText(button?.querySelector(".voice-card-name")).trim();
+  return (name || elText(button)).replace(/\s+/g, " ").trim();
 }
 
 /** Selects a base voice, optionally saves a custom voice with sample dialogue and performance text, and adds it to the character. */
@@ -435,6 +435,15 @@ async function auditionVoice(
     return { ok: false, error: "voice_sample_over_120_characters" };
   const pane = await openDialog();
   if (!pane) return { ok: false, error: "voice_dialog_not_available" };
+  // Flow applies the voice and closes the dialog when the row of the current voice is clicked.
+  // Select another row first so that the click on the base voice only opens its preview pane.
+  if (voiceButtonText().toLowerCase() === base.toLowerCase()) {
+    const other = renderedRows(pane).find((r) => r.name.toLowerCase() !== base.toLowerCase());
+    if (other && !(await selectRow(pane, other.name))) {
+      await dismissOverlay();
+      return { ok: false, error: `voice_not_found:${other.name}` };
+    }
+  }
   if (!(await selectRow(pane, base))) {
     await dismissOverlay();
     return { ok: false, error: `voice_not_found:${base}` };
@@ -452,9 +461,15 @@ async function auditionVoice(
   }
   play.click();
   let src = "";
+  const generated = Boolean(sample || performance);
+  const sampleSuffix = `/samples/${base.toLowerCase()}.wav`;
   for (let i = 0; i < 180 && !src; i++) {
     await delay(500);
     src = knownAudioUrls().find((u) => !before.has(u)) || "";
+    // Without custom text, Flow plays the base voice sample that it loaded when the row was selected.
+    if (!src && !generated && i >= 6) {
+      src = knownAudioUrls().find((u) => u.toLowerCase().includes(sampleSuffix)) || "";
+    }
   }
   let result: Record<string, unknown>;
   try {
