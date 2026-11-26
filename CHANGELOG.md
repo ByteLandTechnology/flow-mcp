@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.2](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.2.1...v2.2.2) (2026-11-26)
+
+
+### Bug Fixes
+
+* **flow:** repair voice audition for base voices ([018f49b](https://github.com/ByteLandTechnology/flow-mcp/commit/018f49bcb390f9e0602563a01d15d21e19d8e1de))
+
 ## [2.2.1](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.2.0...v2.2.1) (2026-11-24)
 
 
