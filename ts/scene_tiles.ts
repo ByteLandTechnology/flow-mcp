@@ -8,12 +8,26 @@ import { findMediaContainer, isTrashedTile, legacyMedia, parentCollectionId } fr
 import { frontendBuild, readBuildLabel, snapshotFormat } from "./frontend_builds";
 import type { FlowMediaPayload, FlowTile, SceneClipItem, StoreProbeCheck } from "./types";
 
+/** Parsed scene ID and clip workflow ID from a `<sceneId>:<wfId>` clip asset ID. */
+export interface SceneClipId {
+  /** Identifier of the parent scene tile. */
+  sceneId: string;
+  /** Workflow identifier of the clip inside the scene. */
+  workflowId: string;
+}
+
 /** Fields that identify the contents of a scene tile. */
 export interface SceneTileFormat {
   /** Clip array on a scene tile. */
   clips: string;
   /** Workflow history map on a scene tile. */
   history: string;
+  /** Start trim timestamp in seconds on a scene clip item (`Ji`). */
+  clipStart?: string;
+  /** End trim timestamp in seconds on a scene clip item (`Ci`). */
+  clipEnd?: string;
+  /** Total clip duration in seconds on a scene clip item (`nc`). */
+  clipDuration?: string;
 }
 
 /** Native scene builder and timeline descriptors for clip selection and extend checks. */
@@ -32,6 +46,12 @@ export interface SceneBuilderFormat {
   clips: string;
   /** Extend disabled reason signal on the controller (`Yo`). */
   extendDisabledReason: string;
+  /** Active extend-composing workflow signal on the controller (`TL`). */
+  activeExtendClip: string;
+  /** Prototype method on the controller that exits extend-composing mode (`rE`). */
+  exitExtend: string;
+  /** Models signal query on the controller (`Od`). */
+  modelsQuery: string;
 }
 
 /** Portrait `9:16` numeric aspect ratio expected by Flow's `create_scene` mutation. */
@@ -39,6 +59,31 @@ const PORTRAIT_ASPECT_RATIO = 0.5625;
 
 /** Landscape `16:9` numeric aspect ratio expected by Flow's `create_scene` mutation. */
 const LANDSCAPE_ASPECT_RATIO = 16 / 9;
+
+/** Splits a `<sceneId>:<wfId>` clip asset ID into its scene and workflow parts. */
+export function splitSceneClipId(id: string): SceneClipId | null {
+  const colonIdx = id.indexOf(":");
+  if (colonIdx <= 0 || colonIdx >= id.length - 1) return null;
+  const sceneId = id.slice(0, colonIdx);
+  const workflowId = id.slice(colonIdx + 1);
+  if (workflowId.includes(":")) return null;
+  return { sceneId, workflowId };
+}
+
+/** Reads verified trim bounds and duration in seconds from one scene clip item. */
+export function readSceneClipBounds(
+  clip: SceneClipItem | undefined,
+): { start: number | null; end: number | null; duration: number | null } {
+  const format = frontendBuild(readBuildLabel())?.projectStore.scene;
+  const rawStart = (format?.clipStart ? readOwn(clip, format.clipStart) : undefined) ?? clip?.Ji ?? clip?.Mh;
+  const rawEnd = (format?.clipEnd ? readOwn(clip, format.clipEnd) : undefined) ?? clip?.Ci ?? clip?.Eh;
+  const rawDur = (format?.clipDuration ? readOwn(clip, format.clipDuration) : undefined) ?? clip?.nc ?? clip?.rc;
+  return {
+    start: typeof rawStart === "number" ? rawStart : null,
+    end: typeof rawEnd === "number" ? rawEnd : null,
+    duration: typeof rawDur === "number" ? rawDur : null,
+  };
+}
 
 /** Returns the clip list and history of a scene in the active build. */
 export function sceneContents(tile: FlowTile) {
@@ -129,6 +174,28 @@ function resolveTimelineClass(
   return null;
 }
 
+/** Escapes regex metacharacters in `value`. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Returns true when `fnSource` accesses property `exportName` as an exact identifier. */
+function referencesExport(fnSource: string, exportName: string): boolean {
+  const escaped = escapeRegExp(exportName);
+  return new RegExp(`(?:\\.|\\[\\s*["'])${escaped}(?:["']\\s*\\]|(?![\\w$]))`).test(fnSource);
+}
+
+/** Returns true when `controllerClass` defines `member` on its prototype or assigns `this.<member>`. */
+function controllerDefinesMember(
+  controllerClass: Function,
+  classSource: string,
+  member: string,
+): boolean {
+  if (typeof readOwn(controllerClass.prototype, member) === "function") return true;
+  const escaped = escapeRegExp(member);
+  return new RegExp(`\\bthis\\.${escaped}(?![\\w$])`).test(classSource);
+}
+
 /** Checks whether the Angular router registers a lazy `scene/:sceneId` loader for `controllerName`. */
 function hasDeferredSceneRoute(routes: unknown, controllerName: string): boolean {
   if (!Array.isArray(routes)) return false;
@@ -138,7 +205,7 @@ function hasDeferredSceneRoute(routes: unknown, controllerName: string): boolean
     if (typeof path === "string" && path.includes("scene/")) {
       for (const loaderKey of ["mh", "loadComponent"]) {
         const loader = readOwn(route, loaderKey);
-        if (typeof loader === "function" && Function.prototype.toString.call(loader).includes(`.${controllerName}`)) {
+        if (typeof loader === "function" && referencesExport(Function.prototype.toString.call(loader), controllerName)) {
           return true;
         }
       }
@@ -164,12 +231,16 @@ export function resolveSceneBuilderController(
       return { controller: slot as Record<string, unknown>, format };
     }
     const player = readOwn(slot, format.player);
+    const modelsQuery = readOwn(slot, format.modelsQuery);
     if (
       player &&
       typeof player === "object" &&
       typeof readOwn(player, format.playerReady) === "function" &&
       typeof readOwn(slot, format.clips) === "function" &&
-      typeof readOwn(slot, format.extendDisabledReason) === "function"
+      typeof readOwn(slot, format.extendDisabledReason) === "function" &&
+      typeof readOwn(slot, format.activeExtendClip) === "function" &&
+      typeof readOwn(slot, format.exitExtend) === "function" &&
+      Boolean(modelsQuery && typeof readOwn(modelsQuery, "isPending") === "function")
     ) {
       return { controller: slot as Record<string, unknown>, format };
     }
@@ -216,6 +287,32 @@ export function sceneBuilderChecks(build: string | null): StoreProbeCheck[] {
     }];
   }
 
+  const classSource = Function.prototype.toString.call(controllerClass);
+  if (typeof readOwn(controllerClass.prototype, format.exitExtend) !== "function") {
+    return [{
+      name: "scene_builder",
+      ok: false,
+      detail: `missing method ${format.exitExtend} on ${format.controller}`,
+    }];
+  }
+  const requiredFields = [
+    format.player,
+    format.clips,
+    format.extendDisabledReason,
+    format.activeExtendClip,
+    format.modelsQuery,
+  ];
+  const missingField = requiredFields.find(
+    (field) => !controllerDefinesMember(controllerClass, classSource, field),
+  );
+  if (missingField) {
+    return [{
+      name: "scene_builder",
+      ok: false,
+      detail: `missing member ${missingField} on ${format.controller}`,
+    }];
+  }
+
   if (!host) {
     return [{
       name: "scene_builder",
@@ -228,6 +325,7 @@ export function sceneBuilderChecks(build: string | null): StoreProbeCheck[] {
   const controller = resolved?.controller;
   const player = controller ? readOwn(controller, format.player) : undefined;
   const selectedSignal = player ? readOwn(player, format.selectedClip) : undefined;
+  const modelsQuery = controller ? readOwn(controller, format.modelsQuery) : undefined;
   const liveOk = Boolean(
     controller &&
       player &&
@@ -235,7 +333,11 @@ export function sceneBuilderChecks(build: string | null): StoreProbeCheck[] {
       typeof readOwn(player, format.playerReady) === "function" &&
       typeof readOwn(selectedSignal, "set") === "function" &&
       typeof readOwn(controller, format.clips) === "function" &&
-      typeof readOwn(controller, format.extendDisabledReason) === "function",
+      typeof readOwn(controller, format.extendDisabledReason) === "function" &&
+      typeof readOwn(controller, format.activeExtendClip) === "function" &&
+      typeof readOwn(controller, format.exitExtend) === "function" &&
+      modelsQuery &&
+      typeof readOwn(modelsQuery, "isPending") === "function",
   );
   return [{
     name: "scene_builder",

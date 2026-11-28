@@ -7,7 +7,7 @@ import { readOwn } from "./angular";
 import { characterPersonalityNotes, characterVoice } from "./character_bio";
 import { activeProjectStoreFormat, snapshotFormat } from "./frontend_builds";
 import { currentProjectStore, projectInRoute } from "./project_store";
-import { sceneContents } from "./scene_tiles";
+import { readSceneClipBounds, sceneContents } from "./scene_tiles";
 import {
   asHttpOrDataUrl,
   characterLookMedia,
@@ -547,39 +547,36 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
           ? cachedClipVideoUrl
           : tileClipUrl || cachedClipVideoUrl || null;
       const clipUrl = mNotReady ? null : rawClipUrl;
+      const clipBounds = readSceneClipBounds(clip);
       const trimStartVal =
-        typeof clip?.Ji === "number" ? clip.Ji :
-        typeof mObj?.Jc === "number" ? mObj.Jc :
-        typeof mObj?.Ac === "number"
-          ? mObj.Ac
-          : typeof mObj?.Cg === "number"
-            ? mObj.Cg
-            : typeof clip?.Mh === "number"
-              ? clip.Mh
-              : null;
+        clipBounds.start ??
+        (typeof mObj?.Jc === "number"
+          ? mObj.Jc
+          : typeof mObj?.Ac === "number"
+            ? mObj.Ac
+            : typeof mObj?.Cg === "number"
+              ? mObj.Cg
+              : null);
       const trimEndVal =
-        typeof clip?.Ci === "number" ? clip.Ci :
-        typeof mObj?.Pc === "number" ? mObj.Pc :
-        typeof mObj?.Ic === "number"
-          ? mObj.Ic
-          : typeof mObj?.Rf === "number"
-            ? mObj.Rf
-            : typeof clip?.Eh === "number"
-              ? clip.Eh
-              : null;
+        clipBounds.end ??
+        (typeof mObj?.Pc === "number"
+          ? mObj.Pc
+          : typeof mObj?.Ic === "number"
+            ? mObj.Ic
+            : typeof mObj?.Rf === "number"
+              ? mObj.Rf
+              : null);
       const durVal =
-        typeof clip?.nc === "number" ? clip.nc :
-        typeof clip?.rc === "number"
-          ? clip.rc
-          : typeof mObj?.durationSeconds === "number"
-            ? mObj.durationSeconds
-            : typeof mObj?.duration === "number"
-              ? mObj.duration
-              : typeof mObj?.Lf === "number"
-                ? mObj.Lf
-                : sameMediaAsTop
-                  ? (topVideo?.duration ?? null)
-                  : null;
+        clipBounds.duration ??
+        (typeof mObj?.durationSeconds === "number"
+          ? mObj.durationSeconds
+          : typeof mObj?.duration === "number"
+            ? mObj.duration
+            : typeof mObj?.Lf === "number"
+              ? mObj.Lf
+              : sameMediaAsTop
+                ? (topVideo?.duration ?? null)
+                : null);
       const clipPrompt = mObj?.prompt
         ? String(mObj.prompt)
         : mObj?.inputs?.prompt
@@ -596,10 +593,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
                 ? String(st.hc)
                 : topVideo?.created_at ?? null;
       const clipName = String(
-        (mObj as FlowTile | null)?.displayName ||
-          topVideo?.name ||
-          st.displayName ||
-          "",
+        (mObj as FlowTile | null)?.displayName || topVideo?.name || "",
       );
       const clipEntry: Omit<SnapshotAssetItem, "collection_name"> = {
         id: clipAssetId,

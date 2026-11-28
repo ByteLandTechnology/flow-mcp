@@ -14,12 +14,18 @@ import {
   withLViewMapCapture,
 } from "./angular";
 import { findComposerWarning } from "./composer";
-import { delay, elText, hoverProbe, isDisabledProp, isVisibleEnabled, legacyTile, videoTrimBounds } from "./dom";
+import { delay, elText, hoverProbe, isDisabledProp, isTrashedTile, isVisibleEnabled, legacyMedia, legacyTile, videoTrimBounds } from "./dom";
 import { activeProjectStoreFormat } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
-import { findVideoTileByIdOrWorkflow, resolveSceneBuilderController } from "./scene_tiles";
+import {
+  findVideoTileByIdOrWorkflow,
+  readSceneClipBounds,
+  resolveSceneBuilderController,
+  sceneContents,
+  splitSceneClipId,
+} from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
-import type { FlowTile, VideoOpRequest } from "./types";
+import type { FlowTile, SceneClipItem, VideoOpRequest } from "./types";
 
 /** Checks whether an observed start trim bound matches the requested start time. */
 function startBoundMatches(
@@ -36,7 +42,6 @@ function startBoundMatches(
 function endBoundMatches(
   actual: number | null,
   expected: number | null,
-  before: number | null,
   duration: number | null,
 ): boolean {
   if (expected === null) {
@@ -45,11 +50,27 @@ function endBoundMatches(
       typeof actual === "number" &&
       typeof duration === "number" &&
       duration > 0 &&
-      (before === null || Math.abs(before - duration) > 0.01) &&
       Math.abs(actual - duration) <= 0.01
     );
   }
   return typeof actual === "number" && Math.abs(actual - expected) <= 0.01;
+}
+
+/** Finds the last active clip in `scene` whose `workflowId` equals `workflowId`. */
+function findLastSceneClip(
+  scene: FlowTile | undefined,
+  workflowId: string,
+): SceneClipItem | undefined {
+  if (!scene || isTrashedTile(scene) || String(scene.type ?? "").toUpperCase() !== "SCENE") {
+    return undefined;
+  }
+  const { clips } = sceneContents(scene);
+  for (let i = clips.length - 1; i >= 0; i -= 1) {
+    if (String(clips[i]?.workflowId ?? "") === workflowId) {
+      return clips[i];
+    }
+  }
+  return undefined;
 }
 
 /** Trims video clip timestamps or orchestrates scene-builder video extension. */
@@ -75,10 +96,98 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       return { ok: false, error: "store_not_bound" };
     }
     const id = String(req?.asset_id || "").trim();
+    const startSec =
+      typeof req.start_seconds === "number" ? req.start_seconds : null;
+    const endSec = typeof req.end_seconds === "number" ? req.end_seconds : null;
+    const clipRef = splitSceneClipId(id);
+    if (clipRef) {
+      const rawScene = tileMap.get(clipRef.sceneId);
+      const clip = findLastSceneClip(rawScene, clipRef.workflowId);
+      if (!rawScene || !clip) {
+        return { ok: false, error: `video_asset_not_found:${id}` };
+      }
+      const mediaId = String(clip.primaryMediaId ?? "").trim();
+      if (!mediaId) {
+        return { ok: false, error: `video_media_id_missing:${id}` };
+      }
+      const initialBounds = readSceneClipBounds(clip);
+      const hist = sceneContents(rawScene).history.get(clipRef.workflowId);
+      const rawHistMedia = Array.isArray(hist)
+        ? hist.find((m) => String(m?.id ?? "") === mediaId) ?? hist[0]
+        : undefined;
+      const histMedia = legacyMedia(rawHistMedia);
+      const topTile = legacyTile(findVideoTileByIdOrWorkflow(tileMap, clipRef.workflowId));
+      const duration =
+        initialBounds.duration ??
+        (typeof histMedia?.durationSeconds === "number"
+          ? histMedia.durationSeconds
+          : typeof histMedia?.duration === "number"
+            ? histMedia.duration
+            : typeof histMedia?.Lf === "number"
+              ? histMedia.Lf
+              : typeof topTile?.durationSeconds === "number"
+                ? topTile.durationSeconds
+                : typeof topTile?.duration === "number"
+                  ? topTile.duration
+                  : typeof topTile?.Fb?.Lf === "number"
+                    ? topTile.Fb.Lf
+                    : null);
+      const resolvedEnd = endSec ?? duration;
+      const change: Record<string, unknown> = {
+        type: "set_scene_clip_primary_media",
+        workflowId: clipRef.workflowId,
+        primaryMediaId: mediaId,
+        Ji: startSec ?? 0,
+      };
+      if (typeof resolvedEnd === "number") {
+        change.Ci = resolvedEnd;
+      }
+      await helper.mutate({
+        type: "single_tile",
+        Xc: clipRef.sceneId,
+        Uc: clipRef.sceneId,
+        Ve: change,
+      });
+      const matchesSceneClip = (
+        cand: { start: number | null; end: number | null; duration: number | null },
+      ): boolean =>
+        startBoundMatches(cand.start, startSec) &&
+        endBoundMatches(cand.end, endSec, cand.duration ?? duration);
+      await delay(300);
+      for (let i = 0; i < 30; i++) {
+        const currentClip = findLastSceneClip(
+          getMap()?.get(clipRef.sceneId),
+          clipRef.workflowId,
+        );
+        if (currentClip) {
+          const bounds = readSceneClipBounds(currentClip);
+          if (matchesSceneClip(bounds)) {
+            await delay(200);
+            const settledClip = findLastSceneClip(
+              getMap()?.get(clipRef.sceneId),
+              clipRef.workflowId,
+            );
+            const settled = readSceneClipBounds(settledClip);
+            if (settledClip && matchesSceneClip(settled)) {
+              return {
+                ok: true,
+                confirmed: true,
+                asset_id: id,
+                media_id: mediaId,
+                start_seconds: settled.start,
+                end_seconds: settled.end,
+              };
+            }
+          }
+        }
+        await delay(200);
+      }
+      return { ok: false, error: "trim_not_confirmed" };
+    }
+
     const rawTile = tileMap.get(id);
     if (!rawTile) return { ok: false, error: `video_asset_not_found:${id}` };
     const tile = legacyTile(rawTile);
-    const before = videoTrimBounds(tile);
     const mediaId = String(
       tile?.primaryMediaId ||
         tile?.Fb?.id ||
@@ -87,9 +196,6 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
         tile?.mediaId ||
         id,
     );
-    const startSec =
-      typeof req.start_seconds === "number" ? req.start_seconds : null;
-    const endSec = typeof req.end_seconds === "number" ? req.end_seconds : null;
     await helper.mutate({
       type: "single_tile",
       Xc: String(tile?.id ?? id),
@@ -121,7 +227,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
       cand: { start: number | null; end: number | null },
     ): boolean =>
       startBoundMatches(cand.start, startSec) &&
-      endBoundMatches(cand.end, endSec, before.end, duration);
+      endBoundMatches(cand.end, endSec, duration);
     await delay(300);
     for (let i = 0; i < 30; i++) {
       const current = getMap()?.get(id);
@@ -149,17 +255,18 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
 
   if (action === "prepare_extend") {
     const rawId = String(req?.asset_id || "").trim();
-    const colon = rawId.indexOf(":");
-    const impliedSceneId =
-      colon > 0 && colon < rawId.length - 1 ? rawId.slice(0, colon) : null;
-    const rawTargetId =
-      colon > 0 && colon < rawId.length - 1 ? rawId.slice(colon + 1) : rawId;
+    const clipRef = splitSceneClipId(rawId);
+    const impliedSceneId = clipRef ? clipRef.sceneId : null;
+    const rawTargetId = clipRef ? clipRef.workflowId : rawId;
     let sceneId = req?.scene_id ? String(req.scene_id).trim() : impliedSceneId;
     const matchedTile = findVideoTileByIdOrWorkflow(tileMap, rawTargetId);
     const targetWfId = matchedTile
       ? String(matchedTile.workflowId || matchedTile.id || rawTargetId)
       : rawTargetId;
 
+    // When a scene is already open and no different scene_id is requested,
+    // prepare_extend inspects the open scene and fails with scene_clip_not_found
+    // if targetWfId is absent rather than reusing that scene for an unrelated video.
     const activeScene = /\/scene\/([^/?#]+)/.exec(location.pathname)?.[1] ?? null;
     if (!activeScene || (sceneId && activeScene !== sceneId)) {
       if (!activeProjectStoreFormat()) {
@@ -303,16 +410,24 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     }
     const selectedWfId = String(readOwn(targetClip, "workflowId") ?? targetWfId);
     const clipIndex = clips.indexOf(targetClip);
-    const activeExtendFn = readOwn(controller, "TL");
-    const activeExtendWf =
-      typeof activeExtendFn === "function" ? activeExtendFn.call(controller) : undefined;
+    const activeExtendFn = readOwn(controller, sbFormat.activeExtendClip);
+    const exitExtendFn = readOwn(controller, sbFormat.exitExtend);
+    const modelsQuery = readOwn(controller, sbFormat.modelsQuery);
+    const isModelsPending = readOwn(modelsQuery, "isPending");
+    if (
+      typeof activeExtendFn !== "function" ||
+      typeof exitExtendFn !== "function" ||
+      typeof isModelsPending !== "function"
+    ) {
+      return { ok: false, error: "scene_builder_signals_missing" };
+    }
+    const activeExtendWf: unknown = activeExtendFn.call(controller);
     if (
       typeof activeExtendWf === "string" &&
       activeExtendWf &&
       activeExtendWf !== selectedWfId
     ) {
-      const exitExtendFn = readOwn(controller, "rE");
-      if (typeof exitExtendFn === "function") exitExtendFn.call(controller);
+      exitExtendFn.call(controller);
     }
 
     const player = readOwn(controller, sbFormat.player);
@@ -356,9 +471,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     };
     let disabledReason = readDisabledReason();
     for (let i = 0; i < 15 && disabledReason === "no-extension-model"; i++) {
-      const modelsQuery = readOwn(controller, "Od");
-      const isPending = readOwn(modelsQuery, "isPending");
-      if (typeof isPending === "function" && !isPending.call(modelsQuery)) break;
+      if (!Boolean(isModelsPending.call(modelsQuery))) break;
       await delay(100);
       disabledReason = readDisabledReason();
     }

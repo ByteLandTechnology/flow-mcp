@@ -475,6 +475,7 @@ export async function mutateAndVerify(
   store: ProjectStore,
   payload: Record<string, unknown>,
   verified: (tiles: Map<string, FlowTile>) => boolean,
+  onSubmitError?: (error: unknown) => void,
 ): Promise<Map<string, FlowTile> | null> {
   projectMutationPending = true;
   projectsToRefresh.add(store.projectId);
@@ -488,8 +489,12 @@ export async function mutateAndVerify(
   });
   const work = (async () => {
     try {
+      let submitFailed = false;
       // A request can reach Flow even if the response does not reach this page.
-      await submitProjectMutation(store, payload).catch(() => {});
+      await submitProjectMutation(store, payload).catch((err: unknown) => {
+        submitFailed = true;
+        onSubmitError?.(err);
+      });
       while (!timedOut && activeBoundStore() === store && isCurrent(store)) {
         const tiles = await refreshProjectStore(store).catch(() => null);
         if (timedOut) return null;
@@ -497,6 +502,7 @@ export async function mutateAndVerify(
           projectsToRefresh.delete(store.projectId);
           return tiles;
         }
+        if (submitFailed && tiles) return null;
         await Promise.race([delay(MUTATION_CHECK_INTERVAL_MS), timeout]);
       }
       return null;

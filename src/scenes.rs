@@ -63,20 +63,13 @@ fn start_bound_matches(actual: Option<f64>, expected: Option<f64>) -> bool {
 }
 
 /// Checks whether an observed end trim bound matches the requested end time.
-fn end_bound_matches(
-    actual: Option<f64>,
-    expected: Option<f64>,
-    before: Option<f64>,
-    duration: Option<f64>,
-) -> bool {
+fn end_bound_matches(actual: Option<f64>, expected: Option<f64>, duration: Option<f64>) -> bool {
     match expected {
         None => {
             actual.is_none()
-                || actual.zip(duration).is_some_and(|(act, dur)| {
-                    dur > 0.0
-                        && before.is_none_or(|b| (b - dur).abs() > 0.01)
-                        && (act - dur).abs() <= 0.01
-                })
+                || actual
+                    .zip(duration)
+                    .is_some_and(|(act, dur)| dur > 0.0 && (act - dur).abs() <= 0.01)
         }
         Some(exp) => actual.is_some_and(|act| (act - exp).abs() <= 0.01),
     }
@@ -102,7 +95,6 @@ async fn confirm_trimmed_video(
             && end_bound_matches(
                 video.trim_end_seconds,
                 end_seconds,
-                before.trim_end_seconds,
                 video.duration.or(before.duration),
             )
         {
@@ -138,9 +130,9 @@ fn clip_entered_error(asset: &FlowAsset, before: &HashMap<String, ClipBaseline>)
 }
 
 /// Splits a `<sceneId>:<wfId>` clip asset ID into its scene ID and workflow ID.
-fn split_scene_clip_id(id: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_scene_clip_id(id: &str) -> Option<(&str, &str)> {
     let (scene_id, wf_id) = id.split_once(':')?;
-    (!scene_id.is_empty() && !wf_id.is_empty()).then_some((scene_id, wf_id))
+    (!scene_id.is_empty() && !wf_id.is_empty() && !wf_id.contains(':')).then_some((scene_id, wf_id))
 }
 
 /// Returns `true` when `asset` is a settled video whose media ID or URL changed since `before`.
@@ -175,16 +167,14 @@ fn collect_extended_videos(
             ordered.push(asset);
         }
     }
-    let scene_prefix = opened_scene_id.map(|sid| format!("{sid}:"));
-    for asset in assets {
-        if watched_ids.iter().any(|w| w == &asset.id) || !clip_updated_since(asset, before) {
-            continue;
-        }
-        let in_opened_scene = scene_prefix
-            .as_deref()
-            .is_some_and(|prefix| asset.id.starts_with(prefix));
-        if !asset.id.contains(':') || in_opened_scene {
-            ordered.push(asset);
+    if let Some(prefix) = opened_scene_id.map(|sid| format!("{sid}:")) {
+        for asset in assets {
+            if watched_ids.iter().any(|w| w == &asset.id) || !clip_updated_since(asset, before) {
+                continue;
+            }
+            if asset.id.starts_with(&prefix) {
+                ordered.push(asset);
+            }
         }
     }
     let mut seen_media = HashSet::new();

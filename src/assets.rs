@@ -280,26 +280,63 @@ pub(crate) fn match_asset<'a>(
         return None;
     }
     let lower = raw.to_lowercase();
+    let has_colon = raw.contains(':');
 
     assets
         .iter()
         .find(|a| a.id == raw)
+        .or_else(|| {
+            (!has_colon).then(|| {
+                assets.iter().find(|a| {
+                    crate::scenes::split_scene_clip_id(&a.id).is_some_and(|(_, wf)| wf == raw)
+                })
+            })?
+        })
+        .or_else(|| {
+            assets
+                .iter()
+                .find(|a| !a.id.contains(':') && a.name.eq_ignore_ascii_case(raw))
+        })
         .or_else(|| assets.iter().find(|a| a.name.eq_ignore_ascii_case(raw)))
+        .or_else(|| {
+            assets
+                .iter()
+                .find(|a| !a.id.contains(':') && a.name.to_lowercase().contains(&lower))
+        })
         .or_else(|| {
             assets
                 .iter()
                 .find(|a| a.name.to_lowercase().contains(&lower))
         })
+        .or_else(|| {
+            (!has_colon).then(|| {
+                assets
+                    .iter()
+                    .find(|a| !a.id.contains(':') && a.id.to_lowercase().contains(&lower))
+            })?
+        })
         .or_else(|| assets.iter().find(|a| a.id.to_lowercase().contains(&lower)))
         .or_else(|| {
             if include_prompt {
-                assets.iter().find(|a| {
-                    a.prompt
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&lower)
-                })
+                assets
+                    .iter()
+                    .find(|a| {
+                        !a.id.contains(':')
+                            && a.prompt
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_lowercase()
+                                .contains(&lower)
+                    })
+                    .or_else(|| {
+                        assets.iter().find(|a| {
+                            a.prompt
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_lowercase()
+                                .contains(&lower)
+                        })
+                    })
             } else {
                 None
             }

@@ -11,6 +11,7 @@ import {
   type NgContextCarrier,
 } from "./angular";
 import { delay, elText, isDisabledProp, isVisibleEnabled } from "./dom";
+import { splitSceneClipId } from "./scene_tiles";
 import { clearStore } from "./state";
 
 /** Navigates to `/edit/<id>` using Angular Router or triggers an inline tile edit action. */
@@ -20,8 +21,11 @@ export async function openEditAsset(
   primaryMediaId: string | null,
 ): Promise<unknown> {
   const idStr = String(assetId || "").trim();
+  const clipRef = splitSceneClipId(idStr);
   const candidateIds = Array.from(
-    new Set([idStr, String(primaryMediaId || "").trim()].filter(Boolean)),
+    new Set(
+      [clipRef ? clipRef.workflowId : idStr, String(primaryMediaId || "").trim()].filter(Boolean),
+    ),
   );
 
   function findVisibleTextbox(): Element | null {
@@ -40,9 +44,20 @@ export async function openEditAsset(
   const pm = /\/project\/([^/?#]+)/.exec(location.pathname || "");
   const pid = pm ? pm[1] : null;
   const router = pid && candidateIds.length > 0 ? findRouter() : null;
-  if (router && pid && candidateIds.length > 0) {
+  if (router && pid && (clipRef || candidateIds.length > 0)) {
     let viewKind: string | null = null;
-    for (const candId of candidateIds) {
+    if (clipRef) {
+      await navigateSpa(router, ["/project", pid, "scene", clipRef.sceneId]);
+      for (let i = 0; i < 60; i += 1) {
+        const onScene = (location.pathname || "").includes(`/scene/${clipRef.sceneId}`);
+        if (onScene && document.querySelector("flow-scene-builder")) {
+          viewKind = "scene_builder";
+          break;
+        }
+        await delay(100);
+      }
+    }
+    for (const candId of viewKind ? [] : candidateIds) {
       await navigateSpa(router, ["/project", pid, "edit", candId]);
       for (let i = 0; i < 60; i += 1) {
         const onRoute = (location.pathname || "").includes("/edit/");
@@ -187,7 +202,9 @@ export async function openEditAsset(
   if (pid && idStr) {
     return {
       opened: false,
-      edit_url: buildProjectUrl(pid, ["edit", idStr]),
+      edit_url: clipRef
+        ? buildProjectUrl(pid, ["scene", clipRef.sceneId])
+        : buildProjectUrl(pid, ["edit", idStr]),
       method: "route_fallback_needed",
     };
   }

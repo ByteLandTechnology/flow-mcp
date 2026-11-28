@@ -356,6 +356,12 @@ export interface ProjectMutationFormat {
   trimStart: string;
   /** End time in a video trim request. */
   trimEnd: string;
+  /** Start time in a scene clip primary media update (`Ji`). */
+  clipTrimStart: string;
+  /** End time in a scene clip primary media update (`Ci`). */
+  clipTrimEnd: string;
+  /** Positional clip index in a scene clip mutation (`ik`). */
+  clipIndex: string;
 }
 
 /** Project store format of build 20261117.10. */
@@ -408,14 +414,16 @@ const NOVEMBER_20_STORE: ProjectStoreFormat = {
   errorStream: "Da",
   componentSlots: ["fh", "ha", "Ew", "la", "ka"],
   lContextView: "zp",
-  scene: { clips: "Uc", history: "Cg" },
+  scene: { clips: "Uc", history: "Cg", clipStart: "Ji", clipEnd: "Ci", clipDuration: "nc" },
   sceneBuilder: {
     controller: "su", timeline: "B6", player: "Gc", playerReady: "Dx",
     selectedClip: "la", clips: "Uc", extendDisabledReason: "Yo",
+    activeExtendClip: "TL", exitExtend: "rE", modelsQuery: "Od",
   },
   mutations: {
     tileId: "Xc", tileChange: "mf", sceneWorkflows: "ng", sceneCollection: "Dc",
     sceneCreated: "y6a", sceneId: "yc", trimStart: "dh", trimEnd: "ug",
+    clipTrimStart: "Ji", clipTrimEnd: "Ci", clipIndex: "ik",
   },
 };
 
@@ -927,9 +935,16 @@ export function withMutationAliases(payload: Record<string, unknown>): Record<st
   if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
     const change = payload.Ve as Record<string, unknown>;
     if (format) {
-      const native = change.type === "set_video_trim_seconds" ? {
-        ...change, [format.trimStart]: change.Cg, [format.trimEnd]: change.Rf,
-      } : change;
+      let native: Record<string, unknown> = change;
+      if (change.type === "set_video_trim_seconds") {
+        native = { ...change, [format.trimStart]: change.Cg, [format.trimEnd]: change.Rf };
+      } else if (change.type === "set_scene_clip_primary_media") {
+        native = { ...change };
+        if (typeof change.Ji === "number") native[format.clipTrimStart] = change.Ji;
+        if (typeof change.Ci === "number") native[format.clipTrimEnd] = change.Ci;
+      } else if (change.type === "scene_delete_clip_mutation") {
+        native = { ...change, [format.clipIndex]: change.ik };
+      }
       return { ...payload, [format.tileId]: payload.Xc ?? payload.Uc, [format.tileChange]: native };
     }
     const collectionWrite = build?.operations.collection_write;

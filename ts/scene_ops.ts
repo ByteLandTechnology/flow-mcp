@@ -7,7 +7,7 @@ import { createScene } from "./angular";
 import { delay, isTrashedTile } from "./dom";
 import { activeProjectStoreFormat } from "./frontend_builds";
 import { activeProjectStore, mutateAndVerify, refreshProjectStore } from "./project_store";
-import { sceneContents } from "./scene_tiles";
+import { sceneContents, splitSceneClipId } from "./scene_tiles";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, SceneOpRequest } from "./types";
 
@@ -51,14 +51,10 @@ function lookupTileForClip(
   tiles: Map<string, FlowTile>,
   rawId: string,
 ): { ok: true; tile: FlowTile } | { ok: false; error: string } {
-  const colon = rawId.indexOf(":");
-  const lookupKey =
-    colon > 0 && colon < rawId.length - 1 && !tiles.has(rawId)
-      ? rawId.slice(colon + 1)
-      : rawId;
-  if (lookupKey !== rawId) {
-    const sourceSceneId = rawId.slice(0, colon);
-    const sourceScene = tiles.get(sourceSceneId);
+  const clipRef = !tiles.has(rawId) ? splitSceneClipId(rawId) : null;
+  const lookupKey = clipRef ? clipRef.workflowId : rawId;
+  if (clipRef) {
+    const sourceScene = tiles.get(clipRef.sceneId);
     if (
       !sourceScene ||
       isTrashedTile(sourceScene) ||
@@ -236,12 +232,13 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     const expectedTotal = beforeWorkflows.length + workflowIds.length;
     const expectedCounts = countWorkflows([...beforeWorkflows, ...workflowIds]);
 
-    let callbackErr: unknown = null;
+    let submitErr: unknown = null;
+    const recordError = (err: unknown): void => {
+      submitErr ??= err;
+    };
     const completion = {
       resolve: () => {},
-      reject: (err: unknown) => {
-        callbackErr ??= err;
-      },
+      reject: recordError,
     };
     const confirmedTiles = await mutateAndVerify(
       store,
@@ -262,14 +259,15 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
           start: insertPos,
           workflows: workflowIds,
         }),
+      recordError,
     );
     if (!confirmedTiles) {
-      const detail = callbackErr
-        ? callbackErr instanceof Error
-          ? callbackErr.message
-          : String(callbackErr)
-        : "add_clips_not_confirmed";
-      return { ok: false, error: detail };
+      const rawMessage = submitErr
+        ? submitErr instanceof Error
+          ? submitErr.message
+          : String(submitErr)
+        : "";
+      return { ok: false, error: rawMessage || "add_clips_not_confirmed" };
     }
     return { ok: true, scene_id: sceneId, added: workflowIds.length };
   }

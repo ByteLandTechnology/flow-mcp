@@ -277,11 +277,13 @@ Apply non-destructive trims or queue a video extension job.
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
 | `action` | `string` | Yes | `"trim"` (immediate RPC update) or `"extend"` (queues a `JobQueue` job returning `JobView`). |
-| `match` | `string` | Yes | Video asset ID, exact name, or case-insensitive substring. |
+| `match` | `string` | Yes | Stand-alone video ID, `<sceneId>:<wfId>` scene clip ID, exact name, or case-insensitive substring. |
 | `start_seconds` | `number` | No | Trim start timestamp in seconds for `"trim"` (`null` clears start bound). |
 | `end_seconds` | `number` | No | Trim end timestamp in seconds for `"trim"` (`null` clears end bound). |
 | `prompt` | `string` | No | Continuation prompt for `"extend"`. |
 | `scene_id` | `string` | No | Optional existing scene ID to extend inside. |
+
+`"trim"` updates a stand-alone video tile or updates the matching `<sceneId>:<wfId>` clip inside its parent scene. For `"extend"`, `flow-mcp` opens `scene_id` when you set `scene_id` or pass `<sceneId>:<wfId>`. When you omit `scene_id` for a stand-alone video, `flow_video` returns to the project root first and creates a new scene for that clip. If a scene is open when `prepare_extend` runs (or `scene_id` names an existing scene), `prepare_extend` looks for the target clip in that scene and returns `scene_clip_not_found` when the clip is absent instead of reusing the open scene.
 
 ### `flow_scenes`
 
@@ -352,7 +354,7 @@ Open the target project workspace before you upload. Upload works from the proje
 }
 ```
 
-The result gives `project_id`, `count`, and `assets`. Each asset gives its `id`, `name`, `kind`, and `primary_media_id` when available.
+The result gives `project_id`, `count`, and `assets`. Each asset gives its `id`, `name`, `kind`, and `primary_media_id` when available. Stand-alone tiles use their tile `id`, and scenes have `kind: "scene"` with ID `<sceneId>`. Active clips in a scene timeline also appear with `kind: "video"` and ID `<sceneId>:<wfId>`.
 
 If the batch stops, the error gives the assets that Flow confirms before the failure. It also gives `file` if the tool can identify the file in progress. If you get `outcome_unknown`, check the project before you retry.
 
@@ -364,7 +366,7 @@ Rename assets, characters, scenes, or collections in batches and confirm through
 | :--- | :--- | :--- | :--- |
 | `items` | `object[]` | Yes | Non-empty array of `{"id": "...", "name": "..."}` entries. |
 
-For an image or video tile that the page shows, `flow-mcp` first uses the **Rename** item of the tile menu and types the new name into the rename control of the page. In all other cases it sends the store mutation. Each entry of `items` in the result has `method`: `menu:rename` or `mutation`. For collections, the tool confirms the result in a new read of the project store.
+For an image or video tile that the page shows, `flow-mcp` first uses the **Rename** item of the tile menu and types the new name into the rename control of the page. In all other cases it sends the store mutation. For a `<sceneId>:<wfId>` scene clip ID, `flow-mcp` renames the underlying stand-alone video tile when one exists, and returns `scene_clip_has_no_tile_to_rename` if the clip exists only in the scene. Each entry of `items` in the result has `method`: `menu:rename` or `mutation`. For collections, the tool confirms the result in a new read of the project store.
 
 ### `flow_collections`
 
@@ -419,4 +421,4 @@ Move a matching asset, character, scene, or collection to trash in Google Flow.
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | Yes | Case-insensitive asset or collection ID, name, or prompt substring. |
 
-`flow-mcp` first uses **Move to trash** in the tile menu. It uses the project store if it cannot confirm the result from the menu. The store path requires a verified request format and confirms the result with a fresh read. On success, the result includes `method` and `confirmed`. For a collection, the tool uses the same deletion procedure as `flow_collections`.
+`flow-mcp` first uses **Move to trash** in the tile menu. It uses the project store if it cannot confirm the result from the menu. The store path requires a verified request format and confirms the result with a fresh read. For a `<sceneId>:<wfId>` scene clip ID, the store removes that clip from `<sceneId>` and keeps any stand-alone video tile intact. On success, the result includes `method` and `confirmed`. For a collection, the tool uses the same deletion procedure as `flow_collections`.
