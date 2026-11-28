@@ -3,7 +3,7 @@
 
 // Bind, validate, read, and mutate the active project store from verified build formats.
 
-import { isNgLViewMap, readOwn } from "./angular";
+import { bindAngularViews, isNgLViewMap, readOwn, resolveLView } from "./angular";
 import { delay } from "./dom";
 import { activeProjectStoreFormat, readBuildLabel, withMutationAliases } from "./frontend_builds";
 import type { ProjectStoreFormat } from "./frontend_builds";
@@ -14,8 +14,8 @@ import type { FlowStoreHandle, FlowTile, NgLView, StoreProbeCheck } from "./type
 interface ProjectTileQuery {
   /** Key that includes the project ID. */
   queryKey: unknown;
-  /** Most recent query status and result. */
-  state: { status: string; data: unknown };
+  /** Most recent query status, fetch state, and result. */
+  state: { status: string; fetchStatus?: string; data: unknown };
   /** Runs the query and returns the fetched result. */
   fetch: (options: undefined, settings: { cancelRefetch: boolean }) => Promise<unknown>;
 }
@@ -53,18 +53,90 @@ let boundHandle: FlowStoreHandle | null = null;
 /** Promise chain that serializes general store mutations in this document. */
 let mutationChain: Promise<void> = Promise.resolve();
 
+/** Route host elements that appear when the active `/project/<id>` view bundle initializes. */
+const PROJECT_ROUTE_HOST_SELECTOR = [
+  "flow-project-shell",
+  "flow-project-page",
+  "flow-character-page",
+  "flow-character-edit-page",
+  "flow-character-preview-panel",
+  "flow-create-character-footer",
+  "flow-edit-character-footer",
+  "flow-scene-builder",
+  "flow-editor-dispatcher",
+  "flow-editor-page",
+  "flow-applet-view-header",
+  "flow-agent-panel",
+].join(", ");
+
+/** Shell banner hosts inside `aisandbox-root` before the primary route outlet activates. */
+const SHELL_BANNER_SELECTOR =
+  "flow-banner, flow-g1-promotional-banner, flow-retention-optin-banner";
+
+/** Angular error code for a required input that has no value yet. */
+const ANGULAR_REQUIRED_INPUT_ERROR = "NG0950";
+
+/** Result of reading the project signal on a verified store instance. */
+type StoreProjectState =
+  | { readonly state: "ready"; readonly projectId: string }
+  | { readonly state: "loading" }
+  | { readonly state: "invalid" };
+
+/** Result of scanning one Angular view for verified `ProjectStore` instances. */
+export interface StoreViewScan {
+  /** Live verified stores whose project signal matches the requested project ID. */
+  readonly matches: ProjectStore[];
+  /** True when a live verified store throws `NG0950` for an unset project input. */
+  readonly inputPending: boolean;
+}
+
 /** Returns the project ID in the current route. */
 export function projectInRoute(): string | null {
   return /\/project\/([^/?#]+)/.exec(location.pathname)?.[1] ?? null;
 }
 
+/** Returns true when `error` reports an unset Angular required input (`NG0950`). */
+function isRequiredInputError(error: unknown): boolean {
+  const code = readOwn(error, "code");
+  if (code === 950 || code === -950) return true;
+  const rawMessage = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : readOwn(error, "message");
+  if (typeof rawMessage !== "string") return false;
+  return rawMessage
+    .split(/[^A-Za-z0-9]+/)
+    .includes(ANGULAR_REQUIRED_INPUT_ERROR);
+}
+
+/** Returns true while the lifecycle controller of `service` exists and is not destroyed. */
+function isStoreLifecycleLive(service: object, format: ProjectStoreFormat): boolean {
+  const lifecycle = readOwn(service, format.lifecycle);
+  return Boolean(lifecycle) && !readOwn(lifecycle, format.destroyed);
+}
+
+/** Reads the project ID signal of `service` and reports unset required inputs (`NG0950`). */
+function readStoreProjectId(service: object, format: ProjectStoreFormat): StoreProjectState {
+  const getter = readOwn(service, format.projectId);
+  if (typeof getter !== "function") return { state: "invalid" };
+  try {
+    const value: unknown = getter.call(service);
+    return typeof value === "string" && value
+      ? { state: "ready", projectId: value }
+      : { state: "invalid" };
+  } catch (error) {
+    return isRequiredInputError(error) ? { state: "loading" } : { state: "invalid" };
+  }
+}
+
 /** Checks the active route, lifecycle flag, and project signal of `store`. */
 export function isCurrent({ projectId, service, format }: ProjectStore): boolean {
-  const currentProject = readOwn(service, format.projectId);
-  const lifecycle = readOwn(service, format.lifecycle);
-  return projectInRoute() === projectId &&
-    Boolean(lifecycle) && !readOwn(lifecycle, format.destroyed) &&
-    typeof currentProject === "function" && currentProject.call(service) === projectId;
+  if (!projectId || projectInRoute() !== projectId || !isStoreLifecycleLive(service, format)) {
+    return false;
+  }
+  const project = readStoreProjectId(service, format);
+  return project.state === "ready" && project.projectId === projectId;
 }
 
 /** Clears both the direct store binding and `runtimeState.store`. */
@@ -94,7 +166,7 @@ export function currentProjectStore(projectId: string): ProjectStore | null {
   return active?.projectId === projectId ? active : null;
 }
 
-/** Finds the query by its full project key. */
+/** Finds the query by its full project key and initializes the signal query when needed. */
 function projectQuery({ projectId, service, format }: ProjectStore): ProjectTileQuery | undefined {
   const tiles = readOwn(service, format.tilesService);
   const queryKey = readOwn(tiles, "queryKey");
@@ -103,7 +175,14 @@ function projectQuery({ projectId, service, format }: ProjectStore): ProjectTile
   if (typeof queryKey !== "function" || typeof find !== "function") return undefined;
   const key: unknown = queryKey.call(tiles, projectId);
   if (!isProjectKey(key, projectId)) return undefined;
-  const query = find.call(cache, { queryKey: key, exact: true }) as ProjectTileQuery | undefined;
+  let query = find.call(cache, { queryKey: key, exact: true }) as ProjectTileQuery | undefined;
+  if (!query) {
+    const signalQuery = readOwn(service, format.tileQuery);
+    if (signalQuery && typeof signalQuery === "object") {
+      void readQueryField(signalQuery, "status");
+      query = find.call(cache, { queryKey: key, exact: true }) as ProjectTileQuery | undefined;
+    }
+  }
   return isProjectKey(query?.queryKey, projectId) ? query : undefined;
 }
 
@@ -112,17 +191,39 @@ function isProjectKey(key: unknown, projectId: string): boolean {
   return Array.isArray(key) && key.length === 2 && key[0] === "PROJECT_TILES" && key[1] === projectId;
 }
 
+/** Reads a boolean or status field from a TanStack signal query proxy without throwing. */
+function readQueryField(signalQuery: object, key: string): unknown {
+  try {
+    if (!(key in signalQuery)) return undefined;
+    const prop = readOwn(signalQuery, key);
+    return typeof prop === "function" ? prop.call(signalQuery) : prop;
+  } catch (error) {
+    return isRequiredInputError(error) ? ANGULAR_REQUIRED_INPUT_ERROR : undefined;
+  }
+}
+
 /** Returns true while the verified tile query of `store` loads initial rows. */
 export function isProjectStorePending(store: ProjectStore): boolean {
   if (!isCurrent(store)) return false;
   const signalQuery = readOwn(store.service, store.format.tileQuery);
-  if (signalQuery && typeof signalQuery === "object" && "isPending" in signalQuery) {
-    const isPending = readOwn(signalQuery, "isPending");
-    if (typeof isPending === "function" ? Boolean(isPending.call(signalQuery)) : isPending === true) {
+  if (signalQuery && typeof signalQuery === "object") {
+    const loading = readQueryField(signalQuery, "isLoading");
+    const fetchStatus = readQueryField(signalQuery, "fetchStatus");
+    const status = readQueryField(signalQuery, "status");
+    if (
+      loading === ANGULAR_REQUIRED_INPUT_ERROR ||
+      fetchStatus === ANGULAR_REQUIRED_INPUT_ERROR ||
+      status === ANGULAR_REQUIRED_INPUT_ERROR
+    ) {
       return true;
     }
+    if (typeof loading === "boolean") return loading;
+    if (typeof fetchStatus === "string") {
+      return status === "pending" && fetchStatus === "fetching";
+    }
   }
-  return projectQuery(store)?.state.status === "pending";
+  const state = projectQuery(store)?.state;
+  return state?.status === "pending" && state.fetchStatus === "fetching";
 }
 
 /** Indexes a validated tile row array by tile ID. */
@@ -154,8 +255,13 @@ export function readProjectStore(store: ProjectStore): Map<string, FlowTile> | n
   }
   const signalQuery = readOwn(store.service, store.format.tileQuery);
   if (!signalQuery || typeof signalQuery !== "object" || !("data" in signalQuery)) return null;
-  const readData = readOwn(signalQuery, "data");
-  const signalData: unknown = typeof readData === "function" ? readData.call(signalQuery) : readData;
+  let signalData: unknown;
+  try {
+    const readData = readOwn(signalQuery, "data");
+    signalData = typeof readData === "function" ? readData.call(signalQuery) : readData;
+  } catch {
+    return null;
+  }
   return indexTileRows(signalData) ?? tileMap(signalData, store.format.rows);
 }
 
@@ -321,33 +427,125 @@ function verifiedStoreLayout(): { format: ProjectStoreFormat; storeClass: Functi
   return typeof storeClass === "function" ? { format, storeClass } : null;
 }
 
-/** Collects live `ProjectStore` candidates from one Angular `LView` array. */
-export function findProjectStoreInView(
+/** Scans one Angular `LView` array for matching or input-pending verified `ProjectStore` instances. */
+export function inspectProjectStoreInView(
   view: unknown,
   projectId: string,
   seen = new Set<object>(),
-): ProjectStore[] {
-  if (!Array.isArray(view)) return [];
+): StoreViewScan {
+  if (!Array.isArray(view)) return { matches: [], inputPending: false };
   const layout = verifiedStoreLayout();
-  if (!layout) return [];
+  if (!layout) return { matches: [], inputPending: false };
   const { format, storeClass } = layout;
   const matches: ProjectStore[] = [];
+  let inputPending = false;
   const consider = (value: unknown): void => {
     if (!value || typeof value !== "object" || seen.has(value)) return;
     seen.add(value);
-    if (!(value instanceof storeClass)) return;
-    const candidate: ProjectStore = { projectId, service: value, format };
-    if (isCurrent(candidate)) matches.push(candidate);
+    if (!(value instanceof storeClass) || !isStoreLifecycleLive(value, format)) return;
+    const project = readStoreProjectId(value, format);
+    if (project.state === "loading") {
+      inputPending = true;
+      return;
+    }
+    if (project.state === "ready" && project.projectId === projectId && projectInRoute() === projectId) {
+      matches.push({ projectId, service: value, format });
+    }
   };
 
   for (const slot of view) {
     consider(slot);
-    if (!slot || typeof slot !== "object" || slot instanceof Node) continue;
+    if (
+      !slot ||
+      typeof slot !== "object" ||
+      Array.isArray(slot) ||
+      slot instanceof Node ||
+      slot instanceof Map ||
+      slot instanceof Set
+    ) {
+      continue;
+    }
+    const checked = new Set<string>();
     for (const key of format.componentSlots) {
+      checked.add(key);
+      consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
+    }
+    for (const key of Object.keys(slot)) {
+      if (checked.has(key)) continue;
       consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
     }
   }
-  return matches;
+  return { matches, inputPending };
+}
+
+/** Scans connected project route hosts and parent `LView` chains for verified stores. */
+function scanConnectedRouteViews(
+  projectId: string,
+  seen = new Set<object>(),
+): { matches: Array<{ store: ProjectStore; view: NgLView }>; inputPending: boolean } {
+  const matches: Array<{ store: ProjectStore; view: NgLView }> = [];
+  let inputPending = false;
+  const seenViews = new Set<NgLView>();
+  const listedHosts = Array.from(document.querySelectorAll(PROJECT_ROUTE_HOST_SELECTOR));
+  const fallbackHost = listedHosts.length === 0
+    ? document.querySelector("aisandbox-root router-outlet:not([name]), app-root router-outlet:not([name])")
+        ?.nextElementSibling ?? null
+    : null;
+  const hosts = fallbackHost ? [fallbackHost] : listedHosts;
+  for (const host of hosts) {
+    let cur: Element | null = host;
+    for (let steps = 0; cur && steps < 6; steps += 1) {
+      let view: NgLView | null = resolveLView(cur);
+      for (let depth = 0; depth < 6 && Array.isArray(view); depth += 1) {
+        if (!seenViews.has(view)) {
+          seenViews.add(view);
+          const scan = inspectProjectStoreInView(view, projectId, seen);
+          for (const store of scan.matches) {
+            matches.push({ store, view });
+          }
+          inputPending ||= scan.inputPending;
+        }
+        view = Array.isArray(view[3]) ? view[3] : Array.isArray(view[15]) ? view[15] : null;
+      }
+      cur = cur.parentElement;
+    }
+  }
+  return { matches, inputPending };
+}
+
+/** Returns true when registered or connected views hold a verified store with an unset input. */
+function hasPendingProjectStoreInput(projectId: string): boolean {
+  const seen = new Set<object>();
+  if (runtimeState.ngLViewMap instanceof Map) {
+    for (const view of runtimeState.ngLViewMap.values()) {
+      if (inspectProjectStoreInView(view, projectId, seen).inputPending) return true;
+    }
+  }
+  return scanConnectedRouteViews(projectId, seen).inputPending;
+}
+
+/** Returns true while the `/project/<id>` route view is not in the document yet. */
+export function isProjectRouteLoading(): boolean {
+  if (document.querySelector(PROJECT_ROUTE_HOST_SELECTOR)) return false;
+  if (document.querySelector("flow-landing-page")) return false;
+  if (document.querySelector("flow-loading-page, .projects-loading-container")) return true;
+  if (document.readyState !== "complete") return true;
+  const root = document.querySelector("aisandbox-root, app-root");
+  if (!root) return false;
+  if (root.childElementCount === 0) return true;
+  const outlet = root.querySelector("router-outlet:not([name])");
+  if (!outlet || outlet.nextElementSibling) return false;
+  for (const el of root.querySelectorAll("*")) {
+    if (
+      el !== outlet &&
+      el.tagName.includes("-") &&
+      !el.matches(SHELL_BANNER_SELECTOR) &&
+      !el.closest(SHELL_BANNER_SELECTOR)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Reports whether the current runtime has a bound and ready store for `projectId`. */
@@ -359,7 +557,11 @@ export function projectStoreStatus(projectId: string): ProjectStoreStatus {
   }
   if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
   const store = currentProjectStore(projectId);
-  if (!store) return { ok: false, error: "collection_store_not_bound" };
+  if (!store) {
+    return isProjectRouteLoading() || hasPendingProjectStoreInput(projectId)
+      ? { ok: false, error: "store_loading" }
+      : { ok: false, error: "collection_store_not_bound" };
+  }
   if (isProjectStorePending(store)) {
     return { ok: false, bound: true, error: "store_loading" };
   }
@@ -387,26 +589,49 @@ export function bindProjectStore(maps: unknown[], projectId: string): ProjectSto
   if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
   if (!verifiedStoreLayout()) {
     clearProjectStore();
-    return { ok: false, error: "collection_store_not_bound" };
+    return isProjectRouteLoading()
+      ? { ok: false, error: "store_loading" }
+      : { ok: false, error: "collection_store_not_bound" };
+  }
+
+  if (!(runtimeState.ngLViewMap instanceof Map)) {
+    bindAngularViews(maps, `${PROJECT_ROUTE_HOST_SELECTOR}, aisandbox-root, app-root`);
   }
 
   const seen = new Set<object>();
-  const candidates: Array<{ store: ProjectStore; views: Map<number, NgLView> }> = [];
+  const candidates: Array<{ store: ProjectStore; views?: Map<number, NgLView> }> = [];
+  const viewMaps: Array<Map<number, NgLView>> = [];
+  let inputPending = false;
   for (const map of maps) {
     if (!isNgLViewMap(map)) continue;
+    viewMaps.push(map);
     for (const view of map.values()) {
-      for (const store of findProjectStoreInView(view, projectId, seen)) {
+      const scan = inspectProjectStoreInView(view, projectId, seen);
+      inputPending ||= scan.inputPending;
+      for (const store of scan.matches) {
         candidates.push({ store, views: map });
       }
     }
+  }
+  const connected = scanConnectedRouteViews(projectId, seen);
+  inputPending ||= connected.inputPending;
+  for (const { store, view } of connected.matches) {
+    const slotId = view[19];
+    const views = typeof slotId === "number"
+      ? viewMaps.find((map) => map.get(slotId) === view)
+      : undefined;
+    candidates.push({ store, views });
   }
 
   const selectedStore = selectProjectStoreCandidate(candidates.map(({ store }) => store));
   const selected = candidates.find(({ store }) => store === selectedStore);
   if (!selected) {
     clearProjectStore();
-    return candidates.length > 1
-      ? { ok: false, error: "ambiguous_collection_store" }
+    if (candidates.length > 1) {
+      return { ok: false, error: "ambiguous_collection_store" };
+    }
+    return inputPending || isProjectRouteLoading()
+      ? { ok: false, error: "store_loading" }
       : { ok: false, error: "collection_store_not_bound" };
   }
   installProjectStore(selected.store, selected.views);

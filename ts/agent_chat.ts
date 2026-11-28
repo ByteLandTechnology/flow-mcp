@@ -107,8 +107,12 @@ function liveBinding(projectId: string): Binding | undefined {
     | undefined;
   if (life?.[format.destroyed] !== false) return;
   const project = Reflect.get(page, format.project);
-  if (typeof project === "function" && project.call(page) === projectId)
-    return binding;
+  if (typeof project !== "function") return;
+  try {
+    if (project.call(page) === projectId) return binding;
+  } catch {
+    return;
+  }
 }
 
 /** Returns true if the active document has a binding for this project. */

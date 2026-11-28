@@ -17,10 +17,12 @@ import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types"
 
 /** Object with optional Angular Ivy `__ngContext__` or internal `lView` links. */
 export interface NgContextCarrier {
-  /** Angular Ivy LView array or registry slot index. */
-  __ngContext__?: number | NgLView | Record<string, unknown>;
-  /** Embedded view LView reference. */
+  /** Angular Ivy LView array, registry slot index, or upgraded LContext wrapper. */
+  __ngContext__?: number | NgLView | NgContextCarrier | Record<string, unknown>;
+  /** Embedded view or LContext LView reference. */
   lView?: NgLView;
+  /** Optional LView registry slot identifier on LContext wrappers. */
+  lViewId?: number;
 }
 
 /** Reads an own or prototype property safely without triggering exceptions. */
@@ -36,6 +38,44 @@ export function readOwn(obj: unknown, key: string): unknown {
 /** Returns `lv` if `lv` is a live Angular LView whose host node remains connected. */
 export function isLiveLView(lv: unknown): lv is NgLView {
   return Array.isArray(lv) && (!(lv[0] instanceof Node) || lv[0].isConnected);
+}
+
+/** Extracts an `NgLView` array from an upgraded Angular `LContext` wrapper object. */
+function unwrapContextView(raw: object): NgLView | null {
+  const direct = readOwn(raw, "lView");
+  if (Array.isArray(direct)) return direct;
+  const contextField = frontendBuild(readBuildLabel())?.projectStore.lContextView;
+  if (contextField) {
+    const verified = readOwn(raw, contextField);
+    if (Array.isArray(verified)) return verified;
+  }
+  const id = readOwn(raw, "lViewId");
+  if (typeof id === "number" && runtimeState.ngLViewMap instanceof Map) {
+    const mapped = runtimeState.ngLViewMap.get(id);
+    if (Array.isArray(mapped)) return mapped;
+  }
+  return null;
+}
+
+/** Reads the Angular `LView` registry slot ID from a host node or context value. */
+export function readLViewSlotId(elOrCtx: unknown): number | null {
+  const ctxObj =
+    elOrCtx && typeof elOrCtx === "object"
+      ? (elOrCtx as NgContextCarrier)
+      : null;
+  const raw: unknown =
+    ctxObj && "__ngContext__" in ctxObj ? ctxObj.__ngContext__ : elOrCtx;
+  if (typeof raw === "number") return raw;
+  if (Array.isArray(raw)) {
+    return typeof raw[19] === "number" ? raw[19] : null;
+  }
+  if (raw && typeof raw === "object" && !(raw instanceof Node)) {
+    const id = readOwn(raw, "lViewId");
+    if (typeof id === "number") return id;
+    const view = unwrapContextView(raw);
+    return typeof view?.[19] === "number" ? view[19] : null;
+  }
+  return null;
 }
 
 /** Returns true when `m` matches Angular's integer-keyed LView registry map. */
@@ -56,10 +96,10 @@ export function isNgLViewMap(m: unknown): m is Map<number, NgLView> {
 /** Binds the live Angular view registry that contains the selected host context. */
 export function bindAngularViews(maps: unknown[], selector: string): boolean {
   for (const host of document.querySelectorAll(selector)) {
-    const context = readOwn(host, "__ngContext__");
-    if (typeof context !== "number") continue;
+    const slotId = readLViewSlotId(host);
+    if (slotId === null) continue;
     const views = maps.find((map): map is Map<number, NgLView> =>
-      isNgLViewMap(map) && isLiveLView(map.get(context)),
+      isNgLViewMap(map) && isLiveLView(map.get(slotId)),
     );
     if (views) {
       runtimeState.ngLViewMap = views;
@@ -83,12 +123,8 @@ export function resolveLView(elOrCtx: unknown): NgLView | null {
       ? runtimeState.ngLViewMap.get(raw) || null
       : null;
   }
-  if (raw && typeof raw === "object") {
-    const lView = readOwn(raw, "lView");
-    if (Array.isArray(lView)) return lView;
-    const contextField = frontendBuild(readBuildLabel())?.projectStore.lContextView;
-    const verifiedView = contextField ? readOwn(raw, contextField) : undefined;
-    return Array.isArray(verifiedView) ? verifiedView : null;
+  if (raw && typeof raw === "object" && !(raw instanceof Node)) {
+    return unwrapContextView(raw);
   }
   return null;
 }

@@ -428,9 +428,14 @@ function projectWorkspaceRoute(pathname: string): { projectId: string; collectio
 /** Checks the route and lifecycle of a project workspace component. */
 function isCurrentPage(page: object, format: ProjectUploadFormat["page"], projectId: string): boolean {
   if (projectWorkspaceRoute(location.pathname)?.projectId !== projectId) return false;
+  if (readOwn(readOwn(page, format.lifecycle), format.destroyed) !== false) return false;
   const project = readOwn(page, format.project);
-  return readOwn(readOwn(page, format.lifecycle), format.destroyed) === false &&
-    typeof project === "function" && project.call(page) === projectId;
+  if (typeof project !== "function") return false;
+  try {
+    return project.call(page) === projectId;
+  } catch {
+    return false;
+  }
 }
 
 /** Finds the live project page that owns the upload services. */
