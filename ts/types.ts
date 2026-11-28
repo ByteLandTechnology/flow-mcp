@@ -815,6 +815,12 @@ export interface FlowMcpRuntime {
   projectNav: (action: string) => Promise<unknown>;
   /** Lists, renames, or deletes Google Flow projects on home or workspace pages. */
   projectsOp: (req: ProjectsOpRequest) => Promise<unknown>;
+  /** Mutates project metadata in the pinned project store. */
+  projectMetadataOp: (
+    projectId: string,
+    session: string,
+    request: import("./project_metadata").ProjectMetadataRequest,
+  ) => Promise<unknown>;
   /** Renames or moves asset tiles to trash. */
   assetOps: (action: string, id: string, extra: AssetRenameExtra | null) => Promise<unknown>;
   /** Moves one asset to trash in the pinned project store. */

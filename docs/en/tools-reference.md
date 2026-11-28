@@ -352,7 +352,7 @@ Open the target project workspace before you upload. Upload works from the proje
 }
 ```
 
-The result gives `project_id`, `count`, and `assets`. Each asset gives its `id`, `name`, `kind`, and `primary_media_id` when available.
+The `list` result gives `project_id`, `project_title`, `count`, and `assets`. The `upload` result gives `project_id`, `count`, and `assets`. Each asset gives its `id`, `name`, `kind`, and `primary_media_id` when available.
 
 If the batch stops, the error gives the assets that Flow confirms before the failure. It also gives `file` if the tool can identify the file in progress. If you get `outcome_unknown`, check the project before you retry.
 

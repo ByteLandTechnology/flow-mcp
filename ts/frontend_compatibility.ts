@@ -17,6 +17,7 @@ import type {
   ProjectUploadFormat,
 } from "./frontend_builds";
 import { findProjectPage } from "./project_upload";
+import { projectMetadataChecks } from "./project_metadata";
 import { projectWriteChecks } from "./project_store";
 import { legacyTile, pickTileUrl } from "./dom";
 import { clearStore, runtimeState } from "./state";
@@ -441,6 +442,7 @@ export function probeStore(): StoreProbeResult {
       detail: views ? `${views.size} views` : "not captured",
     },
     ...trashChecks,
+    ...projectMetadataChecks(build),
   ];
   const pageChecks = projectPageOperationChecks(build);
   const operations: Record<

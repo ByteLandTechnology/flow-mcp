@@ -6,6 +6,7 @@
 import { readOwn } from "./angular";
 import { characterPersonalityNotes, characterVoice } from "./character_bio";
 import { activeProjectStoreFormat, snapshotFormat } from "./frontend_builds";
+import { readProjectTitle } from "./project_metadata";
 import { currentProjectStore, projectInRoute } from "./project_store";
 import { sceneContents } from "./scene_tiles";
 import {
@@ -213,16 +214,7 @@ export function readStoreSnapshot(): StoreSnapshotResult {
   }
 
   const { assets, collections } = readStoreTiles(tileMap);
-  const titleEl = document.querySelector(
-    'input[aria-label="Editable text"], .editable-text-input, [data-testid="project-title"]',
-  );
-  const rawTitle = titleEl
-    ? ((titleEl as HTMLInputElement).value || titleEl.textContent || "").trim()
-    : "";
-  const docTitle = (document.title || "")
-    .replace(/\s*[-–|]\s*(?:Google\s*)?Flow\s*$/i, "")
-    .trim();
-  const projectTitle = rawTitle || docTitle || null;
+  const projectTitle = readProjectTitle(projectId);
 
   const credits = readMappedCredits() ?? readDomAccountCredits();
 

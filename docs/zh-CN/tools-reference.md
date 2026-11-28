@@ -352,7 +352,7 @@ flow-mcp [OPTIONS] <COMMAND>
 }
 ```
 
-返回 `project_id`、`count` 和 `assets`。每项包含 `id`、`name`、`kind`，并在可用时返回 `primary_media_id`。
+`list` 返回 `project_id`、`project_title`、`count` 和 `assets`。`upload` 返回 `project_id`、`count` 和 `assets`。每项包含 `id`、`name`、`kind`，并在可用时返回 `primary_media_id`。
 
 批次中途失败时，错误包含 Flow 已确认的资源。若能确定处理到哪个文件，也会返回 `file`。收到 `outcome_unknown` 时，请检查项目后再重试。
 

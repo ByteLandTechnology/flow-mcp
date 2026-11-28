@@ -410,7 +410,7 @@ const NOVEMBER_20_STORE: ProjectStoreFormat = {
   tileQuery: "rs",
   mutator: "ld",
   errorStream: "Da",
-  componentSlots: ["fh", "ha", "Ew", "la", "ka"],
+  componentSlots: ["fh", "ha", "Ew", "la", "ka", "mc", "na", "EP"],
   lContextView: "zp",
   scene: { clips: "Uc", history: "Cg" },
   mutations: {
@@ -718,6 +718,8 @@ interface FrontendBuildFields {
   characterCreate?: CharacterCreateFormat;
   /** Native fields of editable project titles. */
   projectTitle?: ProjectTitleFormat;
+  /** Native fields for project metadata mutations, title signals, and grid queries. */
+  projectMetadata?: ProjectMetadataFormat;
 }
 
 /** A verified build with full or pre-Agent operation coverage. */
@@ -792,6 +794,44 @@ export interface ProjectTitleFormat {
   saveEmitter: string;
   /** Signal that sets the component back to viewing mode. */
   stateSignal: string;
+}
+
+/** Native fields for project metadata mutations, title caches, and home grid queries. */
+export interface ProjectMetadataFormat {
+  /** Injected metadata service property on the project store. */
+  metadataService: string;
+  /** Exported metadata service class on the Angular frontend namespace. */
+  metadataServiceClass: string;
+  /** Signal query property on the project store that loads `PROJECT` metadata. */
+  metadataQuery: string;
+  /** Project metadata mutation runner property on the project store. */
+  metadataMutator: string;
+  /** Async project metadata mutation dispatcher method on the metadata service. */
+  metadataDispatcher: string;
+  /** Computed signal method on the project store returning the project title. */
+  titleSignal: string;
+  /** Title field name inside a `set_project_title` mutation payload. */
+  titleField: string;
+  /** Exported query-key builder function for `PROJECT` cache entries. */
+  projectKey: string;
+  /** Getter method on a `PROJECT` protobuf message returning its metadata block. */
+  projectInfoGetter: string;
+  /** Getter method on the `PROJECT` metadata block returning the title string. */
+  projectTitleGetter: string;
+  /** Exported `flow-projects-grid` component class on the Angular frontend namespace. */
+  gridClass: string;
+  /** Infinite query and page items property for `PROJECTS` on `flow-projects-grid`. */
+  ownedQuery: string;
+  /** Infinite query and page items property for `SHARED_PROJECTS` on `flow-projects-grid`. */
+  sharedQuery: string;
+  /** Getter method returning the project ID on a card or details protobuf message. */
+  cardIdGetter: string;
+  /** Getter method returning the card metadata protobuf message. */
+  cardMetadataGetter: string;
+  /** Getter method returning the project title string on card metadata. */
+  cardTitleGetter: string;
+  /** Getter method returning the inner project protobuf on a shared project card entry. */
+  sharedProjectGetter: string;
 }
 
 /** Character editor and query fields used to read the saved voice. */
@@ -887,6 +927,25 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
       collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
     },
     projectTitle: { saveEmitter: "HSa", stateSignal: "state" },
+    projectMetadata: {
+      metadataService: "Rb",
+      metadataServiceClass: "$N",
+      metadataQuery: "Ag",
+      metadataMutator: "Lc",
+      metadataDispatcher: "YJ",
+      titleSignal: "Jk",
+      titleField: "Sg",
+      projectKey: "pM",
+      projectInfoGetter: "AE",
+      projectTitleGetter: "tI",
+      gridClass: "Y7",
+      ownedQuery: "Id",
+      sharedQuery: "xs",
+      cardIdGetter: "Ub",
+      cardMetadataGetter: "getMetadata",
+      cardTitleGetter: "Qd",
+      sharedProjectGetter: "Jn",
+    },
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
@@ -951,6 +1010,13 @@ export function withMutationAliases(payload: Record<string, unknown>): Record<st
   if (format && payload.type === "create_entity") {
     return { ...payload, pM: payload.pM ?? 1 };
   }
+  const metadata = build?.projectMetadata;
+  if (metadata && payload.type === "set_project_title") {
+    const title = payload[metadata.titleField] ?? payload.title ?? payload.Sg;
+    if (typeof title === "string") {
+      return { ...payload, [metadata.titleField]: title };
+    }
+  }
   return payload;
 }
 
@@ -977,4 +1043,9 @@ export function projectTitleFormat(): ProjectTitleFormat {
 /** Returns the verified snapshot field descriptors for the active build. */
 export function snapshotFormat(): SnapshotFormat | undefined {
   return frontendBuild(readBuildLabel())?.snapshot;
+}
+
+/** Returns the verified project metadata and grid query format for the active build. */
+export function activeProjectMetadataFormat(): ProjectMetadataFormat | undefined {
+  return frontendBuild(readBuildLabel())?.projectMetadata;
 }

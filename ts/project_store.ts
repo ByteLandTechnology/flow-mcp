@@ -171,7 +171,7 @@ function isAngularSignal(fn: Function): boolean {
 }
 
 /** Resolves an async promise runner from the verified `mutator` field on the store. */
-function resolveAsyncMutator(
+export function resolveAsyncMutator(
   owner: object,
   mutator: unknown,
 ): ((payload: Record<string, unknown>) => Promise<unknown>) | null {
@@ -281,11 +281,16 @@ async function dispatchStoreMutation(
   throw new Error("store_mutate_missing");
 }
 
-/** Serializes general store mutations in the current page session. */
-function mutateStore(store: ProjectStore, payload: Record<string, unknown>): Promise<unknown> {
-  const run = mutationChain.then(() => dispatchStoreMutation(store, payload));
+/** Serializes one async store operation on the current document's mutation chain. */
+export function serializeStoreMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const run = mutationChain.then(operation);
   mutationChain = run.then(() => undefined, () => undefined);
   return run;
+}
+
+/** Serializes general store mutations in the current page session. */
+function mutateStore(store: ProjectStore, payload: Record<string, unknown>): Promise<unknown> {
+  return serializeStoreMutation(() => dispatchStoreMutation(store, payload));
 }
 
 /** Installs `store` into both `boundStore` and `runtimeState.store`. */
@@ -366,6 +371,7 @@ export function projectStoreStatus(projectId: string): ProjectStoreStatus {
   if (!readProjectStore(store)) {
     return { ok: false, error: "collection_store_not_bound" };
   }
+  runtimeState.routePath = location.pathname;
   session ??= crypto.randomUUID();
   return { ok: true, bound: true, session };
 }
