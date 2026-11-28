@@ -272,6 +272,10 @@ export interface FlowStoreHandle {
   isCurrent: () => boolean;
   /** Returns the current project tile map if available. */
   getTileMap: () => Map<string, FlowTile> | null | undefined;
+  /** Returns the project title from the store signal or query cache when available. */
+  getTitle: () => string | null;
+  /** Returns true when a store title signal or project cache backs `getTitle`. */
+  isTitleVerified?: () => boolean;
   /** Returns true when pending store fetches have settled. */
   isReady: () => boolean;
   /** Dispatches a store mutation payload and waits for completion. */
@@ -573,6 +577,7 @@ export type StoreSnapshotResult =
       ok: true;
       projectId: string | null;
       projectTitle: string | null;
+      projectTitleVerified?: boolean;
       credits: number | null;
       assets: SnapshotAssetItem[];
       collections: SnapshotCollectionItem[];
@@ -582,10 +587,12 @@ export type StoreSnapshotResult =
 export interface ProjectsOpRequest {
   /** Operation (`list`, `set_title`, or `delete`). */
   action?: string;
-  /** Desired project title for `set_title` or target match for `delete`. */
+  /** Desired project title for `set_title` or target match for `list` and `delete`. */
   title?: string;
-  /** Project identifier for `delete`. */
+  /** Project identifier for `list` and `delete`. */
   project_id?: string;
+  /** Time limit in milliseconds for grid pagination and confirmation. */
+  timeout_ms?: number;
 }
 
 /** Extra options for `assetOps("rename", ...)`. */

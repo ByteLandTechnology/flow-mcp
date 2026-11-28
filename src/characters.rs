@@ -20,7 +20,9 @@ use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_subroute_url,
     project_workspace_url,
 };
-use crate::project_route::character_id_from_url;
+use crate::project_route::{
+    character_id_from_url, is_character_route_url, is_project_subroute_url,
+};
 use crate::project_store::ProjectStoreSession;
 use crate::queue::{ProgressCallback, SceneParams};
 use crate::voices::{
@@ -108,63 +110,51 @@ pub(crate) async fn open_character_editor(
     project_id: &str,
     char_id: &str,
 ) -> Result<()> {
-    let res = engine
-        .call_flow_async(
-            "characterOp",
-            json!([{
-                "action": "open_editor",
-                "project_id": project_id,
-                "character_id": char_id,
-            }]),
-        )
-        .await;
-    if res
-        .as_ref()
-        .ok()
-        .and_then(|v| v.get("ok"))
-        .and_then(|v| v.as_bool())
-        == Some(true)
+    let req =
+        json!([{ "action": "open_editor", "project_id": project_id, "character_id": char_id }]);
+    if let Ok(res) = engine.call_flow_async("characterOp", req).await
+        && res.get("ok").and_then(Value::as_bool) == Some(true)
     {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let _ = ensure_flow_store(engine).await;
         return Ok(());
     }
     // Use direct URL navigation if the SPA router does not open the editor.
-    let char_url =
-        project_subroute_url(reference_url, project_id, &format!("character/{}", char_id));
+    let char_url = project_subroute_url(reference_url, project_id, &format!("character/{char_id}"));
     engine.navigate(&char_url).await?;
     tokio::time::sleep(Duration::from_millis(1800)).await;
     let _ = ensure_flow_store(engine).await;
     Ok(())
 }
 
-/// Exits the character editor back to `/project/<id>` and clears stale Angular store handles.
+/// Exits the character editor back to `/project/<id>` or `/project/<id>/collection/<cid>` and clears stale Angular store handles.
 pub(crate) async fn exit_character_editor(engine: &ChromeEngine, project_id: Option<&str>) {
     let before_finish = engine.current_url().await.unwrap_or_default();
-    let in_character = before_finish.contains("/character/");
+    let in_character = is_character_route_url(&before_finish);
     let finish_res = engine
         .call_flow_async("characterOp", json!([{ "action": "finish" }]))
         .await;
     let in_workspace = finish_res
-        .as_ref()
         .ok()
-        .and_then(|v| v.get("in_workspace"))
+        .and_then(|v| v.get("in_workspace").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let _ = ensure_project_workspace_root(engine).await;
+    let cur = engine.current_url().await.unwrap_or_default();
+    let has_workspace = engine
+        .call_flow_async("projectNav", json!(["has_workspace"]))
+        .await
+        .ok()
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let cur = engine.current_url().await.unwrap_or_default();
-    if (in_character && !in_workspace) || cur.contains("/character/") {
-        if !cur.contains("/character/") {
-            tokio::time::sleep(Duration::from_millis(400)).await;
-        }
-        if let Some(pid) = project_id
+    if (is_project_subroute_url(&cur, true) || (in_character && !in_workspace && !has_workspace))
+        && let Some(pid) = project_id
             .map(str::to_string)
             .or_else(|| project_id_from_url(&cur))
             .or_else(|| project_id_from_url(&before_finish))
-        {
-            // Reload `/project/<id>` because exiting a direct `/character/<id>` load leaves an empty shell.
-            let _ = engine.navigate(&project_workspace_url(&cur, &pid)).await;
-            tokio::time::sleep(Duration::from_millis(1500)).await;
-        }
+    {
+        // Reload `/project/<id>` because exiting a direct `/character/<id>` load leaves an empty shell.
+        let _ = engine.navigate(&project_workspace_url(&cur, &pid)).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
     }
     let _ = ensure_flow_store(engine).await;
 }
@@ -202,27 +192,18 @@ pub(crate) async fn list_voices(
         let cid = if let Some(existing_cid) = target_cid {
             existing_cid
         } else {
-            let created = engine
-                .call_flow_async(
-                    "characterOp",
-                    json!([{
-                        "action": "create",
-                        "name": "__tmp_voice_probe__",
-                    }]),
-                )
-                .await?;
-            if created.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                anyhow::bail!(
-                    "Failed to create temporary character for voice lookup: {}",
-                    created
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                );
+            let req = json!([{ "action": "create", "name": "__tmp_voice_probe__" }]);
+            let created = engine.call_flow_async("characterOp", req).await?;
+            if created.get("ok").and_then(Value::as_bool) != Some(true) {
+                let err = created
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                anyhow::bail!("Failed to create temporary character for voice lookup: {err}");
             }
             let tmp_cid = created
                 .get("id")
-                .and_then(|v| v.as_str())
+                .and_then(Value::as_str)
                 .map(str::to_string)
                 .ok_or_else(|| {
                     anyhow::anyhow!("Temporary character creation returned no character ID")

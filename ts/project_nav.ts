@@ -88,7 +88,8 @@ export async function projectNav(action: string): Promise<unknown> {
     return false;
   }
 
-  if (action === "exit_subroute") {
+  if (action === "exit_subroute" || action === "exit_to_root") {
+    const allowCollection = action === "exit_subroute";
     const activeProject = (): string | undefined =>
       /\/project\/([^/?#]+)/.exec(location.pathname || "")?.[1];
     const pid = activeProject();
@@ -96,40 +97,46 @@ export async function projectNav(action: string): Promise<unknown> {
     const workspace = buildProjectUrl(pid);
     const isOriginalProject = (): boolean =>
       activeProject() === pid && buildProjectUrl(pid) === workspace;
-    const isSubRoute = (): boolean =>
-      /\/project\/[^/?#]+\/(?:character|scene|edit|chat|tools?|create-tool|trash|collection\/[^/?#]+\/character)(?:\/|$)/.test(
-        location.pathname || "",
-      );
+    const isCollectionRoot = (path: string): boolean =>
+      /\/project\/[^/?#]+\/collection\/[^/?#]+\/?$/.test(path);
+    const isSubRoute = (): boolean => {
+      const path = location.pathname || "";
+      if (!/\/project\/[^/?#]+\/[^/?#]+/.test(path)) return false;
+      return !(allowCollection && isCollectionRoot(path));
+    };
     if (!isSubRoute()) {
       return { ok: true, exited: true, method: "already_root" };
     }
-    const direct = Array.from(
-      document.querySelectorAll(
-        'button[aria-label="Done editing scene"], button[aria-label="Done editing"], flow-character-edit-header .back-button, flow-applet-view-header button[aria-label="Back"], button[aria-label="Back button to go to previous page"], flow-navigation-header .back-button:not([aria-label="Home"]), button[aria-label="Go back"]',
-      ),
-    ).find(isVisibleEnabled);
+    const startPath = location.pathname || "";
     let clicked = false;
-    if (direct) {
-      const inner =
-        direct.tagName === "BUTTON" ? null : direct.querySelector("button");
-      (isVisibleEnabled(inner) ? inner : direct).click();
-      clicked = true;
-    } else {
-      const hit = Array.from(
-        document.querySelectorAll('button, [role="button"]'),
-      ).find((el): el is HTMLElement => {
-        if (!isVisibleEnabled(el)) return false;
-        const aria = (el.getAttribute("aria-label") || "").trim();
-        const txt = elText(el);
-        return (
-          /^(?:done(?: editing(?: scene)?)?|go back|back button to go to previous page)$/i.test(
-            aria,
-          ) || /^(?:done(?: editing(?: scene)?)?)$/i.test(txt)
-        );
-      });
-      if (hit) {
-        hit.click();
+    if (!isCollectionRoot(startPath)) {
+      const direct = Array.from(
+        document.querySelectorAll(
+          'button[aria-label="Done editing scene"], button[aria-label="Done editing"], flow-character-edit-header .back-button, flow-applet-view-header button[aria-label="Back"], button[aria-label="Back button to go to previous page"], flow-navigation-header .back-button:not([aria-label="Home"]), button[aria-label="Go back"]',
+        ),
+      ).find(isVisibleEnabled);
+      if (direct) {
+        const inner =
+          direct.tagName === "BUTTON" ? null : direct.querySelector("button");
+        (isVisibleEnabled(inner) ? inner : direct).click();
         clicked = true;
+      } else {
+        const hit = Array.from(
+          document.querySelectorAll('button, [role="button"]'),
+        ).find((el): el is HTMLElement => {
+          if (!isVisibleEnabled(el)) return false;
+          const aria = (el.getAttribute("aria-label") || "").trim();
+          const txt = elText(el);
+          return (
+            /^(?:done(?: editing(?: scene)?)?|go back|back button to go to previous page)$/i.test(
+              aria,
+            ) || /^(?:done(?: editing(?: scene)?)?)$/i.test(txt)
+          );
+        });
+        if (hit) {
+          hit.click();
+          clicked = true;
+        }
       }
     }
     if (clicked) {
@@ -140,11 +147,20 @@ export async function projectNav(action: string): Promise<unknown> {
           clearStore();
           return { ok: true, exited: true, method: "ui_done" };
         }
+        if ((location.pathname || "") !== startPath) {
+          break;
+        }
       }
     }
     const router = isOriginalProject() ? findRouter() : null;
     if (router) {
-      await navigateSpa(router, ["/project", pid]);
+      const startCid = allowCollection
+        ? /\/project\/[^/?#]+\/collection\/([^/?#]+)\//.exec(startPath)?.[1]
+        : undefined;
+      await navigateSpa(
+        router,
+        startCid ? ["/project", pid, "collection", startCid] : ["/project", pid],
+      );
       for (let i = 0; i < 25; i++) {
         await delay(100);
         if (!isOriginalProject()) break;

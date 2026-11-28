@@ -59,6 +59,13 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
   }
 
   if (action === "finish") {
+    const isCharacterPath = (): boolean =>
+      /\/character(?:\/|$)/.test(location.pathname || "");
+    const isSubRoutePath = (): boolean => {
+      const path = location.pathname || "";
+      if (!/\/project\/[^/?#]+\/[^/?#]+/.test(path)) return false;
+      return !/\/project\/[^/?#]+\/collection\/[^/?#]+\/?$/.test(path);
+    };
     const backBtn = document.querySelector(
       'flow-character-edit-header .back-button, button[aria-label="Go back"]',
     );
@@ -68,14 +75,15 @@ export async function characterOp(req: CharacterOpRequest): Promise<unknown> {
       closed = true;
     }
     for (let i = 0; i < 25; i++) {
-      if (!location.pathname.includes("/character/")) break;
+      if (!isCharacterPath()) break;
       await delay(100);
     }
-    const exited = !location.pathname.includes("/character/");
+    const exited = !isCharacterPath();
     let inWorkspace = false;
-    if (exited) {
+    if (exited && !isSubRoutePath()) {
       for (let i = 0; i < 20; i++) {
         if (
+          !isSubRoutePath() &&
           document.querySelector("flow-project-page, flow-grid-tile-container")
         ) {
           inWorkspace = true;

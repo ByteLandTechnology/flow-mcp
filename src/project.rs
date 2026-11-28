@@ -15,14 +15,18 @@ use tokio::time::{Duration, Instant};
 
 use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
-use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::engine::{ChromeEngine, ENGINE_NAME, checked_runtime_result};
 pub(crate) use crate::project_route::{
-    project_id_from_url, project_subroute_url, project_workspace_url,
+    clean_project_title, collection_id_from_url, is_project_subroute_url, project_id_from_url,
+    project_subroute_url, project_workspace_url,
 };
 use crate::project_store::{bind_current_store, prepare_project_store_status};
 
 /// Angular error code for a required input that has no value yet.
 const ANGULAR_REQUIRED_INPUT_ERROR: &str = "NG0950";
+
+/// Time limit for home-page project grid pagination and confirmation.
+const PROJECTS_OP_BUDGET: Duration = Duration::from_secs(45);
 
 /// Parameters for `flow_status`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -86,48 +90,35 @@ pub(crate) struct FlowStatus {
     pub(crate) error: Option<String>,
 }
 
-/// Navigates back to `/project/<id>` when Chrome is on a non-grid project subroute.
-pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
-    let is_subroute = |url: &str| {
-        let path = url.split(['?', '#']).next().unwrap_or_default();
-        let Some((_, project)) = path.split_once("/project/") else {
-            return false;
-        };
-        let mut segs = project.trim_end_matches('/').split('/');
-        if segs.next().is_none_or(str::is_empty) {
-            return false;
-        }
-        match (segs.next(), segs.next(), segs.next()) {
-            (
-                Some(
-                    "character" | "scene" | "edit" | "chat" | "tool" | "tools" | "create-tool"
-                    | "trash",
-                ),
-                _,
-                _,
-            ) => true,
-            (Some("collection"), Some(cid), Some("character")) => !cid.is_empty(),
-            _ => false,
-        }
-    };
+/// Exits child routes under `/project/<id>`, keeping `/collection/<cid>` when `allow_collection` is `true`.
+async fn ensure_project_route(engine: &ChromeEngine, allow_collection: bool) -> Result<()> {
     let current = engine.current_url().await?;
-    if !is_subroute(&current) {
+    if !is_project_subroute_url(&current, allow_collection) {
         return Ok(());
     }
     let project_id = project_id_from_url(&current)
         .ok_or_else(|| anyhow::anyhow!("Cannot identify the active Flow project"))?;
     let workspace = project_workspace_url(&current, &project_id);
+    let target_url = match collection_id_from_url(&current).filter(|_| allow_collection) {
+        Some(cid) => project_subroute_url(&current, &project_id, &format!("collection/{cid}")),
+        None => workspace.clone(),
+    };
     let returned = |url: &str| {
         is_flow_host_url(url)
-            && !is_subroute(url)
+            && !is_project_subroute_url(url, allow_collection)
             && project_id_from_url(url).as_deref() == Some(project_id.as_str())
             && project_workspace_url(url, &project_id) == workspace
     };
-    let _ = eval_project_nav(engine, "exit_subroute").await;
+    let nav_action = if allow_collection {
+        "exit_subroute"
+    } else {
+        "exit_to_root"
+    };
+    let _ = eval_project_nav(engine, nav_action).await;
     if returned(&engine.current_url().await.unwrap_or_default()) {
         return Ok(());
     }
-    engine.navigate(&workspace).await?;
+    engine.navigate(&target_url).await?;
     for _ in 0..10 {
         if returned(&engine.current_url().await.unwrap_or_default()) {
             return Ok(());
@@ -135,6 +126,11 @@ pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Resu
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     anyhow::bail!("Cannot return to the active Flow project workspace")
+}
+
+/// Navigates back to `/project/<id>` or `/project/<id>/collection/<cid>` from non-grid subroutes.
+pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
+    ensure_project_route(engine, true).await
 }
 
 /// Opens a Flow page and verifies access with the active Chrome profile.
@@ -241,11 +237,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let mut project = auth_check
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let mut project = None;
     let mut credits = None;
     let mut assets_count = None;
     let mut collections_count = None;
@@ -255,25 +247,32 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
     }
 
     if in_project {
-        let snap = engine
+        let mut snap = engine
             .call_flow_js("readStoreSnapshot", json!([]))
             .await
             .unwrap_or(Value::Null);
-        if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-            if let Some(t) = snap.get("projectTitle").and_then(|v| v.as_str())
-                && !t.is_empty()
-            {
-                project = Some(t.to_string());
+        if !probe {
+            for _ in 0..8 {
+                if snap.get("error").and_then(Value::as_str) != Some("store_loading") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                snap = engine
+                    .call_flow_js("readStoreSnapshot", json!([]))
+                    .await
+                    .unwrap_or(Value::Null);
             }
-            credits = snap.get("credits").and_then(|v| v.as_i64());
-            assets_count = snap
-                .get("assets")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len());
+        }
+        if snap.get("ok").and_then(Value::as_bool) == Some(true) {
+            project = clean_project_title(snap.get("projectTitle").and_then(Value::as_str), true);
+            credits = snap.get("credits").and_then(Value::as_i64);
+            assets_count = snap.get("assets").and_then(Value::as_array).map(Vec::len);
             collections_count = snap
                 .get("collections")
-                .and_then(|v| v.as_array())
-                .map(|c| c.len());
+                .and_then(Value::as_array)
+                .map(Vec::len);
+        } else {
+            project = clean_project_title(auth_check.get("title").and_then(Value::as_str), false);
         }
     }
 
@@ -604,20 +603,33 @@ async fn run_projects_op(engine: &ChromeEngine, req: Value) -> Result<Value> {
     engine.call_flow_async("projectsOp", json!([req])).await
 }
 
-/// Navigates to the signed-in Google Flow home page.
-async fn open_signed_in_home_page(engine: &ChromeEngine) -> Result<()> {
+/// Returns the remaining milliseconds before `deadline`, or `None` when expired.
+fn remaining_budget_ms(deadline: Instant) -> Option<u64> {
+    let rem = deadline.checked_duration_since(Instant::now())?;
+    let ms = u64::try_from(rem.as_millis()).unwrap_or(u64::MAX);
+    (ms > 0).then_some(ms)
+}
+
+/// Navigates to the signed-in Google Flow home page and returns the remaining grid budget in milliseconds.
+async fn open_signed_in_home_page(engine: &ChromeEngine) -> Result<u64> {
+    let deadline = Instant::now() + PROJECTS_OP_BUDGET;
     engine.ensure_page().await?;
     engine.navigate(FLOW_URL).await?;
     tokio::time::sleep(Duration::from_millis(900)).await;
     let _ = ensure_signed_in_flow_page(engine).await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    Ok(())
+    remaining_budget_ms(deadline)
+        .ok_or_else(|| anyhow::anyhow!("Timed out opening the Google Flow home page"))
 }
 
 /// Lists all existing Flow projects from the Flow home page.
 async fn list_projects(engine: &ChromeEngine) -> Result<Value> {
-    open_signed_in_home_page(engine).await?;
-    let res = run_projects_op(engine, json!({ "action": "list" })).await?;
+    let timeout_ms = open_signed_in_home_page(engine).await?;
+    let res = run_projects_op(
+        engine,
+        json!({ "action": "list", "timeout_ms": timeout_ms }),
+    )
+    .await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
             "Failed to list Flow projects: {}",
@@ -640,26 +652,56 @@ async fn open_project(
 
     if target_id.is_none() {
         let want = title
-            .map(|s| s.trim().to_ascii_lowercase())
+            .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Provide `id` or `title` to open a project"))?;
-        let listed = list_projects(engine).await?;
+        let timeout_ms = open_signed_in_home_page(engine).await?;
+        let listed = run_projects_op(
+            engine,
+            json!({ "action": "list", "title": want, "timeout_ms": timeout_ms }),
+        )
+        .await?;
+        if listed.get("ok").and_then(Value::as_bool) != Some(true) {
+            anyhow::bail!(
+                "Failed to list Flow projects: {}",
+                listed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+            );
+        }
+        let truncated = listed.get("truncated").and_then(Value::as_bool) == Some(true);
         let projects = listed
             .get("projects")
-            .and_then(|v| v.as_array())
+            .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let hit = projects.into_iter().find(|p| {
-            p.get("title")
-                .and_then(|v| v.as_str())
-                .map(|t| t.trim().to_ascii_lowercase().contains(&want))
-                .unwrap_or(false)
-        });
+        let hit = projects
+            .iter()
+            .find(|p| {
+                p.get("title")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.trim().to_lowercase() == want)
+            })
+            .cloned()
+            .or_else(|| {
+                projects.into_iter().find(|p| {
+                    p.get("title")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t.trim().to_lowercase().contains(&want))
+                })
+            });
         let Some(p) = hit else {
+            if truncated {
+                anyhow::bail!(
+                    "Timed out scanning the Google Flow projects grid for title '{}'",
+                    want
+                );
+            }
             anyhow::bail!("No Google Flow project matches title '{}'", want);
         };
-        target_id = p.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
-        if let Some(t) = p.get("title").and_then(|v| v.as_str()) {
+        target_id = p.get("id").and_then(Value::as_str).map(str::to_string);
+        if let Some(t) = p.get("title").and_then(Value::as_str) {
             matched_title = Some(t.to_string());
         }
     }
@@ -672,35 +714,38 @@ async fn open_project(
     tokio::time::sleep(Duration::from_millis(800)).await;
     ensure_flow_store(engine).await?;
     let snap = read_snapshot(engine).await?;
+    let resolved_title =
+        clean_project_title(snap.get("projectTitle").and_then(Value::as_str), true)
+            .or(matched_title);
     Ok(json!({
         "opened": true,
         "project_id": pid,
-        "title": snap.get("projectTitle").and_then(|v| v.as_str()).map(|s| s.to_string()).or(matched_title),
+        "title": resolved_title,
         "url": engine.current_url().await.unwrap_or(project_url),
-        "assets_count": snap.get("assets").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
-        "collections_count": snap.get("collections").and_then(|v| v.as_array()).map(|c| c.len()).unwrap_or(0),
+        "assets_count": snap.get("assets").and_then(Value::as_array).map_or(0, Vec::len),
+        "collections_count": snap.get("collections").and_then(Value::as_array).map_or(0, Vec::len),
     }))
 }
 
-/// Polls project snapshots until `projectTitle` holds `desired` after a short settle delay.
+/// Polls project snapshots until a verified `projectTitle` holds `desired` after a settle delay.
 async fn confirm_project_title(engine: &ChromeEngine, desired: &str) -> Result<String> {
-    let deadline = Instant::now() + Duration::from_secs(6);
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    while Instant::now() < deadline {
-        if let Ok(snap) = read_snapshot(engine).await
+    let matches_desired = |snap: &Value| {
+        snap.get("projectTitleVerified").and_then(Value::as_bool) != Some(false)
             && snap
                 .get("projectTitle")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 == Some(desired)
+    };
+    let deadline = Instant::now() + Duration::from_secs(6);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    while Instant::now() < deadline {
+        if let Ok(snap) = read_snapshot(engine).await
+            && matches_desired(&snap)
         {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if let Ok(settled) = read_snapshot(engine).await
-                && settled
-                    .get("projectTitle")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    == Some(desired)
+                && matches_desired(&settled)
             {
                 return Ok(desired.to_string());
             }
@@ -713,78 +758,25 @@ async fn confirm_project_title(engine: &ChromeEngine, desired: &str) -> Result<S
     )
 }
 
-/// Counts entries in a `projectsOp` list payload that match `id` or exact `title`.
-fn count_matching_project_entries(
-    entries: &[Value],
-    id: Option<&str>,
-    title: Option<&str>,
-) -> usize {
-    let want_id = id.map(str::trim).filter(|s| !s.is_empty());
-    let want_title = title.map(str::trim).filter(|s| !s.is_empty());
-    entries
-        .iter()
-        .filter(|entry| {
-            if let Some(wid) = want_id
-                && entry.get("id").and_then(Value::as_str) == Some(wid)
-            {
-                return true;
-            }
-            if let Some(wtitle) = want_title
-                && entry
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .is_some_and(|t| t.trim().eq_ignore_ascii_case(wtitle))
-            {
-                return true;
-            }
-            false
-        })
-        .count()
-}
-
-/// Polls home-view project entries until the deleted project is absent from the page.
-async fn confirm_project_deleted(
-    engine: &ChromeEngine,
-    deleted_id: Option<&str>,
-    title: Option<&str>,
-    before_matches: usize,
-) -> Result<()> {
-    let want_id = deleted_id.map(str::trim).filter(|s| !s.is_empty());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        let listed = run_projects_op(engine, json!({ "action": "list" })).await?;
-        if listed.get("ok").and_then(Value::as_bool) == Some(true)
-            && let Some(projects) = listed.get("projects").and_then(Value::as_array)
-        {
-            let gone = match want_id {
-                Some(did) => !projects
-                    .iter()
-                    .any(|p| p.get("id").and_then(Value::as_str) == Some(did)),
-                None => count_matching_project_entries(projects, None, title) < before_matches,
-            };
-            if gone {
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    anyhow::bail!("Failed to confirm project deletion on the Flow home page")
-}
-
 /// Renames the active project (or the project identified by `id`).
 async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) -> Result<Value> {
     let trimmed = title.trim();
     if trimmed.is_empty() {
         anyhow::bail!("New project title must not be empty");
     }
-    if let Some(pid) = id.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(pid) = id.map(str::trim).filter(|s| !s.is_empty()) {
         let cur = engine.current_url().await.unwrap_or_default();
         if project_id_from_url(&cur).as_deref() != Some(pid) {
             let _ = open_project(engine, Some(pid), None).await?;
+        } else {
+            ensure_project_route(engine, false).await?;
+            ensure_flow_store(engine).await?;
         }
     } else {
+        ensure_project_route(engine, false).await?;
         ensure_flow_store(engine).await?;
     }
+    ensure_project_route(engine, false).await?;
     let res = run_projects_op(engine, json!({ "action": "set_title", "title": trimmed })).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
@@ -809,37 +801,36 @@ async fn delete_project(
     id: Option<&str>,
     title: Option<&str>,
 ) -> Result<Value> {
-    if id.map(|s| s.trim()).filter(|s| !s.is_empty()).is_none()
-        && title.map(|s| s.trim()).filter(|s| !s.is_empty()).is_none()
-    {
+    let clean_id = id.map(str::trim).filter(|s| !s.is_empty());
+    let clean_title = title.map(str::trim).filter(|s| !s.is_empty());
+    if clean_id.is_none() && clean_title.is_none() {
         anyhow::bail!("Provide `id` or `title` to delete a project");
     }
-    open_signed_in_home_page(engine).await?;
+    let timeout_ms = open_signed_in_home_page(engine).await?;
 
-    let before_list = run_projects_op(engine, json!({ "action": "list" })).await?;
-    let before_matches = before_list
-        .get("projects")
-        .and_then(Value::as_array)
-        .map_or(1, |projects| {
-            count_matching_project_entries(projects, id, title)
-        });
-
-    let res = run_projects_op(
+    let response = run_projects_op(
         engine,
-        json!({ "action": "delete", "project_id": id, "title": title }),
+        json!({
+            "action": "delete",
+            "project_id": clean_id,
+            "title": clean_title,
+            "timeout_ms": timeout_ms,
+        }),
     )
-    .await?;
-    if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        anyhow::bail!(
-            "Failed to delete project: {}",
-            res.get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
+    .await;
+    match response {
+        Ok(res) if res.get("ok").and_then(Value::as_bool) == Some(true) => Ok(res),
+        Ok(res) if res.get("error").and_then(Value::as_str) == Some("outcome_unknown") => {
+            checked_runtime_result(res)
+        }
+        Ok(res) => {
+            let err = checked_runtime_result(res)
+                .err()
+                .unwrap_or_else(|| anyhow::anyhow!("unknown"));
+            anyhow::bail!("Failed to delete project: {err:#}");
+        }
+        Err(err) => anyhow::bail!("outcome_unknown (delete project): {err:#}"),
     }
-    let deleted_id = res.get("deleted_id").and_then(Value::as_str).or(id);
-    confirm_project_deleted(engine, deleted_id, title, before_matches).await?;
-    Ok(res)
 }
 
 /// Dispatches `flow_projects` actions (`list`, `create`, `open`, `rename`, `delete`).

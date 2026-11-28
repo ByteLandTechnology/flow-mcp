@@ -373,8 +373,13 @@ impl FlowService {
             .await?;
         }
         anyhow::ensure!(req.files.is_none(), "Use files with flow_assets upload");
-        let list = assets::list_assets(&self.engine, &req).await?;
-        Ok(json!({ "count": list.len(), "assets": list }))
+        let snap = assets::list_assets_snapshot(&self.engine, &req).await?;
+        Ok(json!({
+            "project_id": snap.project_id,
+            "project_title": snap.project_title,
+            "count": snap.assets.len(),
+            "assets": snap.assets,
+        }))
     }
 
     /// Renames one or more assets or collections in the active Google Flow project.
