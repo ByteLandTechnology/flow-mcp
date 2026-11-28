@@ -27,6 +27,18 @@ const MEDIA_URL_LOOKUPS: usize = 4;
 /// Time to resolve missing URLs in one asset list response.
 const ASSET_LIST_URL_BUDGET: Duration = Duration::from_secs(10);
 
+/// Failed or canceled media variant entry recorded in asset history.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FailedVariant {
+    /// Variant media ID or permutation-invariant fallback key.
+    pub(crate) id: String,
+    /// Lowercase failure status (`"failed"` or `"canceled"`).
+    pub(crate) status: String,
+    /// Optional failure message reported by Flow.
+    #[serde(default)]
+    pub(crate) error: Option<String>,
+}
+
 /// Media asset or scene item inside a Google Flow project.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct FlowAsset {
@@ -63,9 +75,9 @@ pub(crate) struct FlowAsset {
     /// Primary media ID for video trim and edit operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) primary_media_id: Option<String>,
-    /// Newest variant ID in asset or scene clip history.
+    /// Internal failed or canceled variants recorded in asset history.
     #[serde(default, skip_serializing)]
-    pub(crate) latest_variant_id: Option<String>,
+    pub(crate) failed_variants: Vec<FailedVariant>,
     /// Character personality notes or introduction text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) personality_notes: Option<String>,
@@ -172,13 +184,11 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
-        let primary_not_ready = (asset.media_error.is_some()
+        let primary_not_ready = asset.media_error.is_some()
             || matches!(
                 asset.media_status.as_deref(),
                 Some("pending" | "scheduled" | "failed" | "canceled")
-            ))
-            && (asset.latest_variant_id.is_none()
-                || asset.latest_variant_id == asset.primary_media_id);
+            );
         if !matches!(
             asset.kind.as_str(),
             "video" | "image" | "character" | "audio"

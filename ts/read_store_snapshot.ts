@@ -28,6 +28,7 @@ import type {
   SceneClipItem,
   SnapshotAssetItem,
   SnapshotCollectionItem,
+  SnapshotFailedVariant,
   StoreSnapshotResult,
 } from "./types";
 
@@ -37,34 +38,54 @@ const ACCOUNT_CREDITS_RE = /(?:^|[^\w,])(\d[\d,]*)\s+(?:Google\s+Flow|Flow|AI)\s
 /** Selector matching generation credit cost estimates that are not account balances. */
 const COST_LABEL_SELECTOR = "flow-credit-cost-label, .credit-cost-label, .credit-cost-link";
 
-/** Reads the creation timestamp in milliseconds from a media payload when available. */
-function variantTimestampMs(
-  media: FlowMediaPayload | null | undefined,
-): number | null {
-  if (!media || typeof media !== "object") return null;
-  const rawDate =
-    media.hc ?? media.kc ?? (media as Record<string, unknown>).lc;
-  return rawDate instanceof Date && Number.isFinite(rawDate.getTime())
-    ? rawDate.getTime()
-    : null;
-}
-
-/** Selects the newest normalized media variant from a tile or scene clip history list. */
-function pickLatestHistoryVariant(history: unknown): FlowMediaPayload | null {
-  if (!Array.isArray(history) || history.length === 0) return null;
-  let best: FlowMediaPayload | null = null;
-  let bestTs: number | null = null;
+/** Collects failed or canceled variants from a history array without relying on sort order. */
+function collectFailedVariants(
+  history: unknown,
+  formatMediaError: (errVal: unknown) => string | null,
+): SnapshotFailedVariant[] {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  const out: SnapshotFailedVariant[] = [];
+  const seenIds = new Set<string>();
+  const anonCounts = new Map<string, number>();
   for (const item of history) {
     if (!item || typeof item !== "object") continue;
     const norm = legacyMedia(item as FlowMediaPayload);
     if (!norm) continue;
-    const curTs = variantTimestampMs(norm);
-    if (!best || curTs === null || bestTs === null || curTs >= bestTs) {
-      best = norm;
-      bestTs = curTs;
+    const status = String(norm.Zc ?? "").toLowerCase();
+    const error = formatMediaError(norm.nf);
+    if (status !== "failed" && status !== "canceled" && error === null) {
+      continue;
+    }
+    const rawId = String(norm.id ?? norm.mediaId ?? "").trim();
+    let key = rawId;
+    if (!key) {
+      const sig = `${status || "failed"}:${error ?? ""}`;
+      const occ = (anonCounts.get(sig) ?? 0) + 1;
+      anonCounts.set(sig, occ);
+      key = `anon#${occ}:${sig}`;
+    }
+    if (seenIds.has(key)) continue;
+    seenIds.add(key);
+    out.push({ id: key, status: status || "failed", error });
+  }
+  return out;
+}
+
+/** Appends failed variant entries from `extra` whose IDs are not already in `base`. */
+function mergeFailedVariants(
+  base: SnapshotFailedVariant[],
+  extra: SnapshotFailedVariant[],
+): SnapshotFailedVariant[] {
+  if (extra.length === 0) return base;
+  const seen = new Set(base.map((v) => v.id));
+  const merged = [...base];
+  for (const item of extra) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      merged.push(item);
     }
   }
-  return best;
+  return merged;
 }
 
 /** Locates an active Angular service instance matching `ServiceClass` in runtime state. */
@@ -380,24 +401,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       : Array.isArray(t.history)
         ? t.history
         : null;
-    const latestVariant = pickLatestHistoryVariant(rawHistory);
-    const latestVariantIdRaw =
-      latestVariant?.id ?? latestVariant?.mediaId ?? primaryMediaIdStr;
-    const latestVariantId =
-      latestVariantIdRaw != null && String(latestVariantIdRaw) !== ""
-        ? String(latestVariantIdRaw)
-        : null;
-    const latestStatus = latestVariant
-      ? String(latestVariant.Zc ?? "").toLowerCase()
-      : "";
-    const latestError = latestVariant
-      ? formatMediaError(latestVariant.nf)
-      : null;
-    const mediaStatus = (latestStatus || primaryStatus) || null;
-    const mediaError = latestVariant
-      ? latestError ??
-        (latestVariantId === primaryMediaIdStr ? primaryError : null)
-      : primaryError;
+    const failedVariants = collectFailedVariants(rawHistory, formatMediaError);
+    const mediaStatus = primaryStatus || null;
+    const mediaError = primaryError;
 
     const cachedEntry = primaryMediaId
       ? runtimeState.mediaInfoCache.get(String(primaryMediaId))
@@ -462,7 +468,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       collection_id: cid,
       scene_id: null,
       primary_media_id: primaryMediaIdStr,
-      latest_variant_id: latestVariantId,
+      failed_variants: failedVariants,
       personality_notes: bio == null ? null : String(bio),
       voice: voiceRaw != null ? voiceRaw : null,
       trim_start_seconds: trimStart,
@@ -542,7 +548,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         ? (primaryId
             ? hist.find((x) => x && String(x.id ?? x.mediaId ?? "") === primaryId)
             : null) ||
-          pickLatestHistoryVariant(hist) ||
+          hist[0] ||
           null
         : null;
       candidates.push([wfId, clip, mObj, hist]);
@@ -550,7 +556,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     for (const [wfId, hist] of history) {
       if (!wfId || seenWfIds.has(wfId)) continue;
       seenWfIds.add(wfId);
-      const mObj = pickLatestHistoryVariant(hist);
+      const mObj = (Array.isArray(hist) && hist[0]) || null;
       candidates.push([wfId, null, mObj, hist]);
     }
 
@@ -567,50 +573,13 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         : mObj?.id
           ? String(mObj.id)
           : null;
-      const latestClipVariant = pickLatestHistoryVariant(hist);
-      const latestClipIdRaw =
-        latestClipVariant?.id ?? latestClipVariant?.mediaId ?? clipPrimaryMediaId;
-      const latestClipVariantId =
-        latestClipIdRaw != null && String(latestClipIdRaw) !== ""
-          ? String(latestClipIdRaw)
-          : null;
-      const latestClipStatus = latestClipVariant
-        ? String(latestClipVariant.Zc ?? "").toLowerCase()
-        : "";
-      const latestClipError = latestClipVariant
-        ? formatMediaError(latestClipVariant.nf)
-        : null;
-      const effectiveStatus = (latestClipStatus || primaryClipStatus) || null;
-      const effectiveError = latestClipVariant
-        ? latestClipError ??
-          (latestClipVariantId === clipPrimaryMediaId ? primaryClipError : null)
-        : primaryClipError;
+      const clipFailedVariants = collectFailedVariants(hist, formatMediaError);
       const existing = byId.get(wfId);
       if (existing) {
-        if (
-          latestClipVariantId &&
-          (!existing.latest_variant_id ||
-            existing.latest_variant_id === existing.primary_media_id)
-        ) {
-          existing.latest_variant_id = latestClipVariantId;
-        }
-        if (
-          effectiveStatus === "failed" ||
-          effectiveStatus === "canceled" ||
-          effectiveStatus === "pending" ||
-          effectiveStatus === "scheduled" ||
-          effectiveError
-        ) {
-          if (
-            existing.media_status !== "failed" &&
-            existing.media_status !== "canceled"
-          ) {
-            existing.media_status = effectiveStatus || existing.media_status;
-          }
-          if (!existing.media_error && effectiveError) {
-            existing.media_error = effectiveError;
-          }
-        }
+        existing.failed_variants = mergeFailedVariants(
+          existing.failed_variants,
+          clipFailedVariants,
+        );
         continue;
       }
       const mNotReady =
@@ -691,13 +660,13 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         collection_id: sceneCid,
         scene_id: sceneId,
         primary_media_id: clipPrimaryMediaId,
-        latest_variant_id: latestClipVariantId,
+        failed_variants: clipFailedVariants,
         personality_notes: null,
         voice: null,
         trim_start_seconds: trimStartVal,
         trim_end_seconds: trimEndVal,
-        media_status: effectiveStatus,
-        media_error: effectiveError,
+        media_status: primaryClipStatus || null,
+        media_error: primaryClipError,
         width:
           typeof mObj?.width === "number"
             ? mObj.width

@@ -520,6 +520,16 @@ export interface DiscoverStoreResult {
   error?: string;
 }
 
+/** Failed or canceled media variant entry recorded in asset history. */
+export interface SnapshotFailedVariant {
+  /** Variant media identifier or permutation-invariant fallback key. */
+  id: string;
+  /** Lowercase failure status (`failed` or `canceled`). */
+  status: string;
+  /** Extracted failure message when present. */
+  error: string | null;
+}
+
 /** Asset entry normalized for `readStoreSnapshot`. */
 export interface SnapshotAssetItem {
   /** Tile or clip workflow identifier. */
@@ -540,8 +550,8 @@ export interface SnapshotAssetItem {
   scene_id: string | null;
   /** Primary media identifier. */
   primary_media_id: string | null;
-  /** Newest variant identifier in tile or scene clip history. */
-  latest_variant_id: string | null;
+  /** Failed or canceled variants recorded in tile or clip history. */
+  failed_variants: SnapshotFailedVariant[];
   /** Character personality notes. */
   personality_notes: string | null;
   /** Assigned voice name or identifier. */

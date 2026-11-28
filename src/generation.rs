@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use tokio::sync::broadcast;
 use tokio::time::{Duration, Instant};
 
-use crate::assets::{FlowAsset, list_assets_with_project, match_asset};
+use crate::assets::{FlowAsset, list_assets_with_project};
 use crate::db::FlowDb;
 use crate::download::download_resolved_asset;
 use crate::engine::{ChromeEngine, NetworkResponseEvent, validate_local_files};
@@ -63,47 +63,37 @@ pub(crate) struct GenerateParams {
     pub(crate) resolution: Option<String>,
 }
 
-/// Parameters for `flow_edit`.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub(crate) struct EditParams {
-    /// Case-insensitive asset ID, name, or prompt substring that selects the source asset.
-    #[serde(rename = "match")]
-    pub(crate) r#match: String,
-    /// Edit prompt for the matched asset.
-    pub(crate) prompt: String,
-}
-
 /// Baseline state of an existing asset watched for edit updates or failures.
 #[derive(Clone, Copy)]
-struct WatchedAsset<'a> {
+pub(crate) struct WatchedAsset<'a> {
     /// Asset or scene clip workflow ID.
-    id: &'a str,
+    pub(crate) id: &'a str,
     /// Primary media ID before edit submission.
-    primary_media_id: Option<&'a str>,
-    /// Newest variant ID in history before edit submission.
-    latest_variant_id: Option<&'a str>,
+    pub(crate) primary_media_id: Option<&'a str>,
+    /// Failed or canceled variant IDs already present before edit submission.
+    pub(crate) before_failed_variant_ids: &'a HashSet<String>,
     /// Resolved media URL before edit submission.
-    url: Option<&'a str>,
-    /// True when the watched asset already reported a failed or canceled variant before submission.
-    was_failed: bool,
+    pub(crate) url: Option<&'a str>,
+    /// True when the primary media already reported a failed or canceled status before submission.
+    pub(crate) was_failed: bool,
 }
 
 /// Specification controlling asset polling during generation and edit jobs.
-struct AssetWaitSpec<'a> {
+pub(crate) struct AssetWaitSpec<'a> {
     /// Asset IDs already present before submission.
-    before_ids: &'a HashSet<String>,
+    pub(crate) before_ids: &'a HashSet<String>,
     /// Optional existing tile watched for replacement updates or variant failures.
-    watch_updated: Option<WatchedAsset<'a>>,
+    pub(crate) watch_updated: Option<WatchedAsset<'a>>,
     /// Target number of generated outputs in the batch.
-    expected_count: usize,
+    pub(crate) expected_count: usize,
     /// Maximum wait time in seconds before failing with timeout.
-    timeout_secs: u64,
+    pub(crate) timeout_secs: u64,
     /// Compact submission diagnostics included in progress updates.
-    submit_summary: &'a str,
+    pub(crate) submit_summary: &'a str,
 }
 
 /// Configures generation controls, uploads reference frames, writes prompt text, and submits.
-async fn apply_generation_controls(
+pub(crate) async fn apply_generation_controls(
     engine: &ChromeEngine,
     scene: &SceneParams,
 ) -> Result<serde_json::Value> {
@@ -241,7 +231,7 @@ async fn apply_generation_controls(
 }
 
 /// Formats compact setup and submit diagnostics for generation progress logs.
-fn format_submit_progress(prefix: &str, submit_res: &serde_json::Value) -> String {
+pub(crate) fn format_submit_progress(prefix: &str, submit_res: &serde_json::Value) -> String {
     fn str_or<'a>(obj: Option<&'a serde_json::Value>, key: &str, fallback: &'a str) -> &'a str {
         obj.and_then(|v| v.get(key))
             .and_then(|v| v.as_str())
@@ -338,7 +328,7 @@ pub(crate) fn inspect_generation_network(
 }
 
 /// Polls project snapshots until expected generated outputs resolve or fail.
-async fn wait_for_new_assets(
+pub(crate) async fn wait_for_new_assets(
     engine: &ChromeEngine,
     spec: AssetWaitSpec<'_>,
     net_rx: &mut broadcast::Receiver<NetworkResponseEvent>,
@@ -437,19 +427,38 @@ async fn wait_for_new_assets(
             }
             if let Some(w) = spec.watch_updated
                 && let Some(watched) = snap.assets.iter().find(|a| a.id == w.id)
-                && matches!(watched.media_status.as_deref(), Some("failed" | "canceled"))
-                && (watched.latest_variant_id.as_deref() != w.latest_variant_id
-                    || watched.primary_media_id.as_deref() != w.primary_media_id
-                    || !w.was_failed)
             {
-                anyhow::bail!(
-                    "Flow edit failed on {}: {}",
-                    w.id,
-                    watched
-                        .media_error
-                        .as_deref()
-                        .unwrap_or(watched.media_status.as_deref().unwrap_or("failed"))
-                );
+                if let Some(failed_variant) = watched
+                    .failed_variants
+                    .iter()
+                    .find(|v| !v.id.is_empty() && !w.before_failed_variant_ids.contains(&v.id))
+                {
+                    anyhow::bail!(
+                        "Flow edit failed on {}: {}",
+                        w.id,
+                        failed_variant
+                            .error
+                            .as_deref()
+                            .unwrap_or(failed_variant.status.as_str())
+                    );
+                }
+                let primary_changed =
+                    match (watched.primary_media_id.as_deref(), w.primary_media_id) {
+                        (Some(cur), Some(prev)) => cur != prev,
+                        _ => false,
+                    };
+                if matches!(watched.media_status.as_deref(), Some("failed" | "canceled"))
+                    && (!w.was_failed || primary_changed)
+                {
+                    anyhow::bail!(
+                        "Flow edit failed on {}: {}",
+                        w.id,
+                        watched
+                            .media_error
+                            .as_deref()
+                            .unwrap_or(watched.media_status.as_deref().unwrap_or("failed"))
+                    );
+                }
             }
         }
 
@@ -606,211 +615,6 @@ pub(crate) async fn run_generation(
         project_id,
         project_title,
         should_dl,
-        &on_progress,
-    )
-    .await)
-}
-
-/// Opens an edit flow for an asset that matches `match_str`, submits `prompt`, and downloads/indexes outputs.
-pub(crate) async fn run_edit(
-    engine: &ChromeEngine,
-    db: &FlowDb,
-    match_str: &str,
-    prompt: &str,
-    on_progress: ProgressCallback,
-) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
-    ensure_project_workspace_root(engine).await?;
-    let snap = list_assets_with_project(engine).await?;
-    let target = match_asset(&snap.assets, match_str, true)
-        .cloned()
-        .with_context(|| format!("No asset matches '{}' for edit", match_str))?;
-    match target.kind.as_str() {
-        "scene" => {
-            let clip_ids: Vec<&str> = snap
-                .assets
-                .iter()
-                .filter(|a| a.scene_id.as_deref() == Some(target.id.as_str()))
-                .map(|a| a.id.as_str())
-                .take(6)
-                .collect();
-            let hint = if clip_ids.is_empty() {
-                String::new()
-            } else {
-                format!(" Available clip IDs: {}.", clip_ids.join(", "))
-            };
-            anyhow::bail!(
-                "Cannot edit scene container '{}' directly; pass one of its video clip IDs to flow_edit.{}",
-                target.id,
-                hint
-            );
-        }
-        "character" => anyhow::bail!(
-            "Cannot edit character '{}' with flow_edit; use flow_character_edit instead.",
-            target.id
-        ),
-        "audio" => anyhow::bail!("Cannot edit audio asset '{}' with flow_edit.", target.id),
-        _ => {}
-    }
-    let before: HashSet<String> = snap.assets.into_iter().map(|a| a.id).collect();
-
-    let label = if target.name.is_empty() {
-        target.id.clone()
-    } else {
-        target.name.clone()
-    };
-    on_progress(format!("preparing edit for {}", label));
-
-    let edit_mode = if target.kind == "video" {
-        "video"
-    } else {
-        "image"
-    };
-
-    let open_args = json!([
-        target.id,
-        target.url,
-        target.primary_media_id,
-        target.scene_id
-    ]);
-    let mut open_res = engine
-        .call_flow_async("openEditAsset", open_args.clone())
-        .await
-        .unwrap_or_default();
-    if let Some(alert) = open_res
-        .get("alert")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        let _ = ensure_project_workspace_root(engine).await;
-        anyhow::bail!("Flow cannot edit '{}': {}", label, alert);
-    }
-    if let Some(sel_err) = open_res
-        .get("selection_error")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        let _ = ensure_project_workspace_root(engine).await;
-        anyhow::bail!("Flow cannot select clip '{}': {}", label, sel_err);
-    }
-    let is_editor_open = |res: &serde_json::Value| {
-        if res.get("opened").and_then(|v| v.as_bool()) != Some(true)
-            || res.get("has_textbox").and_then(|v| v.as_bool()) != Some(true)
-            || res.get("selection_error").is_some()
-        {
-            return false;
-        }
-        if target.scene_id.is_some() || res.get("scene_id").and_then(|v| v.as_str()).is_some() {
-            return res.get("selected_clip_id").and_then(|v| v.as_str())
-                == Some(target.id.as_str());
-        }
-        true
-    };
-    let mut opened_in_ui = is_editor_open(&open_res);
-
-    if !opened_in_ui && let Some(edit_url) = open_res.get("edit_url").and_then(|v| v.as_str()) {
-        engine.navigate(edit_url).await?;
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-        let _ = ensure_flow_store(engine).await;
-        open_res = engine
-            .call_flow_async("openEditAsset", open_args)
-            .await
-            .unwrap_or_default();
-        if let Some(alert) = open_res
-            .get("alert")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            let _ = ensure_project_workspace_root(engine).await;
-            anyhow::bail!("Flow cannot edit '{}': {}", label, alert);
-        }
-        if let Some(sel_err) = open_res
-            .get("selection_error")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            let _ = ensure_project_workspace_root(engine).await;
-            anyhow::bail!("Flow cannot select clip '{}': {}", label, sel_err);
-        }
-        opened_in_ui = is_editor_open(&open_res);
-    } else if opened_in_ui {
-        let _ = ensure_flow_store(engine).await;
-    }
-
-    let mut attached_frames: Option<Vec<String>> = None;
-    if !opened_in_ui {
-        ensure_project_workspace_root(engine).await?;
-        if edit_mode == "video" {
-            anyhow::bail!(
-                "Could not open an inline edit control or editor route for video asset '{}'",
-                label
-            );
-        }
-        if target.url.is_some() || target.primary_media_id.is_some() {
-            let local_path =
-                if let Some(cached) = db.find_existing_file_for_asset(&target.id).await? {
-                    cached.file_path
-                } else {
-                    let downloaded = download_resolved_asset(
-                        engine,
-                        db,
-                        &target,
-                        snap.project_id.clone(),
-                        snap.project_title.clone(),
-                    )
-                    .await?;
-                    downloaded.file_path
-                };
-            attached_frames = Some(vec![local_path]);
-        }
-    }
-
-    let cur_url = engine.current_url().await.unwrap_or_default();
-    let in_edit_route = opened_in_ui && (cur_url.contains("/edit/") || cur_url.contains("/scene/"));
-    on_progress(format!("submitting edit for {}", label));
-    let scene = SceneParams {
-        prompt: prompt.to_string(),
-        mode: if in_edit_route {
-            None
-        } else {
-            Some(edit_mode.to_string())
-        },
-        frames: attached_frames,
-        count: Some(1),
-        ..Default::default()
-    };
-    let mut net_rx = engine.subscribe_network().await?;
-    let submit_res = apply_generation_controls(engine, &scene).await?;
-    let submit_summary = format_submit_progress("submitted edit", &submit_res);
-    on_progress(submit_summary.clone());
-
-    let target_was_failed = matches!(target.media_status.as_deref(), Some("failed" | "canceled"));
-    let (created, project_id, project_title) = wait_for_new_assets(
-        engine,
-        AssetWaitSpec {
-            before_ids: &before,
-            watch_updated: Some(WatchedAsset {
-                id: target.id.as_str(),
-                primary_media_id: target.primary_media_id.as_deref(),
-                latest_variant_id: target.latest_variant_id.as_deref(),
-                url: target.url.as_deref(),
-                was_failed: target_was_failed,
-            }),
-            expected_count: 1,
-            timeout_secs: 420,
-            submit_summary: &submit_summary,
-        },
-        &mut net_rx,
-        &on_progress,
-    )
-    .await?;
-    ensure_project_workspace_root(engine).await?;
-    Ok(collect_created_assets(
-        engine,
-        db,
-        created,
-        project_id,
-        project_title,
-        true,
         &on_progress,
     )
     .await)
