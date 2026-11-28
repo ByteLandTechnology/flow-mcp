@@ -33,8 +33,8 @@ pub(crate) fn is_project_subroute_url(url: &str) -> bool {
     segs.next().is_some_and(|seg| !seg.is_empty())
 }
 
-/// Returns `true` when `url` points to a non-upload `/project/<id>/...` subroute while keeping `/collection/<cid>`.
-pub(crate) fn is_upload_subroute_url(url: &str) -> bool {
+/// Returns `true` when `url` points to a non-grid `/project/<id>/...` subroute while keeping `/collection/<cid>`.
+pub(crate) fn is_non_grid_subroute_url(url: &str) -> bool {
     let path = url.split(['?', '#']).next().unwrap_or_default();
     let Some((_, project)) = path.split_once("/project/") else {
         return false;
@@ -50,7 +50,7 @@ pub(crate) fn is_upload_subroute_url(url: &str) -> bool {
     }
 }
 
-/// Strips `"Google Flow - "` wrappers and rejects generic application or trash document titles.
+/// Strips `"Google Flow - "` wrappers and rejects generic `"Google Flow"` `document.title` values.
 pub(crate) fn clean_flow_page_title(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -66,57 +66,48 @@ pub(crate) fn clean_flow_page_title(raw: &str) -> Option<String> {
     {
         return None;
     }
-    let without_prefix = strip_flow_title_prefix(trimmed);
-    let stripped = strip_flow_title_suffix(without_prefix).trim();
-    if stripped.is_empty()
-        || stripped.eq_ignore_ascii_case("google flow")
-        || stripped.eq_ignore_ascii_case("flow")
-        || stripped.eq_ignore_ascii_case("trash")
-    {
+    let without_prefix = strip_google_flow_prefix(trimmed);
+    let stripped = strip_google_flow_suffix(without_prefix).trim();
+    if stripped.is_empty() || stripped.eq_ignore_ascii_case("google flow") {
         return None;
     }
     Some(stripped.to_string())
 }
 
-/// Strips a leading `"Google Flow - "` or `"Flow - "` prefix from `value`.
-fn strip_flow_title_prefix(value: &str) -> &str {
-    for prefix in ["google flow", "flow"] {
-        if value.len() >= prefix.len()
-            && value
-                .get(..prefix.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-            && let Some(tail) = value.get(prefix.len()..)
-        {
-            let rest = tail.trim_start();
-            if let Some(after_sep) = rest.strip_prefix(['-', '–', '—', '|', ':']) {
-                return after_sep.trim_start();
-            }
-        }
+/// Strips a leading `"Google Flow - "` prefix from a `document.title` string.
+fn strip_google_flow_prefix(value: &str) -> &str {
+    let prefix = "google flow";
+    if value.len() >= prefix.len()
+        && value
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        && let Some(tail) = value.get(prefix.len()..)
+        && let Some(after_sep) = tail.trim_start().strip_prefix(['-', '–', '—', '|', ':'])
+    {
+        return after_sep.trim_start();
     }
     value
 }
 
-/// Strips a trailing `"- Google Flow"` or `"- Flow"` suffix from `value`.
-fn strip_flow_title_suffix(value: &str) -> &str {
-    for suffix in ["google flow", "flow"] {
-        if value.len() >= suffix.len()
-            && value
-                .get(value.len() - suffix.len()..)
-                .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
-            && let Some(head) = value.get(..value.len() - suffix.len())
-        {
-            let before = head.trim_end();
-            if let Some(before_sep) = before.strip_suffix(['-', '–', '—', '|', ':']) {
-                return before_sep.trim_end();
-            }
-        }
+/// Strips a trailing `"- Google Flow"` suffix from a `document.title` string.
+fn strip_google_flow_suffix(value: &str) -> &str {
+    let suffix = "google flow";
+    if value.len() >= suffix.len()
+        && value
+            .get(value.len() - suffix.len()..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+        && let Some(head) = value.get(..value.len() - suffix.len())
+        && let Some(before_sep) = head.trim_end().strip_suffix(['-', '–', '—', '|', ':'])
+    {
+        return before_sep.trim_end();
     }
     value
 }
 
-/// Exits active project subroutes matched by `is_subroute` back to `/project/<id>`.
+/// Exits active project subroutes matched by `is_subroute` using `nav_action` or direct navigation.
 async fn exit_matching_subroute(
     engine: &ChromeEngine,
+    nav_action: &str,
     is_subroute: fn(&str) -> bool,
 ) -> Result<()> {
     let current = engine.current_url().await?;
@@ -133,7 +124,7 @@ async fn exit_matching_subroute(
             && project_workspace_url(url, &project_id) == workspace
     };
     let _ = engine
-        .call_flow_async("projectNav", json!(["exit_subroute"]))
+        .call_flow_async("projectNav", json!([nav_action]))
         .await;
     if returned(&engine.current_url().await.unwrap_or_default()) {
         return Ok(());
@@ -148,14 +139,14 @@ async fn exit_matching_subroute(
     anyhow::bail!("Cannot return to the active Flow project workspace")
 }
 
-/// Navigates back to `/project/<id>` when Chrome is on any `/project/<id>/...` subroute.
+/// Navigates back to `/project/<id>` from non-grid subroutes while keeping `/project/<id>/collection/<cid>`.
 pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
-    exit_matching_subroute(engine, is_project_subroute_url).await
+    exit_matching_subroute(engine, "exit_subroute", is_non_grid_subroute_url).await
 }
 
-/// Navigates back to `/project/<id>` from editor subroutes while keeping `/project/<id>/collection/<cid>`.
-pub(crate) async fn ensure_project_upload_route(engine: &ChromeEngine) -> Result<()> {
-    exit_matching_subroute(engine, is_upload_subroute_url).await
+/// Navigates back to `/project/<id>` when Chrome is on any `/project/<id>/...` subroute.
+pub(crate) async fn ensure_project_root_route(engine: &ChromeEngine) -> Result<()> {
+    exit_matching_subroute(engine, "exit_to_project_root", is_project_subroute_url).await
 }
 
 /// Returns `true` when `host` is a Google Flow host (`flow.google.com` or `labs.google`).

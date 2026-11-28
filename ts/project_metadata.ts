@@ -47,6 +47,10 @@ const QUERY_POLL_MS = 80;
 /** Confirmation timeout in milliseconds after dispatching `set_project_title`. */
 const TITLE_CONFIRM_TIMEOUT_MS = 6_000;
 
+/** Strict UUID pattern used when reading plain `projectId` properties. */
+const UUID_EXACT_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Request payload accepted by `projectMetadataOp`. */
 export interface ProjectMetadataRequest {
   /** Action name (`"set_title"`). */
@@ -57,7 +61,7 @@ export interface ProjectMetadataRequest {
 
 /** Normalized project summary read from cached dashboard card protobufs. */
 export interface CachedProjectItem {
-  /** Project UUID read from the card protobuf. */
+  /** Project ID read from the card protobuf. */
   id: string;
   /** Project title read from the card metadata protobuf, or null when unset. */
   title: string | null;
@@ -69,8 +73,6 @@ export interface CachedProjectItem {
 interface InfiniteQuerySignal {
   /** Returns cached infinite-query data (`{ pages: unknown[] }`). */
   data?: () => unknown;
-  /** Returns true while initial data has not resolved yet. */
-  isPending?: () => boolean;
   /** Returns true while any fetch is in flight. */
   isFetching?: () => boolean;
   /** Returns true while the query displays placeholder data. */
@@ -85,6 +87,18 @@ interface InfiniteQuerySignal {
   isFetchNextPageError?: () => boolean;
   /** Requests the next page from the backend. */
   fetchNextPage?: () => Promise<unknown>;
+}
+
+/** Resolved infinite-query handles for a mounted `flow-projects-grid` component. */
+interface ResolvedGridQueries {
+  /** Verified metadata format for the active build. */
+  format: ProjectMetadataFormat;
+  /** Owned `PROJECTS` infinite query signal. */
+  ownedQuery: InfiniteQuerySignal | undefined;
+  /** Shared `SHARED_PROJECTS` infinite query signal. */
+  sharedQuery: InfiniteQuerySignal | undefined;
+  /** True when the `SHARED_PROJECTS` query is enabled on the grid. */
+  sharedEnabled: boolean;
 }
 
 /** Calls a zero-argument boolean method on `target` when present. */
@@ -111,7 +125,7 @@ function callGetter(target: unknown, key: string): unknown {
   }
 }
 
-/** Strips `"Google Flow - "` and `"- Google Flow"` wrappers and generic app titles. */
+/** Strips `"Google Flow - "` wrappers and generic `"Google Flow"` titles from `document.title`. */
 export function cleanFlowDocumentTitle(raw: string | null | undefined): string | null {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (!trimmed) return null;
@@ -119,10 +133,10 @@ export function cleanFlowDocumentTitle(raw: string | null | undefined): string |
     return null;
   }
   const stripped = trimmed
-    .replace(/^(?:google\s+)?flow\s*[-–|:—]\s*/i, "")
-    .replace(/\s*[-–|:—]\s*(?:google\s+)?flow$/i, "")
+    .replace(/^google\s+flow\s*[-–|:—]\s*/i, "")
+    .replace(/\s*[-–|:—]\s*google\s+flow$/i, "")
     .trim();
-  if (!stripped || /^(?:google\s+flow|flow|trash)$/i.test(stripped)) {
+  if (!stripped || /^google\s+flow$/i.test(stripped)) {
     return null;
   }
   return stripped;
@@ -212,80 +226,57 @@ function findSharedQueryClient(store: ProjectStore | null): QueryClient | undefi
   return undefined;
 }
 
-/** Extracts a non-empty string from a JSPB message getter or raw JSPB array slot. */
-function readProtoString(
-  msg: unknown,
-  getterName: string | undefined,
-  fallbackFieldIndex?: number,
-): string | null {
-  if (!msg || typeof msg !== "object") return null;
-  if (getterName) {
-    const val = callGetter(msg, getterName);
-    if (typeof val === "string") return val.trim() || null;
-  }
-  for (const candidate of Object.values(msg as Record<string, unknown>)) {
-    if (Array.isArray(candidate) && fallbackFieldIndex !== undefined) {
-      const raw = candidate[fallbackFieldIndex - 1] ?? candidate[fallbackFieldIndex];
-      if (typeof raw === "string" && raw.trim()) return raw.trim();
-    }
-  }
-  return null;
+/** Calls `getterName` on a protobuf message and returns a trimmed non-empty string, or `null`. */
+function readProtoString(msg: unknown, getterName: string | undefined): string | null {
+  if (!msg || typeof msg !== "object" || !getterName) return null;
+  const val = callGetter(msg, getterName);
+  return typeof val === "string" && val.trim() ? val.trim() : null;
 }
 
 /** Extracts a project title from a cached `PROJECT` or `PROJECT_DETAILS` message. */
 function extractProjectDetailTitle(
   data: unknown,
-  format?: ProjectMetadataFormat,
+  format: ProjectMetadataFormat | undefined,
 ): string | null {
   if (!data || typeof data !== "object") return null;
-  const infoGetter = format?.projectInfoGetter ?? "AE";
-  const titleGetter = format?.projectTitleGetter ?? "tI";
-  const metaGetter = format?.cardMetadataGetter ?? "getMetadata";
-  const cardTitleGetter = format?.cardTitleGetter ?? "Qd";
-
-  const info = callGetter(data, infoGetter);
-  const fromInfo = readProtoString(info, titleGetter, 1);
-  if (fromInfo !== null) return fromInfo;
-
-  const meta = callGetter(data, metaGetter);
-  const fromMeta = readProtoString(meta, cardTitleGetter, 1);
-  if (fromMeta !== null) return fromMeta;
-
-  const directTitle = readOwn(data, "title") ?? readOwn(data, "displayName");
-  if (typeof directTitle === "string" && directTitle.trim()) {
-    return directTitle.trim();
+  if (format) {
+    const fromInfo = readProtoString(
+      callGetter(data, format.projectInfoGetter),
+      format.projectTitleGetter,
+    );
+    if (fromInfo !== null) return fromInfo;
+    const fromMeta = readProtoString(
+      callGetter(data, format.cardMetadataGetter),
+      format.cardTitleGetter,
+    );
+    if (fromMeta !== null) return fromMeta;
   }
-  return null;
+  const directTitle = readOwn(data, "title") ?? readOwn(data, "displayName");
+  return typeof directTitle === "string" && directTitle.trim() ? directTitle.trim() : null;
 }
 
 /** Extracts `{ id, title }` from one owned or shared project card protobuf entry. */
 function extractCardProtobuf(
   rawEntry: unknown,
   isShared: boolean,
-  format?: ProjectMetadataFormat,
+  format: ProjectMetadataFormat,
 ): { id: string; title: string | null } | null {
   if (!rawEntry || typeof rawEntry !== "object") return null;
-  const sharedGetter = format?.sharedProjectGetter ?? "Jn";
-  const idGetter = format?.cardIdGetter ?? "Ub";
-  const metaGetter = format?.cardMetadataGetter ?? "getMetadata";
-  const titleGetter = format?.cardTitleGetter ?? "Qd";
-
-  const unwrapped = isShared ? (callGetter(rawEntry, sharedGetter) ?? rawEntry) : rawEntry;
+  const unwrapped = isShared ? callGetter(rawEntry, format.sharedProjectGetter) : rawEntry;
   if (!unwrapped || typeof unwrapped !== "object") return null;
 
-  const id =
-    readProtoString(unwrapped, idGetter, 1) ??
-    (typeof readOwn(unwrapped, "projectId") === "string"
-      ? String(readOwn(unwrapped, "projectId")).trim()
-      : null) ??
-    (typeof readOwn(unwrapped, "id") === "string"
-      ? String(readOwn(unwrapped, "id")).trim()
-      : null);
+  let id = readProtoString(unwrapped, format.cardIdGetter);
+  if (!id) {
+    const plain = readOwn(unwrapped, "projectId");
+    if (typeof plain === "string" && UUID_EXACT_RE.test(plain.trim())) {
+      id = plain.trim();
+    }
+  }
   if (!id) return null;
 
-  const meta = callGetter(unwrapped, metaGetter);
+  const meta = callGetter(unwrapped, format.cardMetadataGetter);
   const title =
-    readProtoString(meta, titleGetter, 1) ??
+    readProtoString(meta, format.cardTitleGetter) ??
     extractProjectDetailTitle(unwrapped, format);
   return { id, title };
 }
@@ -295,22 +286,13 @@ function collectPagesEntries(
   data: unknown,
   itemsKey: string,
   isShared: boolean,
-  format: ProjectMetadataFormat | undefined,
+  format: ProjectMetadataFormat,
   into: Map<string, CachedProjectItem>,
 ): void {
   const pages = readOwn(data, "pages");
   if (!Array.isArray(pages)) return;
   for (const page of pages) {
-    if (!page || typeof page !== "object") continue;
-    let items = readOwn(page, itemsKey);
-    if (!Array.isArray(items)) {
-      for (const value of Object.values(page as Record<string, unknown>)) {
-        if (Array.isArray(value)) {
-          items = value;
-          break;
-        }
-      }
-    }
+    const items = readOwn(page, itemsKey);
     if (!Array.isArray(items)) continue;
     for (const rawItem of items) {
       const parsed = extractCardProtobuf(rawItem, isShared, format);
@@ -324,16 +306,12 @@ function collectPagesEntries(
   }
 }
 
-/** Reads the title for `projectId` from `QueryClient` (`PROJECT`, `PROJECT_DETAILS`, or grid caches). */
-function readTitleFromQueryClient(
-  client: QueryClient | undefined,
+/** Builds the candidate `QueryClient` keys for `projectId`. */
+function buildCandidateProjectKeys(
   projectId: string,
-  format?: ProjectMetadataFormat,
-): string | null {
-  const cache = client?.queryCache;
-  if (!cache) return null;
-
-  const candidateKeys: unknown[][] = [
+  format: ProjectMetadataFormat | undefined,
+): unknown[][] {
+  const keys: unknown[][] = [
     ["PROJECT", projectId],
     ["PROJECT_DETAILS", projectId],
   ];
@@ -343,71 +321,45 @@ function readTitleFromQueryClient(
     if (typeof keyFn === "function") {
       try {
         const built: unknown = keyFn(projectId);
-        if (Array.isArray(built)) candidateKeys.unshift(built);
+        if (Array.isArray(built)) keys.unshift(built);
       } catch {
         // Ignore key builder error and inspect standard keys.
       }
     }
   }
-
-  if (typeof client?.ha === "function") {
-    for (const queryKey of candidateKeys) {
-      const title = extractProjectDetailTitle(client.ha(queryKey), format);
-      if (title !== null) return title;
-    }
-  }
-
-  if (typeof cache.find === "function") {
-    for (const queryKey of candidateKeys) {
-      const query = cache.find({ queryKey, exact: true });
-      const title = extractProjectDetailTitle(readOwn(query?.state, "data"), format);
-      if (title !== null) return title;
-    }
-  }
-
-  const findAll = readOwn(cache, "findAll");
-  if (typeof findAll === "function") {
-    const allQueries: unknown = findAll.call(cache);
-    if (Array.isArray(allQueries)) {
-      for (const query of allQueries) {
-        const key = readOwn(query, "queryKey");
-        if (
-          Array.isArray(key) &&
-          key.length >= 2 &&
-          (key[0] === "PROJECT" || key[0] === "PROJECT_DETAILS") &&
-          key[1] === projectId
-        ) {
-          const state = readOwn(query, "state");
-          const title = extractProjectDetailTitle(readOwn(state, "data"), format);
-          if (title !== null) return title;
-        }
-      }
-      const cards = new Map<string, CachedProjectItem>();
-      for (const query of allQueries) {
-        const key = readOwn(query, "queryKey");
-        if (!Array.isArray(key) || typeof key[0] !== "string") continue;
-        const state = readOwn(query, "state");
-        const data = readOwn(state, "data");
-        if (key[0] === "PROJECTS") {
-          collectPagesEntries(data, format?.ownedQuery ?? "Id", false, format, cards);
-        } else if (key[0] === "SHARED_PROJECTS") {
-          collectPagesEntries(data, format?.sharedQuery ?? "xs", true, format, cards);
-        }
-      }
-      const fromCard = cards.get(projectId)?.title ?? null;
-      if (fromCard !== null) return fromCard;
-    }
-  }
-  return null;
+  return keys;
 }
 
-/** Reads the authoritative project title from `Jk()`, `QueryClient`, or stripped `document.title`. */
+/** Reads the title for `projectId` from `QueryClient` (`PROJECT`, `PROJECT_DETAILS`, or grid caches). */
+function readTitleFromQueryClient(
+  client: QueryClient | undefined,
+  projectId: string,
+  format: ProjectMetadataFormat | undefined,
+): string | null {
+  const cache = client?.queryCache;
+  if (!cache) return null;
+
+  for (const queryKey of buildCandidateProjectKeys(projectId, format)) {
+    const direct = typeof client?.ha === "function" ? client.ha(queryKey) : undefined;
+    const fromDirect = extractProjectDetailTitle(direct, format);
+    if (fromDirect !== null) return fromDirect;
+
+    const query = cache.find?.({ queryKey, exact: true });
+    const fromFind = extractProjectDetailTitle(readOwn(query?.state, "data"), format);
+    if (fromFind !== null) return fromFind;
+  }
+
+  if (!format) return null;
+  const cached = collectProjectsFromQueryCache(client, format);
+  return cached.items.get(projectId)?.title ?? null;
+}
+
+/** Reads the authoritative project title from `Jk()`, `QueryClient`, or cleaned `document.title`. */
 export function readProjectTitle(projectId: string | null): string | null {
   const format = activeProjectMetadataFormat();
   const store = resolveStoreForProject(projectId);
-  if (store) {
-    const signalName = format?.titleSignal ?? "Jk";
-    const rawSignalTitle = callGetter(store.service, signalName);
+  if (store && format) {
+    const rawSignalTitle = callGetter(store.service, format.titleSignal);
     if (typeof rawSignalTitle === "string" && rawSignalTitle.trim()) {
       return rawSignalTitle.trim();
     }
@@ -418,7 +370,7 @@ export function readProjectTitle(projectId: string | null): string | null {
     if (cachedTitle !== null) return cachedTitle;
   }
   const onSubroute = /\/project\/[^/?#]+\/[^/?#]+/.test(location.pathname || "");
-  if (onSubroute && store && format?.metadataQuery) {
+  if (onSubroute && store && format) {
     const querySignal = readOwn(store.service, format.metadataQuery);
     if (callGetter(querySignal, "data") !== undefined) {
       return null;
@@ -434,15 +386,17 @@ async function ensureProjectMetadataLoaded(
 ): Promise<void> {
   const querySignal = readOwn(store.service, format.metadataQuery);
   const client = findSharedQueryClient(store);
+  const projectKeys = buildCandidateProjectKeys(store.projectId, format).filter(
+    (key) => key[0] !== "PROJECT_DETAILS",
+  );
   const hasMetadata = (): boolean => {
     if (callGetter(querySignal, "data") !== undefined) return true;
-    const direct = client?.ha?.(["PROJECT", store.projectId]);
-    if (direct !== undefined) return true;
-    const query = client?.queryCache?.find?.({
-      queryKey: ["PROJECT", store.projectId],
-      exact: true,
-    });
-    return readOwn(query?.state, "data") !== undefined;
+    for (const queryKey of projectKeys) {
+      if (client?.ha?.(queryKey) !== undefined) return true;
+      const query = client?.queryCache?.find?.({ queryKey, exact: true });
+      if (readOwn(query?.state, "data") !== undefined) return true;
+    }
+    return false;
   };
   if (hasMetadata()) return;
 
@@ -451,56 +405,22 @@ async function ensureProjectMetadataLoaded(
     void Promise.resolve(refetch.call(querySignal)).catch(() => null);
   }
   const deadline = Date.now() + QUERY_SETTLE_TIMEOUT_MS;
-  while (Date.now() < deadline && isCurrent(store)) {
-    if (hasMetadata() || callBool(querySignal, "isError")) return;
+  while (Date.now() < deadline) {
+    if (currentProjectStore(store.projectId) !== store || !isCurrent(store)) {
+      clearProjectStore();
+      throw new Error("project_store_changed");
+    }
+    if (hasMetadata()) return;
+    if (callBool(querySignal, "isError") && !callBool(querySignal, "isFetching")) {
+      throw new Error("project_metadata_load_failed");
+    }
     await delay(QUERY_POLL_MS);
   }
+  if (hasMetadata()) return;
+  throw new Error("project_metadata_not_loaded");
 }
 
-/** Dispatches `set_project_title` through `ProjectStore` (`Lc` on `GO` or `YJ` on `$N`). */
-async function dispatchSetProjectTitle(
-  store: ProjectStore,
-  format: ProjectMetadataFormat,
-  desiredTitle: string,
-): Promise<void> {
-  if (!activeProjectStoreFormat()) {
-    clearProjectStore();
-    throw new Error("unsupported_front_end");
-  }
-  if (currentProjectStore(store.projectId) !== store || !isCurrent(store)) {
-    clearProjectStore();
-    throw new Error("project_store_changed");
-  }
-  await ensureProjectMetadataLoaded(store, format);
-  const payload = withMutationAliases({
-    type: "set_project_title",
-    [format.titleField]: desiredTitle,
-  });
-
-  const mutator = resolveAsyncMutator(
-    store.service,
-    readOwn(store.service, format.metadataMutator),
-  );
-  if (mutator) {
-    await mutator(payload);
-    return;
-  }
-
-  const metadataService = readOwn(store.service, format.metadataService);
-  const dispatcher = readOwn(metadataService, format.metadataDispatcher);
-  if (typeof dispatcher === "function") {
-    await dispatcher.call(metadataService, store.projectId, payload);
-    const querySignal = readOwn(store.service, format.metadataQuery);
-    const refetch = readOwn(querySignal, "refetch");
-    if (typeof refetch === "function") {
-      await Promise.resolve(refetch.call(querySignal)).catch(() => null);
-    }
-    return;
-  }
-  throw new Error("metadata_mutator_missing");
-}
-
-/** Runs a project metadata operation (`set_title`) in the pinned `ProjectStore` session. */
+/** Runs `projectMetadataOp` (`set_title`) in the pinned `ProjectStore` session. */
 export async function projectMetadataOp(
   projectId: string,
   session: string,
@@ -529,30 +449,65 @@ export async function projectMetadataOp(
     return { ok: false, error: "empty_title" };
   }
 
+  let writeStarted = false;
+  try {
+    await serializeStoreMutation(async () => {
+      if (!activeProjectStoreFormat()) {
+        clearProjectStore();
+        throw new Error("unsupported_front_end");
+      }
+      if (currentProjectStore(store.projectId) !== store || !isCurrent(store)) {
+        clearProjectStore();
+        throw new Error("project_store_changed");
+      }
+      await ensureProjectMetadataLoaded(store, format);
+      const payload = withMutationAliases({
+        type: "set_project_title",
+        [format.titleField]: desired,
+      });
+      const mutator = resolveAsyncMutator(
+        store.service,
+        readOwn(store.service, format.metadataMutator),
+      );
+      if (mutator) {
+        writeStarted = true;
+        await mutator(payload);
+        return;
+      }
+      const metadataService = readOwn(store.service, format.metadataService);
+      const dispatcher = readOwn(metadataService, format.metadataDispatcher);
+      if (typeof dispatcher === "function") {
+        writeStarted = true;
+        await dispatcher.call(metadataService, store.projectId, payload);
+        const querySignal = readOwn(store.service, format.metadataQuery);
+        const refetch = readOwn(querySignal, "refetch");
+        if (typeof refetch === "function") {
+          await Promise.resolve(refetch.call(querySignal)).catch(() => null);
+        }
+        return;
+      }
+      throw new Error("metadata_mutator_missing");
+    });
+  } catch (err) {
+    if (!writeStarted) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    throw err;
+  }
+
   const matchesDesired = (): boolean => {
     const signalVal = callGetter(store.service, format.titleSignal);
-    if (typeof signalVal === "string" && signalVal.trim() === desired) {
-      return true;
-    }
-    const client = findSharedQueryClient(store);
-    return readTitleFromQueryClient(client, projectId, format) === desired;
+    if (typeof signalVal === "string" && signalVal.trim() === desired) return true;
+    return readTitleFromQueryClient(findSharedQueryClient(store), projectId, format) === desired;
   };
-
-  await serializeStoreMutation(() => dispatchSetProjectTitle(store, format, desired));
 
   const deadline = Date.now() + TITLE_CONFIRM_TIMEOUT_MS;
   while (Date.now() < deadline && projectStore(projectId, session) === store && isCurrent(store)) {
-    const mutatorObj = readOwn(store.service, format.metadataMutator);
-    const mutating = callBool(mutatorObj, "isPending");
+    const mutating = callBool(readOwn(store.service, format.metadataMutator), "isPending");
     if (!mutating && matchesDesired()) {
       await delay(120);
       if (matchesDesired()) {
-        return {
-          ok: true,
-          confirmed: true,
-          project_id: projectId,
-          title: desired,
-        };
+        return { ok: true, confirmed: true, project_id: projectId, title: desired };
       }
     }
     await delay(QUERY_POLL_MS);
@@ -564,120 +519,120 @@ export async function projectMetadataOp(
 function isProjectsGridComponent(
   candidate: unknown,
   gridClass: unknown,
-  ownedKey: string,
-  sharedKey: string,
+  format: ProjectMetadataFormat,
 ): candidate is Record<string, unknown> {
-  if (!candidate || typeof candidate !== "object" || candidate instanceof Node) {
-    return false;
-  }
-  if (typeof gridClass === "function" && candidate instanceof gridClass) {
-    return true;
-  }
-  const owned = readOwn(candidate, ownedKey);
-  const shared = readOwn(candidate, sharedKey);
+  if (!candidate || typeof candidate !== "object" || candidate instanceof Node) return false;
+  if (typeof gridClass === "function" && candidate instanceof gridClass) return true;
+  const owned = readOwn(candidate, format.ownedQuery);
+  const shared = readOwn(candidate, format.sharedQuery);
   return (
-    Boolean(owned && typeof owned === "object" && typeof readOwn(owned, "fetchNextPage") === "function") &&
-    Boolean(shared && typeof shared === "object" && typeof readOwn(shared, "fetchNextPage") === "function")
+    typeof readOwn(owned, "fetchNextPage") === "function" &&
+    typeof readOwn(shared, "fetchNextPage") === "function"
   );
 }
 
-/** Resolves the mounted `flow-projects-grid` (`Y7`) component instance on the Flow home page. */
-async function findProjectsGridComponent(): Promise<{
-  grid: Record<string, unknown> | null;
-  format: ProjectMetadataFormat | undefined;
-}> {
-  const format = activeProjectMetadataFormat();
-  const ownedKey = format?.ownedQuery ?? "Id";
-  const sharedKey = format?.sharedQuery ?? "xs";
+/** Locates a mounted `flow-projects-grid` component synchronously without DOM events. */
+function locateProjectsGridSync(
+  format: ProjectMetadataFormat,
+  extraMaps?: Iterable<Map<unknown, unknown>>,
+): Record<string, unknown> | null {
   const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
-  const gridClass = format ? readOwn(namespace, format.gridClass) : undefined;
-
-  const locate = (extraMaps?: Iterable<Map<unknown, unknown>>): Record<string, unknown> | null => {
-    const host = document.querySelector("flow-projects-grid");
-    if (host) {
-      const view = resolveLView(host);
-      const hit = view?.find((slot) =>
-        isProjectsGridComponent(slot, gridClass, ownedKey, sharedKey),
-      );
-      if (hit && typeof hit === "object") return hit as Record<string, unknown>;
-      const ctx = (host as unknown as { __ngContext__?: unknown }).__ngContext__;
-      if (typeof ctx === "number" && extraMaps) {
-        for (const map of extraMaps) {
-          const candidateView = map.get(ctx);
-          if (!Array.isArray(candidateView)) continue;
-          const mappedHit = candidateView.find((slot) =>
-            isProjectsGridComponent(slot, gridClass, ownedKey, sharedKey),
-          );
-          if (mappedHit && typeof mappedHit === "object") {
-            runtimeState.ngLViewMap = map as Map<number, NgLView>;
-            return mappedHit as Record<string, unknown>;
-          }
+  const gridClass = readOwn(namespace, format.gridClass);
+  const host = document.querySelector("flow-projects-grid");
+  if (host) {
+    const directHit = resolveLView(host)?.find((slot) =>
+      isProjectsGridComponent(slot, gridClass, format),
+    );
+    if (directHit) return directHit;
+    const ctx = (host as unknown as { __ngContext__?: unknown }).__ngContext__;
+    if (typeof ctx === "number" && extraMaps) {
+      for (const map of extraMaps) {
+        const view = map.get(ctx);
+        const mappedHit = Array.isArray(view)
+          ? view.find((slot) => isProjectsGridComponent(slot, gridClass, format))
+          : undefined;
+        if (mappedHit) {
+          runtimeState.ngLViewMap = map as Map<number, NgLView>;
+          return mappedHit;
         }
       }
     }
-    for (const view of runtimeState.ngLViewMap?.values() ?? []) {
-      if (!isLiveLView(view)) continue;
-      const hit = view.find((slot) =>
-        isProjectsGridComponent(slot, gridClass, ownedKey, sharedKey),
-      );
-      if (hit && typeof hit === "object") return hit as Record<string, unknown>;
-    }
-    return null;
-  };
-
-  let grid = locate();
-  if (grid) return { grid, format };
-
-  for (let attempt = 0; attempt < 25; attempt += 1) {
-    const host = document.querySelector("flow-projects-grid");
-    if (host) {
-      const captured = new Set<Map<unknown, unknown>>();
-      await withMapCapture(
-        (map, _key, _value, write) => {
-          if (!write) captured.add(map);
-        },
-        async () => {
-          const card = host.querySelector("flow-project-card, button");
-          if (card instanceof HTMLElement) {
-            card.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false }));
-            card.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
-          }
-          await delay(40);
-        },
-      );
-      grid = locate(captured);
-      if (grid) return { grid, format };
-    }
-    const loading = Boolean(
-      document.querySelector("flow-loading-page, .projects-loading-container"),
-    );
-    if (!loading && !host && attempt >= 4) break;
-    await delay(120);
   }
-  return { grid: locate(), format };
+  for (const view of runtimeState.ngLViewMap?.values() ?? []) {
+    if (!isLiveLView(view)) continue;
+    const hit = view.find((slot) => isProjectsGridComponent(slot, gridClass, format));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Resolves the mounted `flow-projects-grid` (`Y7`) infinite queries on the Flow home page. */
+async function resolveProjectsGridQueries(waitMount: boolean): Promise<ResolvedGridQueries | null> {
+  const format = activeProjectMetadataFormat();
+  if (!format) return null;
+  let grid = locateProjectsGridSync(format);
+  if (!grid && waitMount) {
+    for (let attempt = 0; attempt < 25 && !grid; attempt += 1) {
+      const host = document.querySelector("flow-projects-grid");
+      if (host) {
+        const captured = new Set<Map<unknown, unknown>>();
+        await withMapCapture(
+          (map, _key, _value, write) => {
+            if (!write) captured.add(map);
+          },
+          async () => {
+            const card = host.querySelector("flow-project-card, button");
+            if (card instanceof HTMLElement) {
+              card.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false }));
+              card.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+            }
+            await delay(40);
+          },
+        );
+        grid = locateProjectsGridSync(format, captured);
+        if (grid) break;
+      }
+      const loading = Boolean(
+        document.querySelector("flow-loading-page, .projects-loading-container"),
+      );
+      if (!loading && !host && attempt >= 4) break;
+      await delay(120);
+    }
+  }
+  if (!grid) return null;
+  const ownedQuery = readOwn(grid, format.ownedQuery) as InfiniteQuerySignal | undefined;
+  const sharedQuery = readOwn(grid, format.sharedQuery) as InfiniteQuerySignal | undefined;
+  const sharedEnabled =
+    typeof readOwn(grid, "zf") === "function"
+      ? callBool(grid, "zf")
+      : Boolean(
+          callGetter(sharedQuery, "data") !== undefined ||
+            callBool(sharedQuery, "isFetching") ||
+            callBool(sharedQuery, "hasNextPage"),
+        );
+  return { format, ownedQuery, sharedQuery, sharedEnabled };
 }
 
 /** Returns the number of loaded pages in an infinite query signal. */
-function readPagesCount(query: InfiniteQuerySignal): number {
-  const data = callGetter(query, "data");
-  const pages = readOwn(data, "pages");
+function readPagesCount(query: InfiniteQuerySignal | undefined): number {
+  const pages = readOwn(callGetter(query, "data"), "pages");
   return Array.isArray(pages) ? pages.length : 0;
 }
 
 /** Waits until an infinite query finishes its initial load or in-flight next-page fetch. */
 async function waitInfiniteQueryIdle(
-  query: InfiniteQuerySignal,
+  query: InfiniteQuerySignal | undefined,
   waitInitial: boolean,
 ): Promise<void> {
+  if (!query) return;
   const deadline = Date.now() + QUERY_SETTLE_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (callBool(query, "isError")) return;
     const fetchingNext = callBool(query, "isFetchingNextPage");
-    const placeholder = callBool(query, "isPlaceholderData");
     const initialBusy =
       waitInitial &&
       readPagesCount(query) === 0 &&
-      (callBool(query, "isFetching") || placeholder);
+      (callBool(query, "isFetching") || callBool(query, "isPlaceholderData"));
     if (!fetchingNext && !initialBusy) return;
     await delay(QUERY_POLL_MS);
   }
@@ -692,9 +647,7 @@ async function fetchAllInfinitePages(
   await waitInfiniteQueryIdle(query, true);
   for (let page = 0; page < MAX_GRID_PAGES; page += 1) {
     await waitInfiniteQueryIdle(query, false);
-    if (!callBool(query, "hasNextPage") || callBool(query, "isFetchNextPageError")) {
-      break;
-    }
+    if (!callBool(query, "hasNextPage") || callBool(query, "isFetchNextPageError")) break;
     const beforePages = readPagesCount(query);
     try {
       await Promise.resolve(query.fetchNextPage());
@@ -702,19 +655,14 @@ async function fetchAllInfinitePages(
       break;
     }
     await waitInfiniteQueryIdle(query, false);
-    const afterPages = readPagesCount(query);
-    if (afterPages <= beforePages && callBool(query, "hasNextPage")) {
-      break;
-    }
+    if (readPagesCount(query) <= beforePages && callBool(query, "hasNextPage")) break;
   }
 }
 
-/** Collects cached dashboard project cards from `QueryClient` when `PROJECTS` or `SHARED_PROJECTS` exist. */
+/** Collects cached dashboard project cards from `QueryClient` without triggering fetches. */
 function collectProjectsFromQueryCache(
   client: QueryClient | undefined,
-  ownedKey: string,
-  sharedKey: string,
-  format: ProjectMetadataFormat | undefined,
+  format: ProjectMetadataFormat,
 ): { sawProjectsQuery: boolean; items: Map<string, CachedProjectItem> } {
   const items = new Map<string, CachedProjectItem>();
   let sawProjectsQuery = false;
@@ -728,10 +676,10 @@ function collectProjectsFromQueryCache(
     const data = readOwn(readOwn(query, "state"), "data");
     if (key[0] === "PROJECTS") {
       sawProjectsQuery = true;
-      collectPagesEntries(data, ownedKey, false, format, items);
+      collectPagesEntries(data, format.ownedQuery, false, format, items);
     } else if (key[0] === "SHARED_PROJECTS") {
       sawProjectsQuery = true;
-      collectPagesEntries(data, sharedKey, true, format, items);
+      collectPagesEntries(data, format.sharedQuery, true, format, items);
     }
   }
   return { sawProjectsQuery, items };
@@ -739,92 +687,68 @@ function collectProjectsFromQueryCache(
 
 /** Inspects `flow-projects-grid` (`PROJECTS` and `SHARED_PROJECTS`), fetches all pages, and reads cached card protobufs. */
 export async function listCachedProjects(): Promise<CachedProjectItem[] | null> {
-  const { grid, format } = await findProjectsGridComponent();
-  const ownedKey = format?.ownedQuery ?? "Id";
-  const sharedKey = format?.sharedQuery ?? "xs";
-
-  if (grid) {
-    const ownedQuery = readOwn(grid, ownedKey) as InfiniteQuerySignal | undefined;
-    const sharedQuery = readOwn(grid, sharedKey) as InfiniteQuerySignal | undefined;
-    const sharedEnabled =
-      typeof readOwn(grid, "zf") === "function"
-        ? callBool(grid, "zf")
-        : Boolean(
-            callGetter(sharedQuery, "data") !== undefined ||
-              callBool(sharedQuery, "isFetching") ||
-              callBool(sharedQuery, "hasNextPage"),
-          );
-
+  const resolved = await resolveProjectsGridQueries(true);
+  if (resolved) {
+    const { format, ownedQuery, sharedQuery, sharedEnabled } = resolved;
     await Promise.all([
       fetchAllInfinitePages(ownedQuery, true),
       fetchAllInfinitePages(sharedQuery, sharedEnabled),
     ]);
-
     const items = new Map<string, CachedProjectItem>();
-    collectPagesEntries(callGetter(ownedQuery, "data"), ownedKey, false, format, items);
+    collectPagesEntries(callGetter(ownedQuery, "data"), format.ownedQuery, false, format, items);
     if (sharedEnabled) {
-      collectPagesEntries(callGetter(sharedQuery, "data"), sharedKey, true, format, items);
+      collectPagesEntries(callGetter(sharedQuery, "data"), format.sharedQuery, true, format, items);
     }
     return [...items.values()];
   }
-
-  const cached = collectProjectsFromQueryCache(
-    findSharedQueryClient(null),
-    ownedKey,
-    sharedKey,
-    format,
-  );
+  const format = activeProjectMetadataFormat();
+  if (!format) return null;
+  const cached = collectProjectsFromQueryCache(findSharedQueryClient(null), format);
   return cached.sawProjectsQuery ? [...cached.items.values()] : null;
 }
 
 /** Reads currently loaded dashboard card protobufs without triggering additional pagination. */
 export function snapshotLoadedGridProjects(): Map<string, CachedProjectItem> {
   const format = activeProjectMetadataFormat();
-  const ownedKey = format?.ownedQuery ?? "Id";
-  const sharedKey = format?.sharedQuery ?? "xs";
-  const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
-  const gridClass = format ? readOwn(namespace, format.gridClass) : undefined;
-  const items = new Map<string, CachedProjectItem>();
-
-  const host = document.querySelector("flow-projects-grid");
-  const view = host ? resolveLView(host) : null;
-  const grid = view?.find((slot) =>
-    isProjectsGridComponent(slot, gridClass, ownedKey, sharedKey),
-  ) as Record<string, unknown> | undefined;
-
+  if (!format) return new Map();
+  const grid = locateProjectsGridSync(format);
   if (grid) {
-    const ownedQuery = readOwn(grid, ownedKey);
-    const sharedQuery = readOwn(grid, sharedKey);
-    collectPagesEntries(callGetter(ownedQuery, "data"), ownedKey, false, format, items);
-    collectPagesEntries(callGetter(sharedQuery, "data"), sharedKey, true, format, items);
+    const items = new Map<string, CachedProjectItem>();
+    const ownedQuery = readOwn(grid, format.ownedQuery);
+    const sharedQuery = readOwn(grid, format.sharedQuery);
+    collectPagesEntries(callGetter(ownedQuery, "data"), format.ownedQuery, false, format, items);
+    collectPagesEntries(callGetter(sharedQuery, "data"), format.sharedQuery, true, format, items);
     return items;
   }
+  return collectProjectsFromQueryCache(findSharedQueryClient(null), format).items;
+}
 
-  return collectProjectsFromQueryCache(findSharedQueryClient(null), ownedKey, sharedKey, format)
-    .items;
+/** Returns `true` when `flow-projects-grid` currently has an in-flight `PROJECTS` or `SHARED_PROJECTS` fetch. */
+export function isProjectsGridFetching(): boolean {
+  const format = activeProjectMetadataFormat();
+  if (!format) return false;
+  const grid = locateProjectsGridSync(format);
+  if (!grid) return false;
+  const ownedBusy = callBool(readOwn(grid, format.ownedQuery), "isFetching");
+  const sharedBusy =
+    callBool(grid, "zf") && callBool(readOwn(grid, format.sharedQuery), "isFetching");
+  return ownedBusy || sharedBusy;
 }
 
 /** Advances `flow-projects-grid` by one page when `hasNextPage()` is true, returning whether a page was fetched. */
 export async function advanceProjectsGridPage(): Promise<boolean> {
-  const { grid, format } = await findProjectsGridComponent();
-  if (!grid) return false;
-  const ownedKey = format?.ownedQuery ?? "Id";
-  const sharedKey = format?.sharedQuery ?? "xs";
-  const ownedQuery = readOwn(grid, ownedKey) as InfiniteQuerySignal | undefined;
-  const sharedQuery = readOwn(grid, sharedKey) as InfiniteQuerySignal | undefined;
-  const sharedEnabled =
-    typeof readOwn(grid, "zf") === "function"
-      ? callBool(grid, "zf")
-      : Boolean(callBool(sharedQuery, "hasNextPage"));
+  const resolved = await resolveProjectsGridQueries(true);
+  if (!resolved) return false;
+  const { ownedQuery, sharedQuery, sharedEnabled } = resolved;
 
   await Promise.all([
-    ownedQuery ? waitInfiniteQueryIdle(ownedQuery, true) : Promise.resolve(),
-    sharedQuery && sharedEnabled ? waitInfiniteQueryIdle(sharedQuery, true) : Promise.resolve(),
+    waitInfiniteQueryIdle(ownedQuery, true),
+    sharedEnabled ? waitInfiniteQueryIdle(sharedQuery, true) : Promise.resolve(),
   ]);
 
   const tasks: Array<Promise<unknown>> = [];
-  const beforeOwned = ownedQuery ? readPagesCount(ownedQuery) : 0;
-  const beforeShared = sharedQuery ? readPagesCount(sharedQuery) : 0;
+  const beforeOwned = readPagesCount(ownedQuery);
+  const beforeShared = readPagesCount(sharedQuery);
 
   if (
     ownedQuery &&
@@ -847,11 +771,9 @@ export async function advanceProjectsGridPage(): Promise<boolean> {
 
   await Promise.all(tasks);
   await Promise.all([
-    ownedQuery ? waitInfiniteQueryIdle(ownedQuery, false) : Promise.resolve(),
-    sharedQuery && sharedEnabled ? waitInfiniteQueryIdle(sharedQuery, false) : Promise.resolve(),
+    waitInfiniteQueryIdle(ownedQuery, false),
+    sharedEnabled ? waitInfiniteQueryIdle(sharedQuery, false) : Promise.resolve(),
   ]);
 
-  const afterOwned = ownedQuery ? readPagesCount(ownedQuery) : 0;
-  const afterShared = sharedQuery ? readPagesCount(sharedQuery) : 0;
-  return afterOwned > beforeOwned || afterShared > beforeShared;
+  return readPagesCount(ownedQuery) > beforeOwned || readPagesCount(sharedQuery) > beforeShared;
 }

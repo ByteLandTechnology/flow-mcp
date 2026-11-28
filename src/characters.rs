@@ -20,7 +20,7 @@ use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_subroute_url,
     project_workspace_url,
 };
-use crate::project_route::{character_id_from_url, is_project_subroute_url};
+use crate::project_route::character_id_from_url;
 use crate::project_store::ProjectStoreSession;
 use crate::queue::{ProgressCallback, SceneParams};
 use crate::voices::{
@@ -140,30 +140,31 @@ pub(crate) async fn open_character_editor(
 
 /// Exits the character editor back to `/project/<id>` and clears stale Angular store handles.
 pub(crate) async fn exit_character_editor(engine: &ChromeEngine, project_id: Option<&str>) {
-    let before = engine.current_url().await.unwrap_or_default();
-    let in_character = before.contains("/character");
-    let in_workspace = engine
+    let before_finish = engine.current_url().await.unwrap_or_default();
+    let in_character = before_finish.contains("/character/");
+    let finish_res = engine
         .call_flow_async("characterOp", json!([{ "action": "finish" }]))
-        .await
+        .await;
+    let in_workspace = finish_res
+        .as_ref()
         .ok()
-        .and_then(|v| v.get("in_workspace").and_then(Value::as_bool))
+        .and_then(|v| v.get("in_workspace"))
+        .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let cur = engine.current_url().await.unwrap_or_default();
-    if (in_character && !in_workspace) || cur.contains("/character") {
-        if !cur.contains("/character") {
+    if (in_character && !in_workspace) || cur.contains("/character/") {
+        if !cur.contains("/character/") {
             tokio::time::sleep(Duration::from_millis(400)).await;
         }
         if let Some(pid) = project_id
             .map(str::to_string)
             .or_else(|| project_id_from_url(&cur))
-            .or_else(|| project_id_from_url(&before))
+            .or_else(|| project_id_from_url(&before_finish))
         {
             // Reload `/project/<id>` because exiting a direct `/character/<id>` load leaves an empty shell.
             let _ = engine.navigate(&project_workspace_url(&cur, &pid)).await;
             tokio::time::sleep(Duration::from_millis(1500)).await;
         }
-    } else if is_project_subroute_url(&cur) {
-        let _ = ensure_project_workspace_root(engine).await;
     }
     let _ = ensure_flow_store(engine).await;
 }

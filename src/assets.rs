@@ -253,7 +253,9 @@ async fn read_project_assets(engine: &ChromeEngine) -> Result<ProjectAssetsSnaps
     let project_title = snap
         .get("projectTitle")
         .and_then(Value::as_str)
-        .and_then(crate::project_route::clean_flow_page_title);
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let assets = serde_json::from_value(
         snap.get("assets")
             .cloned()

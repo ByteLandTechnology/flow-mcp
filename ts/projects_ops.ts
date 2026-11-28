@@ -15,6 +15,7 @@ import { projectTitleFormat } from "./frontend_builds";
 import {
   MAX_GRID_PAGES,
   advanceProjectsGridPage,
+  isProjectsGridFetching,
   listCachedProjects,
   snapshotLoadedGridProjects,
 } from "./project_metadata";
@@ -32,41 +33,35 @@ interface ScannedProjectCard {
   _card: HTMLElement;
 }
 
-/** Material icon ligatures excluded from card and anchor title extraction. */
-const ICON_LIGATURE_RE =
-  /^(?:group|edit|more_vert|more_horiz|delete|share|visibility|visibility_off|lock|public|check|close|add|arrow_back|arrow_forward|folder|home_storage|push_pin)$/i;
-
-/** Selector matching icon and action elements stripped before reading card or link text. */
+/** Selector matching icon, form, and action elements excluded when reading card or link text. */
 const STRIPPED_LABEL_NODES =
-  'mat-icon, flow-material-icon, .shared-project-icon, .google-symbols, .material-icons, button, [role="button"], [aria-hidden="true"]';
+  'mat-icon, flow-material-icon, .shared-project-icon, .google-symbols, .material-icons, [class*="material-symbols"], button, [role="button"], [aria-hidden="true"], .project-card-edit-form';
 
 /** Selector matching non-header containers where fallback `set_title` must never edit inputs. */
 const FORBIDDEN_TITLE_ANCESTOR =
-  'mat-sidenav, [flow-sidenav], aside, flow-project-nav-list, flow-agent-panel, flow-applet-chat-sidebar, flow-project-card, flow-grid-tile-container, flow-character-edit-header, flow-character-header, flow-applet-view-header, main, [role="dialog"], .cdk-overlay-container';
+  'mat-sidenav, [flow-sidenav], aside, flow-project-nav-list, flow-agent-panel, flow-applet-chat-sidebar, flow-project-card, flow-grid-tile-container, flow-character-edit-header, flow-character-header, flow-applet-view-header, flow-scene-editor, [role="dialog"], .cdk-overlay-container';
 
 /** Selector matching workspace header containers that host the legacy project title input. */
 const WORKSPACE_HEADER_SELECTOR =
-  "flow-navigation-header, flow-project-header, nav.nav-header, header.header-base, header";
+  "flow-navigation-header, flow-tile-view-header, flow-project-header, nav.nav-header, header.header-base, header";
 
-/** Extracts clean text from `node` after stripping `mat-icon` ligatures and action buttons. */
+/** Extracts clean text from `node` via `TreeWalker` after skipping icon and action elements. */
 function cleanCardOrLinkTitle(node: Element | null): string | null {
-  if (!node) return null;
-  const clone = node.cloneNode(true);
-  if (clone instanceof Element) {
-    for (const icon of Array.from(clone.querySelectorAll(STRIPPED_LABEL_NODES))) {
-      icon.remove();
-    }
-    const line = (clone.textContent || "")
-      .split(/\r?\n/)
-      .map((part) => part.trim())
-      .find((part) => part.length > 0 && !ICON_LIGATURE_RE.test(part));
-    if (line) return line;
+  if (!node || node.matches(STRIPPED_LABEL_NODES)) return null;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  const parts: string[] = [];
+  for (let cur = walker.nextNode(); cur; cur = walker.nextNode()) {
+    const parent = cur.parentElement;
+    if (parent && parent.closest(STRIPPED_LABEL_NODES)) continue;
+    const val = cur.nodeValue;
+    if (val) parts.push(val);
   }
-  const fallback = elText(node)
+  const line = parts
+    .join("")
     .split(/\r?\n/)
     .map((part) => part.trim())
-    .find((part) => part.length > 0 && !ICON_LIGATURE_RE.test(part));
-  return fallback || null;
+    .find((part) => part.length > 0);
+  return line || null;
 }
 
 /** Scrolls `.load-more-sentinel` and its scrollable ancestors so `IntersectionObserver` fires. */
@@ -189,35 +184,43 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       }
     }
 
-    const seenMaps = new Set<Map<unknown, unknown>>();
-    await withMapCapture((map, _key, _value, write) => {
-      if (!write) seenMaps.add(map);
-    }, async () => {
-      const cards = Array.from(document.querySelectorAll("flow-project-card"));
-      for (const card of cards.slice(0, 50)) {
-        const r = card.getBoundingClientRect();
-        card.dispatchEvent(
-          new PointerEvent("pointerenter", {
-            bubbles: false,
-            clientX: r.left + 12,
-            clientY: r.top + 12,
-          }),
-        );
-        card.dispatchEvent(
-          new MouseEvent("mouseenter", {
-            bubbles: false,
-            clientX: r.left + 12,
-            clientY: r.top + 12,
-          }),
-        );
-      }
-      await delay(60);
+    const rawCards = Array.from(document.querySelectorAll("flow-project-card"));
+    const needsNgProbe = rawCards.some((card) => {
+      if (card.querySelector('a[href*="/project/"]')) return false;
+      return !card.getAttributeNames().some((attr) => UUID_RE.test(card.getAttribute(attr) || ""));
     });
+    const seenMaps = new Set<Map<unknown, unknown>>();
+    if (needsNgProbe) {
+      await withMapCapture(
+        (map, _key, _value, write) => {
+          if (!write) seenMaps.add(map);
+        },
+        async () => {
+          for (const card of rawCards.slice(0, 50)) {
+            const r = card.getBoundingClientRect();
+            card.dispatchEvent(
+              new PointerEvent("pointerenter", {
+                bubbles: false,
+                clientX: r.left + 12,
+                clientY: r.top + 12,
+              }),
+            );
+            card.dispatchEvent(
+              new MouseEvent("mouseenter", {
+                bubbles: false,
+                clientX: r.left + 12,
+                clientY: r.top + 12,
+              }),
+            );
+          }
+          await delay(60);
+        },
+      );
+    }
 
     const cachedById = snapshotLoadedGridProjects();
     const byId = new Map<string, ScannedProjectCard>();
-    const cards = Array.from(document.querySelectorAll("flow-project-card"));
-    for (const card of cards) {
+    for (const card of rawCards) {
       if (!(card instanceof HTMLElement)) continue;
       const link = card.querySelector('a[href*="/project/"]');
       const href = link?.getAttribute("href") || "";
@@ -253,11 +256,14 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         }
       }
       const cachedTitle = pid ? (cachedById.get(pid)?.title ?? null) : null;
-      const titleNode =
-        card.querySelector(".project-title-text") ||
-        card.querySelector('[class*="title"]:not(.project-card-edit-form *), h2, h3, h4') ||
-        card;
-      const domTitle = cleanCardOrLinkTitle(titleNode);
+      const explicitTitleNode = card.querySelector(".project-title-text");
+      const domTitle = explicitTitleNode
+        ? cleanCardOrLinkTitle(explicitTitleNode)
+        : cleanCardOrLinkTitle(
+            card.querySelector('[class*="title"]:not(.project-card-edit-form *), h2, h3, h4') ||
+              link ||
+              card,
+          );
       const resolvedTitle = cachedTitle ?? domTitle;
       const key = pid || `card:${resolvedTitle || byId.size}`;
       if (!byId.has(key)) {
@@ -554,9 +560,7 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
     if (!hit || !hit._card) {
       return { ok: false, error: "project_card_not_found" };
     }
-    const beforeCached = await listCachedProjects();
-    const beforePool = beforeCached ?? items;
-    const beforeMatches = beforePool.filter(matchesTarget).length;
+    const beforeMatches = items.filter(matchesTarget).length;
     const deletedId = hit.id;
     const card = hit._card;
     card.scrollIntoView({ block: "center" });
@@ -640,9 +644,8 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
       await delay(100);
     }
     const isRemovedNow = async (): Promise<boolean> => {
-      if (document.body.contains(card)) return false;
-      const currentCached = await listCachedProjects();
-      const entries = currentCached ?? (await scanCards(false));
+      if (document.body.contains(card) || isProjectsGridFetching()) return false;
+      const entries = await scanCards(false);
       return deletedId
         ? !entries.some((p) => p.id === deletedId)
         : entries.filter(matchesTarget).length < beforeMatches;

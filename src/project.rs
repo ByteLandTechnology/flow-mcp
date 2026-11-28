@@ -16,9 +16,9 @@ use tokio::time::{Duration, Instant};
 use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::project_route::{clean_flow_page_title, ensure_project_root_route};
 pub(crate) use crate::project_route::{
-    clean_flow_page_title, ensure_project_workspace_root, project_id_from_url,
-    project_subroute_url, project_workspace_url,
+    ensure_project_workspace_root, project_id_from_url, project_subroute_url, project_workspace_url,
 };
 use crate::project_store::{ProjectStoreSession, bind_current_store, prepare_project_store_status};
 
@@ -221,7 +221,9 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
             project = snap
                 .get("projectTitle")
                 .and_then(Value::as_str)
-                .and_then(clean_flow_page_title);
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
             credits = snap.get("credits").and_then(|v| v.as_i64());
             assets_count = snap
                 .get("assets")
@@ -629,7 +631,9 @@ async fn open_project(
         "title": snap
             .get("projectTitle")
             .and_then(Value::as_str)
-            .and_then(clean_flow_page_title)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
             .or(matched_title),
         "url": engine.current_url().await.unwrap_or(project_url),
         "assets_count": snap.get("assets").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
@@ -671,7 +675,7 @@ async fn apply_project_title(engine: &ChromeEngine, desired: &str) -> Result<Str
             Err(_) => {}
         }
     }
-    ensure_project_workspace_root(engine).await?;
+    ensure_project_root_route(engine).await?;
     let res = run_projects_op(engine, json!({ "action": "set_title", "title": desired })).await?;
     if res.get("ok").and_then(Value::as_bool) != Some(true) {
         anyhow::bail!(
@@ -715,64 +719,6 @@ async fn confirm_project_title(engine: &ChromeEngine, desired: &str) -> Result<S
     )
 }
 
-/// Counts entries in a `projectsOp` list payload that match `id` or exact `title`.
-fn count_matching_project_entries(
-    entries: &[Value],
-    id: Option<&str>,
-    title: Option<&str>,
-) -> usize {
-    let want_id = id.map(str::trim).filter(|s| !s.is_empty());
-    let want_title = title.map(str::trim).filter(|s| !s.is_empty());
-    entries
-        .iter()
-        .filter(|entry| {
-            if let Some(wid) = want_id
-                && entry.get("id").and_then(Value::as_str) == Some(wid)
-            {
-                return true;
-            }
-            if let Some(wtitle) = want_title
-                && entry
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .is_some_and(|t| t.trim().eq_ignore_ascii_case(wtitle))
-            {
-                return true;
-            }
-            false
-        })
-        .count()
-}
-
-/// Polls home-view project entries until the deleted project is absent from the page.
-async fn confirm_project_deleted(
-    engine: &ChromeEngine,
-    deleted_id: Option<&str>,
-    title: Option<&str>,
-    before_matches: usize,
-) -> Result<()> {
-    let want_id = deleted_id.map(str::trim).filter(|s| !s.is_empty());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        let listed = run_projects_op(engine, json!({ "action": "list" })).await?;
-        if listed.get("ok").and_then(Value::as_bool) == Some(true)
-            && let Some(projects) = listed.get("projects").and_then(Value::as_array)
-        {
-            let gone = match want_id {
-                Some(did) => !projects
-                    .iter()
-                    .any(|p| p.get("id").and_then(Value::as_str) == Some(did)),
-                None => count_matching_project_entries(projects, None, title) < before_matches,
-            };
-            if gone {
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    anyhow::bail!("Failed to confirm project deletion on the Flow home page")
-}
-
 /// Renames the active project (or the project identified by `id`).
 async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) -> Result<Value> {
     let trimmed = title.trim();
@@ -810,14 +756,6 @@ async fn delete_project(
     open_signed_in_home_page(engine).await?;
     let _ = engine.bind_angular_views("flow-projects-grid").await;
 
-    let before_list = run_projects_op(engine, json!({ "action": "list" })).await?;
-    let before_matches = before_list
-        .get("projects")
-        .and_then(Value::as_array)
-        .map_or(1, |projects| {
-            count_matching_project_entries(projects, id, title)
-        });
-
     let res = run_projects_op(
         engine,
         json!({ "action": "delete", "project_id": id, "title": title }),
@@ -831,8 +769,6 @@ async fn delete_project(
                 .unwrap_or("unknown")
         );
     }
-    let deleted_id = res.get("deleted_id").and_then(Value::as_str).or(id);
-    confirm_project_deleted(engine, deleted_id, title, before_matches).await?;
     Ok(res)
 }
 

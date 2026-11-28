@@ -352,7 +352,7 @@ Flow シーンタイムラインの一覧表示、作成、クリップ追加、
 }
 ```
 
-結果には `project_id`、`count`、`assets` が含まれます。各アセットには `id`、`name`、`kind`、取得できる場合は `primary_media_id` が含まれます。
+`list` の結果には `project_id`、`project_title`、`count`、`assets` が含まれます。`upload` の結果には `project_id`、`count`、`assets` が含まれます。各アセットには `id`、`name`、`kind`、取得できる場合は `primary_media_id` が含まれます。
 
 途中で失敗した場合、エラーには Flow が確認済みのアセットが含まれます。処理中のファイルを特定できる場合は `file` も返ります。`outcome_unknown` が返った場合は、再試行の前にプロジェクトを確認してください。
 
