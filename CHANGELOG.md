@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.2.2...v2.3.0) (2026-11-28)
+
+
+### Features
+
+* add Claude Code, Codex, and Antigravity plugins ([04dbd43](https://github.com/ByteLandTechnology/flow-mcp/commit/04dbd43a700d0eb0faa79d5a58357750d438f5c6))
+
+
+### Bug Fixes
+
+* **flow:** wait for voice rows before selecting a voice ([894f059](https://github.com/ByteLandTechnology/flow-mcp/commit/894f0599f3468d5f1c4325590d7da14b897381f0))
+
 ## [2.2.2](https://github.com/ByteLandTechnology/flow-mcp/compare/v2.2.1...v2.2.2) (2026-11-26)
 
 

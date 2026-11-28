@@ -1,6 +1,6 @@
 {
   "name": "flow-mcp",
-  "version": "2.2.2",
+  "version": "2.3.0",
   "description": "Drive Google Flow (Veo and Imagen) from an agent: images, videos, characters, voices, edits, scenes, and Flow Agent chat.",
   "author": {
     "name": "ByteLand Technology Limited"
@@ -8,7 +8,13 @@
   "homepage": "https://github.com/ByteLandTechnology/flow-mcp#readme",
   "repository": "https://github.com/ByteLandTechnology/flow-mcp",
   "license": "MIT",
-  "keywords": ["google-flow", "veo", "imagen", "mcp", "chrome-cdp"],
+  "keywords": [
+    "google-flow",
+    "veo",
+    "imagen",
+    "mcp",
+    "chrome-cdp"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -17,7 +23,11 @@
     "longDescription": "Registers the flow-mcp MCP server and adds a skill that checks the session, asks for the Google sign-in one time, waits for jobs, and warns before it uses many credits. Needs Node.js and Google Chrome on this computer.",
     "developerName": "ByteLand Technology Limited",
     "category": "Creative",
-    "capabilities": ["Generate images", "Generate videos", "Manage characters and voices"],
+    "capabilities": [
+      "Generate images",
+      "Generate videos",
+      "Manage characters and voices"
+    ],
     "websiteURL": "https://github.com/ByteLandTechnology/flow-mcp",
     "supportURL": "https://github.com/ByteLandTechnology/flow-mcp/issues",
     "defaultPrompt": [
