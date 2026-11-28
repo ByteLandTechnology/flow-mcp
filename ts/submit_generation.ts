@@ -4,7 +4,11 @@
 // Locate the enabled Flow generation submit button and compute its viewport click point.
 
 import { readAngularTooltip, readOwn, resolveLView } from "./angular";
-import { findComposerWarning } from "./composer";
+import {
+  findComposerWarning,
+  isEditOrSceneRoute,
+  NON_COMPOSER_PANELS,
+} from "./composer";
 import { delay, elText, isVisibleEnabled } from "./dom";
 import { runtimeState } from "./state";
 import type { NgLView } from "./types";
@@ -102,11 +106,10 @@ export async function submitGeneration(): Promise<unknown> {
     };
   }
 
-  const onEditPage = /\/edit\//.test(location.pathname || "");
-  const agentSelector =
-    "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+  const onEditPage = isEditOrSceneRoute();
   const scopedSelectors = onEditPage
     ? [
+        'flow-edit-image-prompt-box button[aria-label="Start generation"]',
         'flow-edit-video-prompt-box button[aria-label="Start generation"]',
         'flow-editor-page button[aria-label="Start generation"]',
         'flow-scene-builder button[aria-label="Start generation"]',
@@ -120,6 +123,7 @@ export async function submitGeneration(): Promise<unknown> {
     const roots: ParentNode[] = (
       onEditPage
         ? [
+            document.querySelector("flow-edit-image-prompt-box"),
             document.querySelector("flow-edit-video-prompt-box"),
             document.querySelector("flow-editor-page"),
             document.querySelector("flow-scene-builder"),
@@ -128,12 +132,12 @@ export async function submitGeneration(): Promise<unknown> {
             document.querySelector("flow-prompt-box flow-base-prompt-box"),
             document.querySelector("flow-prompt-box"),
           ]
-    ).filter((el): el is Element => Boolean(el));
+    ).filter((el): el is Element => Boolean(el && !el.closest(NON_COMPOSER_PANELS)));
     roots.push(document);
     return roots;
   };
   const checkWarning = (): { ok: false; error: string; detail: string } | null => {
-    const w = findComposerWarning(warningRoots(), !onEditPage);
+    const w = findComposerWarning(warningRoots(), true);
     if (!w) return null;
     return {
       ok: false,
@@ -144,25 +148,15 @@ export async function submitGeneration(): Promise<unknown> {
   const findStartButton = (): HTMLElement | null => {
     for (const sel of scopedSelectors) {
       const match = Array.from(document.querySelectorAll(sel)).find(
-        (b): b is HTMLElement => {
-          if (!isVisible(b)) return false;
-          if (!onEditPage && b.closest(agentSelector)) {
-            return false;
-          }
-          return true;
-        },
+        (b): b is HTMLElement => isVisible(b) && !b.closest(NON_COMPOSER_PANELS),
       );
       if (match) return match;
     }
     const fallback = Array.from(
       document.querySelectorAll('button[aria-label="Start generation"]'),
-    ).find((b): b is HTMLElement => {
-      if (!isVisible(b)) return false;
-      if (!onEditPage && b.closest(agentSelector)) {
-        return false;
-      }
-      return true;
-    });
+    ).find(
+      (b): b is HTMLElement => isVisible(b) && !b.closest(NON_COMPOSER_PANELS),
+    );
     return fallback ?? null;
   };
 
@@ -184,14 +178,16 @@ export async function submitGeneration(): Promise<unknown> {
   if (warningAfter) return warningAfter;
 
   const exactAfter = findStartButton();
+  const disabledBtn: Element | null = exactAfter;
   if (exactAfter && isVisible(exactAfter) && !isVisibleEnabled(exactAfter)) {
     let reason =
       runtimeState.promptState?.Ff?.N7a?.() ||
       runtimeState.promptState?.lf?.jYa?.() ||
       "";
     if (!reason) {
-      let cur: Element | null = exactAfter;
+      let cur: Element | null = disabledBtn;
       for (let depth = 0; depth < 6 && cur && !reason; depth += 1) {
+        if (cur.closest(NON_COMPOSER_PANELS)) break;
         let lv: NgLView | null = resolveLView(cur);
         for (let pDepth = 0; pDepth < 6 && Array.isArray(lv) && !reason; pDepth += 1) {
           for (const cand of lv) {
@@ -210,11 +206,7 @@ export async function submitGeneration(): Promise<unknown> {
       for (const lv of runtimeState.ngLViewMap.values()) {
         if (!Array.isArray(lv)) continue;
         if (lv[0] instanceof Node && !lv[0].isConnected) continue;
-        if (
-          !onEditPage &&
-          lv[0] instanceof Element &&
-          lv[0].closest(agentSelector)
-        ) {
+        if (lv[0] instanceof Element && lv[0].closest(NON_COMPOSER_PANELS)) {
           continue;
         }
         for (const cand of lv) {
@@ -231,14 +223,11 @@ export async function submitGeneration(): Promise<unknown> {
       reason = readAngularTooltip(exactAfter);
     }
     const visiblePm = Array.from(document.querySelectorAll(".ProseMirror")).find(
-      (el) => el.getClientRects().length > 0 && (!onEditPage ? !el.closest(agentSelector) : true),
+      (el) => el.getClientRects().length > 0 && !el.closest(NON_COMPOSER_PANELS),
     );
     const detail = [
       reason,
-      ((visiblePm || document.querySelector(".ProseMirror"))?.textContent || "").slice(
-        0,
-        40,
-      ),
+      (visiblePm?.textContent || "").slice(0, 40),
     ]
       .filter(Boolean)
       .join(" | ");
@@ -248,7 +237,7 @@ export async function submitGeneration(): Promise<unknown> {
   const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
   const createBtn = btns.find((b): b is HTMLElement => {
     if (b.tagName === "A" || !isVisibleEnabled(b)) return false;
-    if (!onEditPage && b.closest(agentSelector)) {
+    if (b.closest(NON_COMPOSER_PANELS)) {
       return false;
     }
     if (

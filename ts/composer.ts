@@ -17,8 +17,20 @@ import type {
 const TEXTBOX_SELECTOR =
   '.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], [contenteditable="true"], textarea';
 
-/** Containers that belong to the Agent composer. */
-const AGENT_COMPOSER = "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+/** Non-composer panels excluded from manual and edit prompt queries on all routes. */
+export const NON_COMPOSER_PANELS =
+  'flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box, flow-editor-side-panel, flow-comment-region-overlay, flow-comment-timeline-lane, [class*="comment-panel"], [class*="comments-panel"]';
+
+/** Host elements for image and video edit prompt boxes. */
+export const EDIT_PROMPT_BOX_SELECTOR =
+  "flow-edit-image-prompt-box, flow-edit-video-prompt-box";
+
+/** Returns true when `pathname` is an asset editor or scene builder route. */
+export function isEditOrSceneRoute(
+  pathname: string = location.pathname || "",
+): boolean {
+  return /\/(?:edit|scene)\//.test(pathname);
+}
 
 /** Detected quota or high-demand warning button inside a Flow composer. */
 export interface ComposerWarning {
@@ -28,22 +40,36 @@ export interface ComposerWarning {
   detail: string;
 }
 
-/** Finds a visible textbox in a composer root. */
-function composerTextbox(root: ParentNode | null, edit: boolean): HTMLElement | null {
+/** Finds a visible textbox in a composer root outside Agent, side, and comment panels. */
+function composerTextbox(root: ParentNode | null): HTMLElement | null {
   return Array.from(root?.querySelectorAll(TEXTBOX_SELECTOR) ?? []).find(
     (el): el is HTMLElement =>
-      el instanceof HTMLElement && el.getClientRects().length > 0 &&
-      !isDisabledProp(el) && (edit || !el.closest(AGENT_COMPOSER)),
+      el instanceof HTMLElement &&
+      el.getClientRects().length > 0 &&
+      !isDisabledProp(el) &&
+      !el.closest(NON_COMPOSER_PANELS),
   ) ?? null;
 }
 
 /** Finds the active visible prompt textbox for generation or edit composers. */
 export function findTextbox(editFlag: boolean): HTMLElement | null {
-  const scopedSelector = editFlag
-    ? "flow-edit-video-prompt-box, flow-editor-page, flow-scene-builder"
-    : "flow-prompt-box flow-base-prompt-box, flow-prompt-box";
-  return composerTextbox(document.querySelector(scopedSelector), editFlag) ||
-    composerTextbox(document, editFlag);
+  const roots = editFlag
+    ? [
+        ...Array.from(document.querySelectorAll(EDIT_PROMPT_BOX_SELECTOR)),
+        ...Array.from(
+          document.querySelectorAll("flow-editor-page, flow-scene-builder"),
+        ),
+      ]
+    : Array.from(
+        document.querySelectorAll(
+          "flow-prompt-box flow-base-prompt-box, flow-prompt-box",
+        ),
+      );
+  for (const root of roots) {
+    const hit = composerTextbox(root);
+    if (hit) return hit;
+  }
+  return composerTextbox(document);
 }
 
 /** Closes the active Agent panel and waits for the manual prompt to become editable. */
@@ -52,7 +78,7 @@ export async function ensureManualComposer(): Promise<HTMLElement | null> {
   const hosts = new WeakSet<PromptBoxHost>();
   for (let attempt = 0; attempt < 40; attempt++) {
     const prompt = document.querySelector("flow-prompt-box");
-    const textbox = composerTextbox(prompt, false);
+    const textbox = composerTextbox(prompt);
     if (textbox) return textbox;
 
     const panel = document.querySelector("flow-agent-panel, .agent-panel-wrapper");
@@ -227,9 +253,10 @@ function isBasePromptBoxInst(cand: unknown): cand is BasePromptBoxInstance {
 
 /** Walks up parent elements and LViews from `startEl` to find a `BasePromptBoxInstance`. */
 function scanElementForBasePromptBox(startEl: Element | null): BasePromptBoxInstance | null {
-  if (!startEl) return null;
+  if (!startEl || startEl.closest(NON_COMPOSER_PANELS)) return null;
   let cur: Element | null = startEl;
   for (let depth = 0; depth < 6 && cur; depth += 1) {
+    if (cur.closest(NON_COMPOSER_PANELS)) break;
     let lv: NgLView | null = resolveLView(cur);
     for (let pDepth = 0; pDepth < 6 && Array.isArray(lv); pDepth += 1) {
       for (const cand of lv) {
@@ -264,22 +291,36 @@ export function findLiveBasePromptBox(
         }
       }
     }
-    return scanElementForBasePromptBox(
-      document.querySelector("flow-prompt-box flow-base-prompt-box"),
-    );
+    const manualCandidates = Array.from(
+      document.querySelectorAll("flow-prompt-box flow-base-prompt-box"),
+    ).filter((el) => !el.closest(NON_COMPOSER_PANELS));
+    for (const el of manualCandidates) {
+      const hit = scanElementForBasePromptBox(el);
+      if (hit) return hit;
+    }
+    return null;
   }
-  return scanElementForBasePromptBox(
-    document.querySelector(
-      "flow-edit-video-prompt-box flow-base-prompt-box, flow-edit-video-prompt-box",
+  const editCandidates = Array.from(
+    document.querySelectorAll(
+      "flow-edit-image-prompt-box flow-base-prompt-box, flow-edit-video-prompt-box flow-base-prompt-box, flow-edit-image-prompt-box, flow-edit-video-prompt-box, flow-editor-page flow-base-prompt-box, flow-scene-builder flow-base-prompt-box",
     ),
-  );
+  ).filter((el) => !el.closest(NON_COMPOSER_PANELS));
+  const ordered = [
+    ...editCandidates.filter((el) => el.getClientRects().length > 0),
+    ...editCandidates.filter((el) => el.getClientRects().length === 0),
+  ];
+  for (const el of ordered) {
+    const hit = scanElementForBasePromptBox(el);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** Returns true when a custom warning element or one of its children is visible on screen. */
-function isWarningElementVisible(el: Element, excludeAgent: boolean): boolean {
+function isWarningElementVisible(el: Element, excludeNonComposer: boolean): boolean {
   if (!(el instanceof HTMLElement) || !el.isConnected) return false;
   if (el.closest('[hidden], [aria-hidden="true"]')) return false;
-  if (excludeAgent && el.closest(AGENT_COMPOSER)) return false;
+  if (excludeNonComposer && el.closest(NON_COMPOSER_PANELS)) return false;
   const style = window.getComputedStyle(el);
   if (style.display === "none" || style.visibility === "hidden") return false;
   if (el.getClientRects().length > 0) return true;
@@ -388,9 +429,12 @@ export async function closeModelMenu(): Promise<void> {
 export async function closeSettingsAndMenus(): Promise<void> {
   await closeModelMenu();
   if (!settingsOpen()) return;
-  const baseEl = document.querySelector(
-    "flow-prompt-box flow-base-prompt-box, flow-base-prompt-box",
-  );
+  const onEdit = isEditOrSceneRoute();
+  const baseEl = Array.from(
+    document.querySelectorAll(
+      "flow-prompt-box flow-base-prompt-box, flow-edit-image-prompt-box flow-base-prompt-box, flow-edit-video-prompt-box flow-base-prompt-box, flow-base-prompt-box",
+    ),
+  ).find((el) => !el.closest(NON_COMPOSER_PANELS)) ?? null;
   const findBaseInst = (lv: NgLView): BasePromptBoxInstance | null => {
     for (const cand of lv) {
       if (
@@ -406,8 +450,8 @@ export async function closeSettingsAndMenus(): Promise<void> {
     return null;
   };
   let baseInst: BasePromptBoxInstance | null = findLiveBasePromptBox(
-    false,
-    findPromptBoxHost(findProjectPageInstance()),
+    onEdit,
+    onEdit ? null : findPromptBoxHost(findProjectPageInstance()),
   );
   if (
     baseInst &&
@@ -427,6 +471,9 @@ export async function closeSettingsAndMenus(): Promise<void> {
   if (!baseInst && runtimeState.ngLViewMap instanceof Map) {
     for (const lv of runtimeState.ngLViewMap.values()) {
       if (!isLiveLView(lv)) continue;
+      if (lv[0] instanceof Element && lv[0].closest(NON_COMPOSER_PANELS)) {
+        continue;
+      }
       baseInst = findBaseInst(lv);
       if (baseInst) break;
     }
@@ -446,9 +493,11 @@ export async function closeSettingsAndMenus(): Promise<void> {
     await delay(80);
   }
   if (settingsOpen()) {
-    const sBtn = document.querySelector(
-      'flow-prompt-box button[aria-label="Settings trigger"], button[aria-label="Settings trigger"]',
-    );
+    const sBtn = Array.from(
+      document.querySelectorAll(
+        'flow-prompt-box button[aria-label="Settings trigger"], button[aria-label="Settings trigger"]',
+      ),
+    ).find((el) => !el.closest(NON_COMPOSER_PANELS)) ?? null;
     if (isVisibleEnabled(sBtn)) {
       sBtn.click();
       await delay(80);
@@ -476,3 +525,42 @@ export async function closeSettingsAndMenus(): Promise<void> {
     await delay(50);
   }
 }
+
+/** Returns true when `el` is connected, visible on screen, and outside non-composer panels. */
+export function isVisibleOutsideNonComposer(
+  el: Element | null | undefined,
+): el is HTMLElement {
+  if (!(el instanceof HTMLElement) || !el.isConnected) return false;
+  if (el.closest('[hidden], [aria-hidden="true"]')) return false;
+  if (el.closest(NON_COMPOSER_PANELS)) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  return el.getClientRects().length > 0;
+}
+
+/** Reads a blocking `.too-long-overlay` or composer alert message from the active editor view. */
+export function readComposerAlert(includePageAlerts: boolean): string | null {
+  const primaryAlerts = Array.from(
+    document.querySelectorAll(
+      `.too-long-overlay, flow-edit-video-prompt-box [role="alert"], flow-edit-image-prompt-box [role="alert"]`,
+    ),
+  );
+  for (const el of primaryAlerts) {
+    if (!isVisibleOutsideNonComposer(el)) continue;
+    const msg = elText(el).replace(/\s+/g, " ").trim();
+    if (msg) return msg;
+  }
+  if (!includePageAlerts) return null;
+  const pageAlerts = Array.from(
+    document.querySelectorAll(
+      'flow-editor-page [role="alert"], flow-scene-builder [role="alert"], flow-alert-dialog [role="dialog"], flow-alert-dialog',
+    ),
+  );
+  for (const el of pageAlerts) {
+    if (!isVisibleOutsideNonComposer(el)) continue;
+    const msg = elText(el).replace(/\s+/g, " ").trim();
+    if (msg) return msg;
+  }
+  return null;
+}
+

@@ -226,6 +226,8 @@ export interface FlowTile extends FlowMediaPayload {
   Eb?: FlowMediaPayload;
   /** Primary media container in build 20261120.00. */
   Kb?: FlowMediaPayload;
+  /** Generated media variant history ordered from oldest to newest. */
+  history?: FlowMediaPayload[];
   /** Character preview fallback URL. */
   ue?: string;
   /** Preview media identifier or fallback URL in build 20261120.00. */
@@ -300,6 +302,8 @@ export interface PromptTextSegment {
 
 /** Serialized prompt document accepted by `PromptStateController`. */
 export interface PromptDocumentPayload {
+  /** Prompt segments read by `PromptState.Gp` in build 20261120.00. */
+  kf?: PromptTextSegment[];
   /** Prompt segments in earlier builds. */
   Oe?: PromptTextSegment[];
   /** Prompt segments in build 20261120.00. */
@@ -516,6 +520,16 @@ export interface DiscoverStoreResult {
   error?: string;
 }
 
+/** Failed or canceled media variant entry recorded in asset history. */
+export interface SnapshotFailedVariant {
+  /** Variant media identifier or permutation-invariant fallback key. */
+  id: string;
+  /** Lowercase failure status (`failed` or `canceled`). */
+  status: string;
+  /** Extracted failure message when present. */
+  error: string | null;
+}
+
 /** Asset entry normalized for `readStoreSnapshot`. */
 export interface SnapshotAssetItem {
   /** Tile or clip workflow identifier. */
@@ -532,8 +546,12 @@ export interface SnapshotAssetItem {
   collection_id: string | null;
   /** Parent collection name. */
   collection_name: string | null;
+  /** Parent scene identifier for scene-only clips. */
+  scene_id: string | null;
   /** Primary media identifier. */
   primary_media_id: string | null;
+  /** Failed or canceled variants recorded in tile or clip history. */
+  failed_variants: SnapshotFailedVariant[];
   /** Character personality notes. */
   personality_notes: string | null;
   /** Assigned voice name or identifier. */
@@ -846,7 +864,12 @@ export interface FlowMcpRuntime {
   /** Clicks the upload trigger button or accepts upload consent dialogs. */
   uploadUiAction: (action: string) => boolean;
   /** Opens the asset editor via Angular Router or grid tile UI controls. */
-  openEditAsset: (assetId: string, mediaUrl: string | null, primaryMediaId: string | null) => Promise<unknown>;
+  openEditAsset: (
+    assetId: string,
+    mediaUrl: string | null,
+    primaryMediaId: string | null,
+    sceneId?: string | null,
+  ) => Promise<unknown>;
   /** Locates the enabled generation submit button and returns its viewport click point. */
   submitGeneration: () => Promise<unknown>;
   /** Creates Flow scenes and adds clips. */

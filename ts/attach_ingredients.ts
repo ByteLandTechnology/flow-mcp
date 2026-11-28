@@ -19,6 +19,8 @@ import {
   findProjectPageInstance,
   findPromptBoxHost,
   findTextbox,
+  isEditOrSceneRoute,
+  NON_COMPOSER_PANELS,
   settingsOpen,
 } from "./composer";
 import {
@@ -91,7 +93,7 @@ function framesReady(items: unknown[] | null, targets: IngredientTarget[]): bool
 
 /** Attaches reference ingredients or characters and writes the generation prompt text. */
 export async function attachIngredients(cfg: GenerationConfig): Promise<unknown> {
-  const onEditPage = /\/edit\//.test(location.pathname || "");
+  const onEditPage = isEditOrSceneRoute();
 
   const ingredientTargets: IngredientTarget[] = [];
   const tileMap = runtimeState.store?.getTileMap?.();
@@ -244,7 +246,9 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   ) {
     const tipEls = Array.from(
       document.querySelectorAll("[mattooltip], button[aria-label]"),
-    ).slice(0, 8);
+    )
+      .filter((el) => !el.closest(NON_COMPOSER_PANELS))
+      .slice(0, 8);
     await withLViewMapCapture(async () => {
       await hoverProbe(tipEls, 50);
     });
@@ -269,6 +273,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     Array.from(root.querySelectorAll('button, [role="button"]')).some(
       (el) =>
         isVisibleEnabled(el) &&
+        !el.closest(NON_COMPOSER_PANELS) &&
         /add ingredients to the prompt box|\bingredients\b/i.test(
           (
             el.getAttribute("aria-label") ||
@@ -283,6 +288,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     Array.from(root.querySelectorAll('button, [role="button"]')).some(
       (el) =>
         isVisibleEnabled(el) &&
+        !el.closest(NON_COMPOSER_PANELS) &&
         /^(?:start|end)$/i.test(
           (el.getAttribute("aria-label") || elText(el)).trim(),
         ),
@@ -335,7 +341,9 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
       ingBtn =
         Array.from(root.querySelectorAll('button, [role="button"]')).find(
           (el): el is HTMLElement => {
-            if (!isVisibleEnabled(el)) return false;
+            if (!isVisibleEnabled(el) || el.closest(NON_COMPOSER_PANELS)) {
+              return false;
+            }
             const label = (
               el.getAttribute("aria-label") ||
               elText(el) ||
@@ -352,7 +360,9 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         ingBtn =
           Array.from(root.querySelectorAll('button, [role="button"]')).find(
             (el): el is HTMLElement => {
-              if (!isVisibleEnabled(el)) return false;
+              if (!isVisibleEnabled(el) || el.closest(NON_COMPOSER_PANELS)) {
+                return false;
+              }
               const label = (
                 el.getAttribute("aria-label") ||
                 elText(el) ||
@@ -593,27 +603,27 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   const promptHost = !onEditPage
     ? findPromptBoxHost(findProjectPageInstance())
     : null;
-  const composerSeeds = onEditPage
-    ? [
-        document.querySelector("flow-edit-video-prompt-box"),
-        document.querySelector("flow-editor-page flow-rich-text-editor"),
-        document.querySelector("flow-scene-builder flow-rich-text-editor"),
-        document.querySelector("flow-rich-text-editor"),
-      ]
-    : [
-        document.querySelector(
-          "flow-prompt-box flow-base-prompt-box flow-rich-text-editor",
-        ),
-        document.querySelector("flow-prompt-box flow-base-prompt-box"),
-        document.querySelector("flow-prompt-box flow-rich-text-editor"),
-      ];
+  const composerSeeds = (
+    onEditPage
+      ? [
+          document.querySelector("flow-edit-image-prompt-box"),
+          document.querySelector("flow-edit-video-prompt-box"),
+          document.querySelector("flow-editor-page flow-rich-text-editor"),
+          document.querySelector("flow-scene-builder flow-rich-text-editor"),
+          document.querySelector("flow-rich-text-editor"),
+        ]
+      : [
+          document.querySelector(
+            "flow-prompt-box flow-base-prompt-box flow-rich-text-editor",
+          ),
+          document.querySelector("flow-prompt-box flow-base-prompt-box"),
+          document.querySelector("flow-prompt-box flow-rich-text-editor"),
+        ]
+  ).filter((el): el is Element => Boolean(el && !el.closest(NON_COMPOSER_PANELS)));
   const writeInfo = await writePromptBox(tb, cfg.prompt, {
     liveUx: findLiveBasePromptBox(onEditPage, promptHost),
     seeds: composerSeeds,
-    excludeSelector:
-      !onEditPage
-        ? "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box"
-        : null,
+    excludeSelector: NON_COMPOSER_PANELS,
     strictSync: true,
     onCloseSettings: closeSettingsAndMenus,
   });
@@ -631,11 +641,11 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   return {
     ok: true,
     composer:
-      tb
-        .closest(
-          "flow-edit-video-prompt-box, flow-creative-agent-prompt-box, flow-agent-panel, flow-base-prompt-box",
-        )
-        ?.tagName?.toLowerCase() || null,
+      (
+        tb.closest(
+          "flow-edit-image-prompt-box, flow-edit-video-prompt-box, flow-creative-agent-prompt-box, flow-agent-panel",
+        ) ?? tb.closest("flow-base-prompt-box")
+      )?.tagName?.toLowerCase() || null,
     prompt_tier: writeInfo.tier,
     prompt_len: tbLen.length,
     settings_open: Boolean(!onEditPage && settingsOpen()),

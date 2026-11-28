@@ -17,6 +17,7 @@ mod config;
 mod cookies;
 mod db;
 mod download;
+mod edit;
 mod engine;
 mod generation;
 mod http;

@@ -27,8 +27,20 @@ const MEDIA_URL_LOOKUPS: usize = 4;
 /// Time to resolve missing URLs in one asset list response.
 const ASSET_LIST_URL_BUDGET: Duration = Duration::from_secs(10);
 
+/// Failed or canceled media variant entry recorded in asset history.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct FailedVariant {
+    /// Variant media ID or permutation-invariant fallback key.
+    pub(crate) id: String,
+    /// Lowercase failure status (`"failed"` or `"canceled"`).
+    pub(crate) status: String,
+    /// Optional failure message reported by Flow.
+    #[serde(default)]
+    pub(crate) error: Option<String>,
+}
+
 /// Media asset or scene item inside a Google Flow project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct FlowAsset {
     /// Flow asset or tile ID.
     pub(crate) id: String,
@@ -48,6 +60,9 @@ pub(crate) struct FlowAsset {
     /// Parent collection display name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) collection_name: Option<String>,
+    /// Parent scene ID when this clip exists only inside a scene timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scene_id: Option<String>,
     /// Media width in pixels.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) width: Option<u32>,
@@ -60,6 +75,9 @@ pub(crate) struct FlowAsset {
     /// Primary media ID for video trim and edit operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) primary_media_id: Option<String>,
+    /// Internal failed or canceled variants recorded in asset history.
+    #[serde(default, skip_serializing)]
+    pub(crate) failed_variants: Vec<FailedVariant>,
     /// Character personality notes or introduction text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) personality_notes: Option<String>,
@@ -166,15 +184,16 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
+        let primary_not_ready = asset.media_error.is_some()
+            || matches!(
+                asset.media_status.as_deref(),
+                Some("pending" | "scheduled" | "failed" | "canceled")
+            );
         if !matches!(
             asset.kind.as_str(),
             "video" | "image" | "character" | "audio"
         ) || asset.url.is_some()
-            || asset.media_error.is_some()
-            || matches!(
-                asset.media_status.as_deref(),
-                Some("pending" | "scheduled" | "failed" | "canceled")
-            )
+            || primary_not_ready
         {
             continue;
         }
