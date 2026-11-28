@@ -180,12 +180,18 @@ async function selectRow(pane: Element, name: string): Promise<boolean> {
   if (sc) sc.scrollTop = 0;
   await delay(200);
   for (let i = 0; i < 60; i++) {
-    const row = renderedRows(pane).find((r) => r.name.toLowerCase() === want);
+    const rows = renderedRows(pane);
+    const row = rows.find((r) => r.name.toLowerCase() === want);
     if (row) {
       row.el.scrollIntoView({ block: "center" });
       row.el.click();
       await delay(700);
       return true;
+    }
+    // Flow renders the list after the dialog opens, so wait while no row exists.
+    if (!rows.length && i < 25) {
+      await delay(300);
+      continue;
     }
     if (!sc) break;
     const before = sc.scrollTop;
