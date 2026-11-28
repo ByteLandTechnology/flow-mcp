@@ -147,7 +147,7 @@ export function parseProbeEnvelope(
   text: string,
   status: number,
 ): AuthCheckResult {
-  let verifiedProbe = false;
+  let verifiedAppConfig = false;
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.replace(/^\)\]\}'\s*/, "").trim();
     if (!line.startsWith("[")) {
@@ -180,6 +180,9 @@ export function parseProbeEnvelope(
         if (rpcErr[0] === 16) {
           return authResult(false, false, true, status, "rpc_unauthenticated");
         }
+        if (entry[1] === TOOL_AVAILABILITY_RPC_ID) {
+          continue;
+        }
         return authResult(
           false,
           true,
@@ -207,7 +210,7 @@ export function parseProbeEnvelope(
         if (isJspbDisabledFlag(jspbField(payload, 32))) {
           return authResult(false, true, false, status, "age_restricted");
         }
-        verifiedProbe = true;
+        verifiedAppConfig = true;
       } else {
         const availability = readJspbEnumCode(jspbField(payload, 1));
         if (availability === 7) {
@@ -221,11 +224,10 @@ export function parseProbeEnvelope(
         ) {
           return authResult(false, true, false, status, "unavailable");
         }
-        verifiedProbe = true;
       }
     }
   }
-  if (!verifiedProbe) {
+  if (!verifiedAppConfig) {
     return authResult(false, false, false, status, "missing_rpc_payload");
   }
   if (!isWorkspaceLocation(location.hostname, location.pathname)) {
@@ -262,11 +264,8 @@ export async function checkAuth(): Promise<AuthCheckResult> {
     return authResult(false, true, false, 0, "missing_wiz_token");
   }
 
-  const checkToolAvailability = wiz.cPpIQe !== true;
   const params = new URLSearchParams({
-    rpcids: checkToolAvailability
-      ? `${APP_CONFIG_RPC_ID},${TOOL_AVAILABILITY_RPC_ID}`
-      : APP_CONFIG_RPC_ID,
+    rpcids: `${APP_CONFIG_RPC_ID},${TOOL_AVAILABILITY_RPC_ID}`,
     "source-path": location.pathname || "/",
     hl: "en",
     rt: "c",
@@ -291,12 +290,10 @@ export async function checkAuth(): Promise<AuthCheckResult> {
     params.set("pageId", routeParams.pageId);
   }
 
-  const rpcCalls: Array<[string, string, null, string]> = checkToolAvailability
-    ? [
-        [APP_CONFIG_RPC_ID, "[]", null, "1"],
-        [TOOL_AVAILABILITY_RPC_ID, "[22]", null, "2"],
-      ]
-    : [[APP_CONFIG_RPC_ID, "[]", null, "generic"]];
+  const rpcCalls: Array<[string, string, null, string]> = [
+    [APP_CONFIG_RPC_ID, "[]", null, "1"],
+    [TOOL_AVAILABILITY_RPC_ID, "[22]", null, "2"],
+  ];
   const reqPayload = JSON.stringify([rpcCalls]);
   const body = `f.req=${encodeURIComponent(reqPayload)}&at=${encodeURIComponent(xsrfToken)}`;
   const prefix = resolveDataPrefix(wiz.eptZe);

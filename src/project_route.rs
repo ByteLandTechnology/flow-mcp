@@ -33,19 +33,18 @@ pub(crate) fn has_segment_prefix(path: &str, prefix: &str) -> bool {
             && path.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 
-/// Normalizes a URL path to lowercase without trailing slashes while keeping `/` for root.
+/// Normalizes a URL path to lowercase single-slash segments while keeping `/` for root.
 pub(crate) fn normalize_flow_path(raw: &str) -> String {
-    let lower = raw.trim().to_ascii_lowercase();
-    let with_slash = if lower.starts_with('/') {
-        lower
-    } else {
-        format!("/{lower}")
-    };
-    let trimmed = with_slash.trim_end_matches('/');
-    if trimmed.is_empty() {
+    let segs: Vec<String> = raw
+        .trim()
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if segs.is_empty() {
         "/".to_string()
     } else {
-        trimmed.to_string()
+        format!("/{}", segs.join("/"))
     }
 }
 
@@ -120,8 +119,10 @@ pub(crate) fn strip_flow_route_prefix(path: &str) -> String {
     let after_prefix = if prefix.is_empty() {
         clean.as_str()
     } else {
-        let rest = &clean[prefix.len()..];
-        if rest.is_empty() { "/" } else { rest }
+        clean
+            .strip_prefix(&prefix)
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or("/")
     };
     if after_prefix == "/fx" {
         "/".to_string()

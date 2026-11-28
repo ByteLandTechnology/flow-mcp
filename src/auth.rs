@@ -263,8 +263,6 @@ async fn finalize_promoted_login(engine: &ChromeEngine, start_url: &str) -> Resu
     engine.promote_login_chrome(start_url).await?;
     let base_sso = flow_sso_url_for(start_url);
     let mut about_retries = 0usize;
-    let mut blocked_polls = 0usize;
-    let mut rejected_auth_polls = 0usize;
     for _ in 0..30 {
         let cur = engine.current_url().await.unwrap_or_default();
         if is_interactive_signin_url(&cur) {
@@ -289,43 +287,15 @@ async fn finalize_promoted_login(engine: &ChromeEngine, start_url: &str) -> Resu
             }
             continue;
         }
-        if is_flow_host_url(&cur) && !is_signed_in_flow_url(&cur) {
-            blocked_polls += 1;
-            if blocked_polls >= 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            continue;
-        }
-        blocked_polls = 0;
-        if is_signed_in_flow_url(&cur) && !cur.contains("accounts.google.com") {
-            let cookies = engine.flow_cookies().await.unwrap_or_default();
-            if has_google_auth_cookies(&cookies) {
-                let auth_state = check_page_auth(engine, true).await;
-                if auth_state.get("signed_in").and_then(Value::as_bool) == Some(true) {
-                    let final_url = engine.current_url().await.unwrap_or_default();
-                    return Ok(Some(signed_in_login_result(
-                        "interactive-chrome",
-                        cookies.len(),
-                        final_url,
-                    )));
-                }
-                if auth_state
-                    .get("explicit_signed_out")
-                    .and_then(Value::as_bool)
-                    == Some(true)
-                {
-                    rejected_auth_polls += 1;
-                    if rejected_auth_polls >= 2 {
-                        break;
-                    }
-                }
-            } else {
-                rejected_auth_polls += 1;
-                if rejected_auth_polls >= 4 {
-                    break;
-                }
-            }
+        if is_signed_in_flow_url(&cur)
+            && let Some(count) = check_fully_signed_in(engine).await
+        {
+            let final_url = engine.current_url().await.unwrap_or_default();
+            return Ok(Some(signed_in_login_result(
+                "interactive-chrome",
+                count,
+                final_url,
+            )));
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -340,15 +310,12 @@ async fn login_with_chrome(
     wait_for_login: bool,
     force: bool,
 ) -> Result<Value> {
-    let clamped_secs = timeout_secs.clamp(15, 3600);
-    let deadline = Instant::now() + Duration::from_secs(clamped_secs);
-
     if force {
         crate::instance::acquire_instance_lock()?;
         remove_cookies_file();
         engine.launch_interactive_login(FLOW_SSO_URL, true).await?;
     } else if engine.has_login_chrome().await {
-        if !wait_for_login && let Some(st) = engine.poll_login_chrome().await? {
+        if let Some(st) = engine.poll_login_chrome().await? {
             if let Some(rejected) = st.rejected_url {
                 engine.shutdown().await;
                 anyhow::bail!(
@@ -367,8 +334,9 @@ async fn login_with_chrome(
                 if st.exited {
                     anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
                 }
-                let resume_sso = flow_sso_url_for(&target);
-                engine.launch_interactive_login(&resume_sso, false).await?;
+                anyhow::bail!(
+                    "Google Sign-In wrote authentication cookies, but workspace verification did not succeed. Run flow_login again."
+                );
             }
         }
         if !engine.has_login_chrome().await {
@@ -405,6 +373,9 @@ async fn login_with_chrome(
         }));
     }
 
+    let clamped_secs = timeout_secs.clamp(15, 3600);
+    let deadline = Instant::now() + Duration::from_secs(clamped_secs);
+
     loop {
         let Some(st) = engine.poll_login_chrome().await? else {
             anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
@@ -429,17 +400,9 @@ async fn login_with_chrome(
             if st.exited {
                 anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
             }
-            if Instant::now() >= deadline {
-                engine.shutdown().await;
-                anyhow::bail!(
-                    "Timed out after {}s waiting for Google Sign-In in Chrome.",
-                    clamped_secs,
-                );
-            }
-            let resume_sso = flow_sso_url_for(&target);
-            engine.launch_interactive_login(&resume_sso, false).await?;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            continue;
+            anyhow::bail!(
+                "Google Sign-In wrote authentication cookies, but workspace verification did not succeed. Run flow_login again."
+            );
         }
 
         if Instant::now() >= deadline {
@@ -514,26 +477,7 @@ pub(crate) async fn handle_login(engine: &ChromeEngine, req: LoginParams) -> Res
                 if st.exited || st.ready_flow_url.is_some() {
                     promotion_attempted = true;
                     let target = promotion_target_url(st.ready_flow_url.as_deref());
-                    if st.ready_flow_url.is_some() && !st.exited {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                    }
-                    let promoted = finalize_promoted_login(engine, &target).await?;
-                    if promoted.is_none() && !st.exited && st.rejected_url.is_none() {
-                        let resume_sso = flow_sso_url_for(&target);
-                        engine.launch_interactive_login(&resume_sso, false).await?;
-                        return Ok(json!({
-                            "ok": true,
-                            "action": "status",
-                            "engine": ENGINE_NAME,
-                            "pageReady": false,
-                            "windowVisible": true,
-                            "cdpEndpoint": Value::Null,
-                            "cookiesSaved": cookies_path().is_file(),
-                            "profileDir": chrome_profile_dir().to_string_lossy(),
-                            "url": resume_sso,
-                            "signedIn": false,
-                        }));
-                    }
+                    let _ = finalize_promoted_login(engine, &target).await;
                 } else {
                     return Ok(json!({
                         "ok": true,
@@ -599,29 +543,20 @@ pub(crate) async fn handle_login(engine: &ChromeEngine, req: LoginParams) -> Res
     }
 }
 
-/// Polls an active interactive Chrome sign-in window for `flow_status`, promoting when ready and returning `Some(url)` while sign-in remains open.
-pub(crate) async fn poll_login_status_url(engine: &ChromeEngine, probe: bool) -> Option<String> {
+/// Returns the active sign-in URL while the interactive Chrome window stays open.
+pub(crate) async fn active_login_window_url(engine: &ChromeEngine) -> Option<String> {
     if !engine.has_login_chrome().await {
         return None;
     }
     let Ok(Some(st)) = engine.poll_login_chrome().await else {
         return None;
     };
-    if !probe && (st.exited || st.ready_flow_url.is_some()) {
-        let target = promotion_target_url(st.ready_flow_url.as_deref());
-        if st.ready_flow_url.is_some() && !st.exited {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-        let promoted = finalize_promoted_login(engine, &target)
-            .await
-            .ok()
-            .flatten();
-        if promoted.is_none() && !st.exited && st.rejected_url.is_none() {
-            let resume_sso = flow_sso_url_for(&target);
-            let _ = engine.launch_interactive_login(&resume_sso, false).await;
-            return Some(resume_sso);
-        }
+    if st.exited {
         return None;
     }
-    Some(st.rejected_url.unwrap_or_else(|| FLOW_SSO_URL.to_string()))
+    Some(
+        st.ready_flow_url
+            .or(st.rejected_url)
+            .unwrap_or_else(|| FLOW_SSO_URL.to_string()),
+    )
 }

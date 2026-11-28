@@ -213,12 +213,14 @@ export function hasSegmentPrefix(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`);
 }
 
-/** Normalizes a URL pathname to lowercase without trailing slashes while preserving `/`. */
+/** Normalizes a URL pathname to lowercase single-slash segments while keeping `/`. */
 export function normalizeFlowPathname(raw: string): string {
-  const lower = (raw || "/").trim().toLowerCase();
-  const withSlash = lower.startsWith("/") ? lower : `/${lower}`;
-  const trimmed = withSlash.replace(/\/+$/, "");
-  return trimmed || "/";
+  const segs = (raw || "")
+    .trim()
+    .toLowerCase()
+    .split("/")
+    .filter(Boolean);
+  return segs.length > 0 ? `/${segs.join("/")}` : "/";
 }
 
 /** Extracts the active `/fx/tools/flow`, `/u/<digits>`, and `/<org>/global` prefix from `pathname`. */
