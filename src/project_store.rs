@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use tokio::sync::MutexGuard;
 
-use crate::auth::is_signed_in_flow_url;
 use crate::engine::{ChromeEngine, checked_runtime_result};
+use crate::flow_url::is_signed_in_flow_url;
 use crate::project::project_id_from_url;
 
 /// Holds the browser project store lock and pins the project and runtime session.

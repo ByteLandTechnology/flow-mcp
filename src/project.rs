@@ -13,11 +13,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::{Duration, Instant};
 
-use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redirect_sso_if_about};
+use crate::auth::{check_page_auth, check_page_signed_in, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::flow_url::{is_flow_host_url, is_signed_in_flow_url};
 pub(crate) use crate::project_route::{
-    project_id_from_url, project_subroute_url, project_workspace_url,
+    is_project_subroute_url, project_id_from_url, project_subroute_url, project_workspace_url,
 };
 use crate::project_store::{bind_current_store, prepare_project_store_status};
 
@@ -88,30 +89,8 @@ pub(crate) struct FlowStatus {
 
 /// Navigates back to `/project/<id>` when Chrome is on a non-grid project subroute.
 pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
-    let is_subroute = |url: &str| {
-        let path = url.split(['?', '#']).next().unwrap_or_default();
-        let Some((_, project)) = path.split_once("/project/") else {
-            return false;
-        };
-        let mut segs = project.trim_end_matches('/').split('/');
-        if segs.next().is_none_or(str::is_empty) {
-            return false;
-        }
-        match (segs.next(), segs.next(), segs.next()) {
-            (
-                Some(
-                    "character" | "scene" | "edit" | "chat" | "tool" | "tools" | "create-tool"
-                    | "trash",
-                ),
-                _,
-                _,
-            ) => true,
-            (Some("collection"), Some(cid), Some("character")) => !cid.is_empty(),
-            _ => false,
-        }
-    };
     let current = engine.current_url().await?;
-    if !is_subroute(&current) {
+    if !is_project_subroute_url(&current) {
         return Ok(());
     }
     let project_id = project_id_from_url(&current)
@@ -119,7 +98,7 @@ pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Resu
     let workspace = project_workspace_url(&current, &project_id);
     let returned = |url: &str| {
         is_flow_host_url(url)
-            && !is_subroute(url)
+            && !is_project_subroute_url(url)
             && project_id_from_url(url).as_deref() == Some(project_id.as_str())
             && project_workspace_url(url, &project_id) == workspace
     };
@@ -172,6 +151,25 @@ async fn eval_project_nav(engine: &ChromeEngine, action: &str) -> Result<Value> 
 /// Reads Google Flow session state without navigation when `probe` is `true`,
 /// or opens Flow when `probe` is `false`. Reads the store without changing project routes.
 pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowStatus {
+    if engine.has_login_chrome().await
+        && let Ok(Some(st)) = engine.poll_login_chrome().await
+        && !st.exited
+    {
+        return FlowStatus {
+            signed_in: false,
+            in_project: false,
+            project: None,
+            project_id: None,
+            url: st.rejected_url.or(st.flow_url),
+            credits: None,
+            assets_count: None,
+            collections_count: None,
+            page_ready: false,
+            engine: ENGINE_NAME.to_string(),
+            frontend: None,
+            error: None,
+        };
+    }
     if !probe && !engine.has_page().await && !has_persisted_session() {
         return FlowStatus {
             signed_in: false,
@@ -511,8 +509,8 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
 pub(crate) async fn create_project(engine: &ChromeEngine, title: Option<&str>) -> Result<Value> {
     engine.ensure_page().await?;
     let initial_url = engine.current_url().await.unwrap_or_default();
-    let already_on_home = crate::auth::is_signed_in_flow_url(&initial_url)
-        && project_id_from_url(&initial_url).is_none();
+    let already_on_home =
+        is_signed_in_flow_url(&initial_url) && project_id_from_url(&initial_url).is_none();
     if !already_on_home {
         engine.navigate(FLOW_URL).await?;
         tokio::time::sleep(Duration::from_millis(900)).await;

@@ -11,9 +11,15 @@ import {
   normalizeFlowMediaUrl,
   readMediaUrl,
 } from "./dom";
+import { splitFlowPath } from "./flow_route";
 import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
-import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
+import type {
+  AngularRouter,
+  FlowStoreHandle,
+  FlowTile,
+  NgLView,
+} from "./types";
 
 /** Object with optional Angular Ivy `__ngContext__` or internal `lView` links. */
 export interface NgContextCarrier {
@@ -31,6 +37,20 @@ export function readOwn(obj: unknown, key: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** Returns `true` when `val` is a non-null, non-array, non-`Map`, non-DOM object. */
+export function isPlainRecord(val: unknown): val is Record<string, unknown> {
+  return Boolean(
+    val &&
+      typeof val === "object" &&
+      val !== window &&
+      val !== document &&
+      val !== window.navigation &&
+      !(val instanceof Node) &&
+      !Array.isArray(val) &&
+      !(val instanceof Map),
+  );
 }
 
 /** Returns `lv` if `lv` is a live Angular LView whose host node remains connected. */
@@ -179,13 +199,11 @@ function flowQueryParams(search: string = location.search): Record<string, strin
   return params;
 }
 
-/** Extracts the active route prefix before `/project/` from the current page URL. */
+/** Extracts the active route prefix from the current page URL or `<base href>`. */
 function activeProjectPrefix(): string {
   const path = location.pathname || "";
-  const projectIdx = path.indexOf("/project/");
-  if (projectIdx >= 0) {
-    return path.slice(0, projectIdx).replace(/\/+$/, "");
-  }
+  const { prefix } = splitFlowPath(path);
+  if (prefix) return prefix;
   const baseHref = document.head?.querySelector("base")?.getAttribute("href");
   if (baseHref) {
     try {
@@ -194,34 +212,10 @@ function activeProjectPrefix(): string {
         return basePath;
       }
     } catch {
-      // Fall through to segment check.
+      // Ignore malformed `<base href>` attributes.
     }
   }
-  const segs = path.split("/").filter(Boolean);
-  const prefixSegs: string[] = [];
-  let i = 0;
-  while (i < segs.length) {
-    if (
-      segs[i] === "fx" &&
-      segs[i + 1] === "tools" &&
-      segs[i + 2] === "flow"
-    ) {
-      prefixSegs.push("fx", "tools", "flow");
-      i += 3;
-    } else if (segs[i] === "u" && /^\d+$/.test(segs[i + 1] || "")) {
-      prefixSegs.push("u", segs[i + 1]);
-      i += 2;
-    } else if (
-      segs[i + 1] === "global" &&
-      !/^(?:project|projects|about|shared|flow|tools|fx|u)$/.test(segs[i])
-    ) {
-      prefixSegs.push(segs[i], "global");
-      i += 2;
-    } else {
-      break;
-    }
-  }
-  return prefixSegs.length > 0 ? `/${prefixSegs.join("/")}` : "";
+  return "";
 }
 
 /** Discovers the query-parameter key on `NavigationExtras` via `UrlSerializer.parse` on `router`. */
@@ -231,32 +225,15 @@ function routerQueryParamsKey(router: AngularRouter): string {
   const candidateKeys = Array.from(new Set([...Object.keys(router), "urlSerializer"]));
   for (const key of candidateKeys) {
     const serializer = readOwn(router, key);
-    if (
-      !serializer ||
-      typeof serializer !== "object" ||
-      serializer === window ||
-      serializer === document ||
-      serializer instanceof Node
-    ) {
-      continue;
-    }
+    if (!isPlainRecord(serializer)) continue;
     const parse = readOwn(serializer, "parse");
     if (typeof parse !== "function") continue;
     try {
-      const tree = (parse as (url: string) => unknown).call(
-        serializer,
-        "/?__flow_qp=1",
-      );
-      if (!tree || typeof tree !== "object") continue;
-      const treeKeys = Array.from(new Set([...Object.keys(tree), "queryParams"]));
-      for (const treeKey of treeKeys) {
+      const tree = (parse as (url: string) => unknown).call(serializer, "/?__flow_qp=1");
+      if (!isPlainRecord(tree)) continue;
+      for (const treeKey of new Set([...Object.keys(tree), "queryParams"])) {
         const qp = readOwn(tree, treeKey);
-        if (
-          qp &&
-          typeof qp === "object" &&
-          !Array.isArray(qp) &&
-          readOwn(qp, "__flow_qp") === "1"
-        ) {
+        if (isPlainRecord(qp) && readOwn(qp, "__flow_qp") === "1") {
           routerQueryParamKeys.set(router, treeKey);
           return treeKey;
         }
@@ -300,23 +277,12 @@ export function buildProjectUrl(
   return url.href;
 }
 
-/** Searches visible shell nodes and captured LViews for the active Angular `Router` instance. */
-export function findRouter(): AngularRouter | null {
-  const isRouter = (cand: unknown): cand is AngularRouter =>
-    Boolean(
-      cand &&
-        typeof cand === "object" &&
-        cand !== window &&
-        cand !== document &&
-        cand !== window.navigation &&
-        !(cand instanceof Node) &&
-        !Array.isArray(cand) &&
-        !(cand instanceof Map) &&
-        typeof (cand as Partial<AngularRouter>).navigate === "function" &&
-        "location" in cand &&
-        "options" in cand,
-    );
+/** Host selectors searched first for Angular Ivy `LView` trees and root injectors. */
+export const ANGULAR_SHELL_SELECTOR =
+  "flow-project-shell, flow-project-page, flow-character-edit-page, flow-editor-dispatcher, flow-editor-page, flow-scene-builder, router-outlet, aisandbox-root, app-root, main, header";
 
+/** Searches visible shell nodes, injectors, and captured LViews for a service matching `match`. */
+export function findInAngular<T>(match: (cand: unknown) => cand is T): T | null {
   const ownMaps = (obj: object): Array<Map<unknown, unknown>> => {
     const maps: Array<Map<unknown, unknown>> = [];
     const named = readOwn(obj, "records");
@@ -334,25 +300,49 @@ export function findRouter(): AngularRouter | null {
   const seenObjs = new Set<object>();
   const seenInjectors = new Set<object>();
 
-  const inspectInjector = (injRoot: object): AngularRouter | null => {
+  const inspectInjector = (injRoot: object): T | null => {
     let inj: object | null = injRoot;
-    for (let d = 0; d < 6 && inj && typeof inj === "object"; d += 1) {
+    for (let d = 0; d < 10 && inj && typeof inj === "object"; d += 1) {
       if (seenInjectors.has(inj)) break;
       seenInjectors.add(inj);
       for (const records of ownMaps(inj)) {
         for (const rec of records.values()) {
-          if (isRouter(rec)) return rec;
+          if (match(rec)) return rec;
           const recVal = readOwn(rec, "value");
-          if (isRouter(recVal)) return recVal;
+          if (match(recVal)) return recVal;
+          if (isPlainRecord(recVal) && !seenObjs.has(recVal)) {
+            seenObjs.add(recVal);
+            const rKeys = Object.keys(recVal);
+            for (let i = 0; i < rKeys.length && i < 16; i += 1) {
+              const nested = readOwn(recVal, rKeys[i]);
+              if (match(nested)) return nested;
+            }
+          }
         }
       }
       const parent = readOwn(inj, "parent");
-      inj = parent && typeof parent === "object" ? parent : null;
+      if (parent && typeof parent === "object" && !(parent instanceof Node)) {
+        inj = parent;
+        continue;
+      }
+      let nextInj: object | null = null;
+      for (const key of Object.keys(inj)) {
+        const candParent = readOwn(inj, key);
+        if (
+          isPlainRecord(candParent) &&
+          !seenInjectors.has(candParent) &&
+          ownMaps(candParent).length > 0
+        ) {
+          nextInj = candParent;
+          break;
+        }
+      }
+      inj = nextInj;
     }
     return null;
   };
 
-  const inspectLViewTree = (startLv: NgLView | null): AngularRouter | null => {
+  const inspectLViewTree = (startLv: NgLView | null): T | null => {
     if (!Array.isArray(startLv)) return null;
     const queue: Array<[NgLView, number]> = [[startLv, 0]];
     while (queue.length > 0) {
@@ -365,26 +355,19 @@ export function findRouter(): AngularRouter | null {
         if (!slot || typeof slot !== "object" || slot instanceof Node) {
           continue;
         }
-        if (isRouter(slot)) return slot;
+        if (match(slot)) return slot;
         if ("parent" in slot || ownMaps(slot).length > 0) {
           const fromInj = inspectInjector(slot);
           if (fromInj) return fromInj;
         }
         if (seenObjs.has(slot)) continue;
         seenObjs.add(slot);
-        if (!Array.isArray(slot) && !(slot instanceof Map)) {
+        if (isPlainRecord(slot)) {
           const keys = Object.keys(slot);
           for (let i = 0; i < keys.length && i < 30; i += 1) {
             const val = readOwn(slot, keys[i]);
-            if (isRouter(val)) return val;
-            if (
-              val &&
-              typeof val === "object" &&
-              !(val instanceof Node) &&
-              !Array.isArray(val) &&
-              !(val instanceof Map) &&
-              ("parent" in val || ownMaps(val).length > 0)
-            ) {
+            if (match(val)) return val;
+            if (isPlainRecord(val) && ("parent" in val || ownMaps(val).length > 0)) {
               const fromNested = inspectInjector(val);
               if (fromNested) return fromNested;
             }
@@ -399,10 +382,7 @@ export function findRouter(): AngularRouter | null {
     return null;
   };
 
-  const els = document.querySelectorAll(
-    "flow-project-shell, flow-project-page, flow-character-edit-page, flow-editor-dispatcher, flow-editor-page, flow-scene-builder, router-outlet, aisandbox-root, app-root, main",
-  );
-  for (const el of els) {
+  for (const el of document.querySelectorAll(ANGULAR_SHELL_SELECTOR)) {
     const hit = inspectLViewTree(resolveLView(el));
     if (hit) return hit;
   }
@@ -412,7 +392,26 @@ export function findRouter(): AngularRouter | null {
       if (hit) return hit;
     }
   }
+  const all = document.querySelectorAll("*");
+  const limit = Math.min(all.length, 200);
+  for (let i = 0; i < limit; i += 1) {
+    if ("__ngContext__" in all[i]) {
+      const hit = inspectLViewTree(resolveLView(all[i]));
+      if (hit) return hit;
+    }
+  }
   return null;
+}
+
+/** Searches visible shell nodes and captured LViews for the active Angular `Router` instance. */
+export function findRouter(): AngularRouter | null {
+  return findInAngular(
+    (cand): cand is AngularRouter =>
+      isPlainRecord(cand) &&
+      typeof (cand as Partial<AngularRouter>).navigate === "function" &&
+      "location" in cand &&
+      "options" in cand,
+  );
 }
 
 /** Maximum time to confirm scene creation and the initial clip load. */
@@ -582,16 +581,7 @@ function scanLViewTooltip(lv: NgLView, hostNode: Element): string {
   }
   for (const key of ["message", "Sf", "CA"]) {
     for (const cand of lv) {
-      if (
-        !cand ||
-        typeof cand !== "object" ||
-        cand instanceof Node ||
-        cand instanceof Error ||
-        Array.isArray(cand) ||
-        cand instanceof Map
-      ) {
-        continue;
-      }
+      if (!isPlainRecord(cand) || cand instanceof Error) continue;
       const text = readTooltipSlotValue(cand, key);
       if (text) return text;
     }

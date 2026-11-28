@@ -138,6 +138,8 @@ pub(crate) struct LoginPollStatus {
     pub(crate) exited: bool,
     /// Google Accounts rejection URL observed during sign-in, if any.
     pub(crate) rejected_url: Option<String>,
+    /// Latest signed-in Google Flow workspace URL observed in profile history.
+    pub(crate) flow_url: Option<String>,
     /// True when Google authentication cookies exist in the login profile.
     pub(crate) has_google_auth_cookies: bool,
 }
@@ -244,6 +246,7 @@ impl ChromeEngine {
         Ok(Some(LoginPollStatus {
             exited,
             rejected_url: probe.rejected_url,
+            flow_url: probe.flow_url,
             has_google_auth_cookies: probe.has_google_auth_cookies,
         }))
     }
@@ -869,6 +872,14 @@ async fn bind_browser_instances(
 ) -> Result<Option<Value>> {
     let group = format!("flow-bind-{}", uuid::Uuid::new_v4());
     let result = async {
+        let installed = eval_runtime(cdp, "Boolean(window.__flowMcp)", false, Duration::from_secs(5))
+            .await
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !installed {
+            eval_runtime(cdp, FLOW_RUNTIME_JS, false, Duration::from_secs(30)).await?;
+        }
         let prototype = cdp
             .call(
                 "Runtime.evaluate",

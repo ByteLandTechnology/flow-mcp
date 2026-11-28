@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::cdp::{CdpConnection, fetch_json_version};
 use crate::config::{chrome_profile_dir, cli_chrome_path, configured_cdp_port};
 use crate::cookies::is_google_auth_cookie_pair;
+use crate::flow_url::{is_flow_host_url, is_signed_in_flow_url};
 use crate::instance::{acquire_instance_lock, stop_orphan_chrome};
 use crate::platform::{create_private_dir_all, focus_process, interrupt_process};
 
@@ -53,7 +54,9 @@ impl Drop for LoginChrome {
 pub(crate) struct LoginProfileProbe {
     /// Google Accounts rejection URL observed in profile history.
     pub(crate) rejected_url: Option<String>,
-    /// True when core Google Sign-In cookies were written since launch.
+    /// Latest signed-in Google Flow workspace URL observed in profile history.
+    pub(crate) flow_url: Option<String>,
+    /// True when core Google Sign-In cookies were updated since launch.
     pub(crate) has_google_auth_cookies: bool,
 }
 
@@ -328,23 +331,36 @@ fn copy_sqlite_files_to_scratch(
     Some(dst)
 }
 
-/// Inspects a scratch copy of Chrome's `History` SQLite database for Google Accounts rejection URLs.
+/// Inspects a scratch copy of Chrome's `History` SQLite database for rejection and workspace URLs.
 fn probe_history_db(scratch_history: &Path, min_webkit_us: i64, probe: &mut LoginProfileProbe) {
     let Ok(conn) = rusqlite::Connection::open(scratch_history) else {
         return;
     };
     let Ok(mut stmt) = conn.prepare(
-        "SELECT url FROM urls WHERE last_visit_time >= ?1 ORDER BY last_visit_time DESC, id DESC LIMIT 25",
+        "SELECT url FROM urls WHERE last_visit_time >= ?1 ORDER BY last_visit_time DESC, id DESC LIMIT 50",
     ) else {
         return;
     };
     let Ok(rows) = stmt.query_map([min_webkit_us], |row| row.get::<_, String>(0)) else {
         return;
     };
+    let mut flow_checked = false;
     for url in rows.flatten() {
         if url.contains("accounts.google.com/v3/signin/rejected") {
-            probe.rejected_url = Some(url);
+            if !flow_checked {
+                probe.rejected_url = Some(url);
+                probe.flow_url = None;
+            }
             return;
+        }
+        if !flow_checked && is_flow_host_url(&url) {
+            if url.to_ascii_lowercase().contains("/fx/api/auth/") {
+                continue;
+            }
+            flow_checked = true;
+            if is_signed_in_flow_url(&url) {
+                probe.flow_url = Some(url);
+            }
         }
     }
 }
@@ -364,8 +380,8 @@ fn probe_cookies_db(scratch_cookies: &Path, min_webkit_us: i64) -> bool {
     }) else {
         return false;
     };
-    for pair in rows.flatten() {
-        if is_google_auth_cookie_pair(&pair.0, &pair.1) {
+    for (host, name) in rows.flatten() {
+        if is_google_auth_cookie_pair(&host, &name) {
             return true;
         }
     }
