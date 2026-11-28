@@ -5,13 +5,14 @@
 
 import { readOwn } from "./angular";
 import { cleanMediaId, findMediaContainer, isTrashedTile, legacyMedia } from "./dom";
+import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import { agentAttachmentCompatibility } from "./frontend_compatibility";
 import { bindMediaUpload, uploadMediaFiles, waitForMedia } from "./project_upload";
 import type { MediaUploadExport, UploadProgress } from "./project_upload";
 import type { FlowMediaPayload, FlowTile } from "./types";
 
 /** Tile that can supply a reference in the active Flow project. */
-interface AttachmentTile extends FlowTile {
+export interface AttachmentTile extends FlowTile {
   /** Asset ID shown in the project. */
   id: string;
   /** ID of the primary image or video. */
@@ -88,7 +89,7 @@ function isMediaTile(tile: AttachmentTile): boolean {
 }
 
 /** Returns true when a media variant payload has finished generating or uploading. */
-function isReadyVariant(variant: FlowMediaPayload | undefined): boolean {
+export function isReadyVariant(variant: FlowMediaPayload | undefined): boolean {
   if (!variant || typeof variant !== "object") return true;
   const source = readOwn(variant, "source");
   const uploaded = readOwn(variant, "vp");
@@ -119,7 +120,7 @@ function findVariantByMediaId(
 }
 
 /** Resolves a tile and optional media variant matching a requested project asset or media ID. */
-function resolveRequestedAsset(
+export function resolveRequestedAsset(
   tiles: AttachmentTile[],
   requestedId: string,
 ): { tile: AttachmentTile; variant?: FlowMediaPayload; variantId?: string } | undefined {
@@ -211,6 +212,21 @@ function referenceKey(reference: AttachmentReference, characterField: string): s
   return reference.mediaType === "CHARACTER"
     ? `character:${reference[characterField]}`
     : `media:${reference.mediaId}`;
+}
+
+/** Reads the current project tiles from the bound page store when available. */
+export function readAgentProjectTiles(page: Record<string, unknown>): AttachmentTile[] {
+  const format = frontendBuild(readBuildLabel())?.operations.agent_attachments;
+  if (!format) return [];
+  const store = readOwn(page, format.store);
+  const tiles = readOwn(store, format.tiles);
+  if (typeof tiles !== "function") return [];
+  try {
+    const items: unknown = tiles.call(store);
+    return Array.isArray(items) ? (items as AttachmentTile[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Resolves project references, uploads local files, and builds the native Agent message. */

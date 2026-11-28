@@ -799,6 +799,10 @@ export interface FlowMcpRuntime {
   agentBusy: typeof import("./agent_chat").agentBusy;
   /** Runs one operation on the bound Agent. */
   agentOp: typeof import("./agent_chat").agentOp;
+  /** Clears local drafts, turn state, and caches for a session. */
+  agentPurge: typeof import("./agent_chat").agentPurge;
+  /** Sends recorded question answers again on open streams after a reconnect. */
+  agentReplay: typeof import("./agent_chat").agentReplay;
   /** Returns the project page prototype for CDP instance discovery. */
   agentPrototype: typeof import("./agent_chat").agentPrototype;
   /** Checks the Agent build and chat exports. */

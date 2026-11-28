@@ -62,6 +62,22 @@ export interface AgentRequest {
   limit?: number | null;
   /** Exclusive upper bound on returned turn numbers. */
   before_turn?: number | null;
+  /** True when the server tracks this session ID as an unsaved draft. */
+  draft?: boolean;
+  /** Unsaved draft session IDs that the server tracks for this project. */
+  drafts?: string[];
+}
+
+/** Question response that the server sends again if a reconnect resets the turn. */
+export interface AgentReplayEntry {
+  /** Session ID that owns the turn. */
+  session_id: string;
+  /** Turn number. Starts at one. */
+  turn: number;
+  /** Action ID of the question card. */
+  action_id: string;
+  /** Validated caller answers for the question card. */
+  answers: NonNullable<AgentRequest["answers"]>;
 }
 
 /** Title and state of one session. */
@@ -231,6 +247,7 @@ export type ReplyBlock =
   | { type: "permission"; card: PermissionCard }
   | { type: "question"; card: QuestionCard }
   | { type: "plan"; Gz: PlanCard }
+  | { type: "view_agent_memory" }
   | { type: "a2ui"; round: unknown };
 
 /** Media counts and credits from a permission request. */

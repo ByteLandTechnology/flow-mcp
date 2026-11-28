@@ -3,6 +3,10 @@
 
 // Format Agent turns, pending actions, expired elicitations, and question answers.
 
+import { readOwn } from "./angular";
+import { isReadyVariant, resolveRequestedAsset } from "./agent_attachments";
+import type { AttachmentTile } from "./agent_attachments";
+import { legacyMedia, legacyTile } from "./dom";
 import type {
   AgentRequest,
   FlowAgentExports,
@@ -40,12 +44,24 @@ interface TurnPosition {
   latest: boolean;
 }
 
+/** Status and optional failure detail of one generated media item in a turn. */
+interface TurnMediaItem {
+  /** Flow media identifier. */
+  media_id: string;
+  /** Lifecycle status of the media item. */
+  status: string;
+  /** Error code or message when generation fails. */
+  error: string | number | undefined;
+}
+
 /** Native Agent handles required to decode and hydrate turns. */
 export interface TurnContext {
   /** Library exports used to decode and format turns. */
   flow: FlowAgentExports;
   /** Agent transport service for this document. */
   transport: Transport;
+  /** Optional reader for live project tiles on this page. */
+  tiles?: () => AttachmentTile[];
 }
 
 /** Returns true when a later reply block in the same turn supersedes a proposed plan. */
@@ -67,6 +83,7 @@ function isLaterOutputBlock(block: ReplyBlock): boolean {
       return block.content.trim().length > 0;
     case "a2ui":
     case "plan":
+    case "view_agent_memory":
       return true;
     case "permission":
       return block.card.Vz !== undefined;
@@ -77,9 +94,16 @@ function isLaterOutputBlock(block: ReplyBlock): boolean {
   }
 }
 
+/** Returns true when a generated media item does not have a failed or canceled status. */
+function isNonFailedMedia(item: TurnMediaItem): boolean {
+  const status = item.status.toLowerCase();
+  return status !== "failed" && status !== "canceled" && status !== "error";
+}
+
 /** Returns a timeout message when an unanswered expired elicitation has no later output. */
 function expiredElicitationError(
   blocks: ReplyBlock[],
+  media: TurnMediaItem[],
   active: boolean,
 ): string | undefined {
   if (active) return undefined;
@@ -105,7 +129,12 @@ function expiredElicitationError(
     }
   }
   if (lastIndex < 0 || !lastKind) return undefined;
-  if (blocks.slice(lastIndex + 1).some(isLaterOutputBlock)) return undefined;
+  if (
+    blocks.slice(lastIndex + 1).some(isLaterOutputBlock) ||
+    media.some(isNonFailedMedia)
+  ) {
+    return undefined;
+  }
   return lastKind === "permission"
     ? "Generation approval timed out."
     : "Question request timed out.";
@@ -118,6 +147,7 @@ function pendingActions(
   latest: boolean,
 ): PendingAction[] {
   const actions: PendingAction[] = [];
+  let hasOpenQuestion = false;
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index];
     if (
@@ -139,10 +169,12 @@ function pendingActions(
     }
     if (
       active &&
+      !hasOpenQuestion &&
       block.type === "question" &&
       block.card.Qj === undefined &&
       !block.card.Ls
     ) {
+      hasOpenQuestion = true;
       actions.push({
         type: "question",
         action_id: block.card.id,
@@ -194,9 +226,85 @@ function storedStatus(state: number): TurnStatus {
   }
 }
 
-/** Reads actual media IDs from the original Agent tool results. */
-function legacyTurnMedia(flow: FlowAgentExports, turn: LiveTurn): string[] {
-  const ids = new Set<string>();
+/** Converts a raw tool or stream media status to a standard Flow status. */
+function normalizeMediaStatus(raw: string | undefined, hasError: boolean): string {
+  const status =
+    raw?.trim().toLowerCase().replace(/^media_generation_status_/, "") ?? "";
+  if (status === "error" || status === "failed") return "failed";
+  if (status === "canceled" || status === "cancelled") return "canceled";
+  if (
+    status === "queued" ||
+    status === "in_progress" ||
+    status === "active" ||
+    status === "generating"
+  ) {
+    return "pending";
+  }
+  if (status === "succeeded" || status === "successful" || status === "completed") {
+    return hasError ? "failed" : "success";
+  }
+  if (status) return status;
+  return hasError ? "failed" : "success";
+}
+
+/** Reads an error code or message from a media error value. */
+function readMediaError(value: unknown): string | number | undefined {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return value.trim() || undefined;
+  if (!value || typeof value !== "object") return undefined;
+  for (const key of ["errorCode", "error_code", "code", "error", "message"]) {
+    const field = readOwn(value, key);
+    if (typeof field === "number") return field;
+    if (typeof field === "string" && field.trim()) return field.trim();
+  }
+  return undefined;
+}
+
+/** Updates one turn media item with the live project tile variant status. */
+function reconcileTurnMedia(item: TurnMediaItem, tiles: AttachmentTile[]): TurnMediaItem {
+  const normalizedStatus = normalizeMediaStatus(item.status, item.error !== undefined);
+  const matched = tiles.length > 0 ? resolveRequestedAsset(tiles, item.media_id) : undefined;
+  if (!matched) {
+    return { ...item, status: normalizedStatus };
+  }
+  const payload = matched.variant
+    ? legacyMedia(matched.variant)
+    : legacyTile(matched.tile).Fb;
+  const tileStatus = payload?.Zc?.trim().toLowerCase();
+  const tileError = readMediaError(payload?.nf);
+  if (tileStatus === "canceled") {
+    return { media_id: item.media_id, status: "canceled", error: item.error ?? tileError };
+  }
+  if (tileStatus === "failed" || tileStatus === "error" || (!tileStatus && tileError !== undefined)) {
+    return { media_id: item.media_id, status: "failed", error: item.error ?? tileError };
+  }
+  const ready = matched.variant
+    ? isReadyVariant(matched.variant)
+    : matched.tile.isPending !== true && (tileStatus === undefined || tileStatus === "success");
+  if (!ready || tileStatus === "pending" || tileStatus === "scheduled") {
+    const pendingStatus = tileStatus === "scheduled" ? "scheduled" : "pending";
+    return {
+      media_id: item.media_id,
+      status:
+        normalizedStatus === "failed" || normalizedStatus === "canceled"
+          ? normalizedStatus
+          : pendingStatus,
+      error: item.error,
+    };
+  }
+  if (
+    ready &&
+    (tileStatus === undefined || tileStatus === "success") &&
+    (normalizedStatus === "pending" || normalizedStatus === "scheduled")
+  ) {
+    return { media_id: item.media_id, status: "success", error: undefined };
+  }
+  return { ...item, status: normalizedStatus };
+}
+
+/** Reads media IDs, statuses, and errors from legacy Agent tool results. */
+function legacyTurnMedia(flow: FlowAgentExports, turn: LiveTurn): TurnMediaItem[] {
+  const items = new Map<string, TurnMediaItem>();
   for (const message of turn.Yu) {
     for (const event of flow.turns(message, flow.toolEventType, 2)) {
       const result = flow.oneOf(
@@ -207,12 +315,26 @@ function legacyTurnMedia(flow: FlowAgentExports, turn: LiveTurn): string[] {
       );
       if (!result) continue;
       for (const row of flow.resultItems(result)) {
-        const media = flow.structFields(row).get("media_id");
-        if (media) ids.add(flow.valueString(media));
+        const fields = flow.structFields(row);
+        const media = fields.get("media_id");
+        const mediaId = media ? (flow.valueString(media) ?? "").trim() : "";
+        if (!mediaId) continue;
+        const rawStatus = fields.get("status");
+        const errorCode = fields.get("error_code");
+        const errorDetail = fields.get("error");
+        const errorText =
+          (errorCode ? (flow.valueString(errorCode) ?? "").trim() : "") ||
+          (errorDetail ? (flow.valueString(errorDetail) ?? "").trim() : "") ||
+          undefined;
+        const status = normalizeMediaStatus(
+          rawStatus ? flow.valueString(rawStatus) : undefined,
+          errorText !== undefined,
+        );
+        items.set(mediaId, { media_id: mediaId, status, error: errorText });
       }
     }
   }
-  return [...ids].filter(Boolean);
+  return [...items.values()];
 }
 
 /** Formats one Agent turn using the same message model that the chat page uses. */
@@ -226,8 +348,18 @@ function formatTurn(
   const [user, reply] = context.flow.reply({ turn, XJ: number - 1, yc: active });
   const blocks = reply.Oh ?? turn.Tf?.Oh ?? [];
   const rawError = reply.errorMessage ?? turn.errorMessage;
+  const rawMedia: TurnMediaItem[] =
+    turn.Tf && turn.Tf.Bx.size > 0
+      ? [...turn.Tf.Bx].map(([mediaId, item]) => ({
+          media_id: mediaId,
+          status: item.status,
+          error: item.errorCode ?? readMediaError(item),
+        }))
+      : legacyTurnMedia(context.flow, turn);
+  const projectTiles = rawMedia.length > 0 ? (context.tiles?.() ?? []) : [];
+  const media = rawMedia.map((item) => reconcileTurnMedia(item, projectTiles));
   const timeoutError = status !== "stopped" && status !== "in_progress"
-    ? expiredElicitationError(blocks, active)
+    ? expiredElicitationError(blocks, media, active)
     : undefined;
   const pending = pendingActions(
     blocks,
@@ -243,16 +375,6 @@ function formatTurn(
       video_count: legacyRequest.loa,
       credits: legacyRequest.qsa,
     });
-  }
-  const media = [...(turn.Tf?.Bx ?? [])].map(([mediaId, item]) => ({
-    media_id: mediaId,
-    status: item.status,
-    error: item.errorCode,
-  }));
-  if (!turn.Tf) {
-    for (const mediaId of legacyTurnMedia(context.flow, turn)) {
-      media.push({ media_id: mediaId, status: "success", error: undefined });
-    }
   }
   const effectiveStatus = pending.length > 0
     ? "action_required"
@@ -279,14 +401,54 @@ function formatTurn(
       rich_content: blocks.flatMap((b) => (b.type === "a2ui" ? [b.round] : [])),
     },
     pending_actions: pending,
-    error: timeoutError ?? rawError,
+    error: effectiveStatus === "in_progress" ? undefined : (timeoutError ?? rawError),
   };
+}
+
+/** Selects the turn with more content when a server turn stays in progress after a disconnect. */
+function disconnectedInProgressTurn(
+  context: TurnContext,
+  saved: StoredTurn,
+  prior: LiveTurn | undefined,
+  index: number,
+): LiveTurn {
+  const decoded = context.flow.decode(saved);
+  if (!prior) return decoded;
+  const [savedUser, savedReply] = context.flow.reply({
+    turn: decoded,
+    XJ: index,
+    yc: false,
+  });
+  const [priorUser, priorReply] = context.flow.reply({
+    turn: prior,
+    XJ: index,
+    yc: false,
+  });
+  if (priorUser.text !== savedUser.text) return decoded;
+  if (savedReply.ci && priorReply.ci && savedReply.ci !== priorReply.ci) {
+    return decoded;
+  }
+  const savedBlocks = savedReply.Oh?.length ?? decoded.Tf?.Oh.length ?? 0;
+  const priorBlocks = priorReply.Oh?.length ?? prior.Tf?.Oh.length ?? 0;
+  const savedMedia = decoded.Tf?.Bx.size ?? 0;
+  const priorMedia = prior.Tf?.Bx.size ?? 0;
+  if (
+    Boolean(priorReply.ci && !savedReply.ci) ||
+    priorBlocks > savedBlocks ||
+    priorMedia > savedMedia ||
+    priorReply.text.length > savedReply.text.length ||
+    prior.Yu.length > decoded.Yu.length
+  ) {
+    return prior;
+  }
+  return decoded;
 }
 
 /** Formats the current and persisted turns without treating a local partial reply as final. */
 export function conversation(context: TurnContext, id: string, stored: StoredTurn[]) {
   const local = context.transport.ka.ha().get(id);
   const inProgress = local?.xe;
+  const hasTransport = context.transport.ha.has(id);
   const count = Math.max(
     stored.length,
     (local?.Vh.length ?? 0) + (inProgress ? 1 : 0),
@@ -301,15 +463,25 @@ export function conversation(context: TurnContext, id: string, stored: StoredTur
       return formatTurn(context, id, inProgress, {
         number,
         status: "in_progress",
-        active: true,
+        active: hasTransport,
         latest,
       });
     }
     const state = saved?.getState();
-    if (
-      saved &&
-      (!prior || (state !== undefined && state !== STORED_TURN_IN_PROGRESS))
-    ) {
+    if (saved && state === STORED_TURN_IN_PROGRESS) {
+      return formatTurn(
+        context,
+        id,
+        disconnectedInProgressTurn(context, saved, prior, i),
+        {
+          number,
+          status: "in_progress",
+          active: false,
+          latest,
+        },
+      );
+    }
+    if (saved && (!prior || state !== undefined)) {
       return formatTurn(context, id, context.flow.decode(saved), {
         number,
         status: storedStatus(state ?? 0),
@@ -333,18 +505,30 @@ export function conversation(context: TurnContext, id: string, stored: StoredTur
   });
 }
 
-/** Loads saved turns into the browser before a follow-up message. */
+/** Loads saved turns into the browser and replaces unpersisted local failures before a follow-up message. */
 export function loadStoredTurns(
   context: TurnContext,
   sessionId: string,
   turns: StoredTurn[],
 ): void {
   const { flow, transport } = context;
-  const local = transport.ka.ha().get(sessionId);
-  if (turns.length > (local?.Vh.length ?? 0)) {
+  const localTurns = transport.ka.ha().get(sessionId)?.Vh ?? [];
+  const hasStaleLocalFailure = localTurns.some((turn, index) => {
+    if (turn.errorMessage === undefined || turn.errorMessage === flow.errors.IC) {
+      return false;
+    }
+    return index >= turns.length || turns[index]?.getState() !== 3;
+  });
+  if (turns.length > localTurns.length || hasStaleLocalFailure) {
+    const trailing = localTurns
+      .slice(turns.length)
+      .filter(
+        (turn) =>
+          turn.errorMessage === undefined || turn.errorMessage === flow.errors.IC,
+      );
     flow.hydrate(transport.ka, {
       sessionId,
-      BF: turns.map(flow.decode),
+      BF: [...turns.map(flow.decode), ...trailing],
       hka: false,
       xe: null,
     });

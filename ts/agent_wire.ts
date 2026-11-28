@@ -12,6 +12,8 @@ type Fields = Readonly<Record<string, string>>;
 export interface AgentWireFormat {
   /** Native methods for the transport, turn store, and question service. */
   methods: Fields;
+  /** Writable session ID signals on the turn store. */
+  sessionSignals?: readonly string[];
   /** Request fields for a new message. */
   send: Fields;
   /** Fields for restoring saved turns. */
@@ -133,6 +135,17 @@ function method<T>(service: object | undefined, name: string): T | undefined {
   return typeof value === "function" ? value.bind(service) as T : undefined;
 }
 
+/** Clears a verified writable session signal on the turn store when it holds `sessionId`. */
+function clearSessionSignal(store: object, name: string, sessionId: string): void {
+  const signal: unknown = Object.getOwnPropertyDescriptor(store, name)?.value;
+  if (typeof signal !== "function" || signal.length !== 0) return;
+  const set: unknown = Object.getOwnPropertyDescriptor(signal, "set")?.value;
+  if (typeof set !== "function") return;
+  if ((signal as () => unknown)() === sessionId) {
+    (set as (value: undefined) => void).call(signal, undefined);
+  }
+}
+
 /** Converts this build's service without modifying a native object. */
 export function adaptAgentWire(
   native: AgentWire,
@@ -191,7 +204,12 @@ export function adaptAgentWire(
           }
           return summaries;
         },
-        yL: clear,
+        yL: (id) => {
+          clear(id);
+          for (const signal of format.sessionSignals ?? []) {
+            clearSessionSignal(nativeStore, signal, id);
+          }
+        },
       },
     },
     flow: {

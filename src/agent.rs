@@ -10,6 +10,7 @@ use anyhow::{Context, Result, ensure};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::{Duration, sleep};
@@ -52,7 +53,7 @@ enum AgentAction {
     CreateSession,
     /// Changes the title of a saved session.
     RenameSession,
-    /// Deletes a saved session and its conversation history.
+    /// Deletes a saved or draft session and its conversation history.
     DeleteSession,
     /// Reads conversation history, including the active turn.
     ListMessages,
@@ -247,10 +248,98 @@ fn valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
-/// Owns the Agent page and serializes requests to its runtime.
+/// Question response that the poll loop sends again if a stream reconnect resets the turn.
+#[derive(Debug, Clone, Serialize)]
+struct PendingAnswer {
+    /// Session ID that owns the turn.
+    session_id: String,
+    /// Turn number. Starts at one.
+    turn: u32,
+    /// Action ID of the question card.
+    action_id: String,
+    /// Validated answers from the `respond` request.
+    answers: Vec<AgentAnswer>,
+}
+
+/// Shared state for the Agent page, draft sessions, and question answers.
+#[derive(Default)]
+struct AgentState {
+    /// Active browser page and bound project.
+    agent: Option<AgentPage>,
+    /// Allocated draft session IDs by project ID.
+    drafts: BTreeMap<String, BTreeSet<String>>,
+    /// Accepted question answers by project ID.
+    answers: BTreeMap<String, Vec<PendingAnswer>>,
+}
+
+impl AgentState {
+    /// Records an allocated draft session ID for `project_id`.
+    fn record_draft(&mut self, project_id: &str, session_id: &str) {
+        self.drafts
+            .entry(project_id.to_string())
+            .or_default()
+            .insert(session_id.to_string());
+    }
+
+    /// Removes `session_id` from the draft set for `project_id`.
+    fn remove_draft(&mut self, project_id: &str, session_id: &str) {
+        let remove_project = if let Some(ids) = self.drafts.get_mut(project_id) {
+            ids.remove(session_id);
+            ids.is_empty()
+        } else {
+            false
+        };
+        if remove_project {
+            self.drafts.remove(project_id);
+        }
+    }
+
+    /// Removes draft IDs that Flow reports as saved on the server.
+    fn sync_persisted(&mut self, project_id: &str, value: &Value) {
+        if value["persisted"].as_bool() == Some(true)
+            && let Some(id) = value["session_id"].as_str()
+        {
+            self.remove_draft(project_id, id);
+        }
+        if let Some(sessions) = value["sessions"].as_array() {
+            for session in sessions {
+                if session["persisted"].as_bool() == Some(true)
+                    && let Some(id) = session["session_id"].as_str()
+                {
+                    self.remove_draft(project_id, id);
+                }
+            }
+        }
+    }
+
+    /// Stores an accepted question answer in order for its turn.
+    fn record_answer(&mut self, project_id: &str, entry: PendingAnswer) {
+        let items = self.answers.entry(project_id.to_string()).or_default();
+        items.retain(|item| {
+            item.session_id != entry.session_id
+                || (item.turn == entry.turn && item.action_id != entry.action_id)
+        });
+        items.push(entry);
+    }
+
+    /// Removes all saved question answers for `session_id` in `project_id`.
+    fn clear_session_answers(&mut self, project_id: &str, session_id: &str) {
+        let remove_project = if let Some(items) = self.answers.get_mut(project_id) {
+            items.retain(|item| item.session_id != session_id);
+            items.is_empty()
+        } else {
+            false
+        };
+        if remove_project {
+            self.answers.remove(project_id);
+        }
+    }
+}
+
+/// Owns the Agent page and serializes requests and answer replays to its runtime.
 pub(crate) struct AgentChat {
-    /// Page and project currently used for chat.
-    state: Mutex<Option<AgentPage>>,
+    /// Page, draft session IDs, and saved question answers.
+    state: Arc<Mutex<AgentState>>,
 }
 
 /// Agent page for a project.
@@ -267,7 +356,7 @@ impl AgentChat {
     /// Creates the chat controller. Chrome starts on the first request.
     pub(crate) fn new() -> Self {
         Self {
-            state: Mutex::new(None),
+            state: Arc::new(Mutex::new(AgentState::default())),
         }
     }
 
@@ -285,24 +374,50 @@ impl AgentChat {
         )
         .await?;
         let mut state = self.state.lock().await;
-        if state.as_ref().is_none_or(|agent| !agent.page.is_alive()) {
+        if state
+            .agent
+            .as_ref()
+            .is_none_or(|agent| !agent.page.is_alive())
+        {
             let page = Arc::new(engine.open_background_page().await?);
-            *state = Some(AgentPage {
+            state.answers.clear();
+            state.agent = Some(AgentPage {
                 page,
                 project_id: String::new(),
                 workspace_url: String::new(),
             });
         }
         let reference_url = engine.current_url().await.unwrap_or_default();
-        let agent = state.as_mut().context("Agent page unavailable")?;
-        agent.open(&reference_url, &request.project_id).await?;
+        {
+            let agent = state.agent.as_mut().context("Agent page unavailable")?;
+            agent.open(&reference_url, &request.project_id).await?;
+        }
         let mut args = serde_json::to_value(&request)?;
         if let Some(fields) = args.as_object_mut() {
             fields.remove("files");
+            if request.action == AgentAction::ListSessions
+                && let Some(drafts) = state.drafts.get(&request.project_id)
+                && !drafts.is_empty()
+            {
+                fields.insert("drafts".to_string(), json!(drafts));
+            } else if let Some(ref sid) = request.session_id
+                && state
+                    .drafts
+                    .get(&request.project_id)
+                    .is_some_and(|drafts| drafts.contains(sid))
+            {
+                fields.insert("draft".to_string(), Value::Bool(true));
+            }
         }
         let execution = if request.starts_turn() {
+            let busy = state
+                .agent
+                .as_ref()
+                .context("Agent page unavailable")?
+                .busy()
+                .await?;
             ensure!(
-                !agent.busy().await?,
+                !busy,
                 "An Agent turn is active. Read it or stop it before you start another turn"
             );
             Some(queue.try_lock_execution()?)
@@ -310,57 +425,189 @@ impl AgentChat {
             None
         };
         if request.action == AgentAction::CreateSession {
-            let result = checked_runtime_result(
-                agent
-                    .page
-                    .call("agentAllocate", json!([request.project_id]))
-                    .await?,
-            )?;
-            args["session_id"] = Value::String(
+            let allocated = {
+                let agent = state.agent.as_ref().context("Agent page unavailable")?;
+                let result = checked_runtime_result(
+                    agent
+                        .page
+                        .call("agentAllocate", json!([request.project_id]))
+                        .await?,
+                )?;
                 result["session_id"]
                     .as_str()
                     .context("Flow did not allocate a session ID")?
-                    .to_string(),
-            );
+                    .to_string()
+            };
+            state.record_draft(&request.project_id, &allocated);
+            args["session_id"] = Value::String(allocated);
         }
         let session_id = args["session_id"].clone();
+        let session_id_str = session_id.as_str().map(str::to_owned);
         if !files.is_empty() {
-            agent.page.stage_agent_files(&files).await?;
+            let stage_result = state
+                .agent
+                .as_ref()
+                .context("Agent page unavailable")?
+                .page
+                .stage_agent_files(&files)
+                .await;
+            if let Err(error) = stage_result {
+                if request.action == AgentAction::CreateSession
+                    && let Some(ref sid) = session_id_str
+                    && let Err(purge_error) =
+                        purge_session_state(&mut state, &request.project_id, sid).await
+                {
+                    return Err(error.context(format!(
+                        "Could not clear draft session {sid}: {purge_error:#}"
+                    )));
+                }
+                return Err(error);
+            }
             args["file_count"] = json!(files.len());
         }
+        let page = Arc::clone(&state.agent.as_ref().context("Agent page unavailable")?.page);
         let result = if !files.is_empty()
             || request
                 .asset_ids
                 .as_ref()
                 .is_some_and(|ids| !ids.is_empty())
         {
-            agent
-                .page
-                .call_with_timeout("agentOp", json!([args]), ATTACHMENT_CALL_TIMEOUT)
+            page.call_with_timeout("agentOp", json!([args]), ATTACHMENT_CALL_TIMEOUT)
                 .await
         } else {
-            agent.page.call("agentOp", json!([args])).await
+            page.call("agentOp", json!([args])).await
         };
-        if let Some(guard) = execution {
-            tokio::spawn(hold_while_active(
-                Arc::clone(&agent.page),
-                request.project_id.clone(),
-                guard,
-            ));
-        }
         match result {
-            Ok(value) => {
-                let mut value = checked_runtime_result(value)?;
+            Ok(raw) if raw["ok"].as_bool() != Some(true) => {
+                let submitted = matches!(
+                    raw["error"].as_str(),
+                    Some("outcome_unknown" | "agent_submission_not_observed")
+                );
+                if submitted {
+                    if let Some(guard) = execution {
+                        tokio::spawn(hold_while_active(
+                            Arc::clone(&self.state),
+                            request.project_id.clone(),
+                            guard,
+                        ));
+                    }
+                    return checked_runtime_result(raw);
+                }
+                let Err(error) = checked_runtime_result(raw) else {
+                    anyhow::bail!("The browser runtime returned an invalid error response");
+                };
+                if request.action == AgentAction::CreateSession
+                    && let Some(ref sid) = session_id_str
+                    && let Err(purge_error) =
+                        purge_session_state(&mut state, &request.project_id, sid).await
+                {
+                    return Err(error.context(format!(
+                        "Could not clear draft session {sid}: {purge_error:#}"
+                    )));
+                }
+                Err(error)
+            }
+            Ok(raw) => {
+                let mut value = checked_runtime_result(raw)?;
+                state.sync_persisted(&request.project_id, &value);
+                let unpersisted_failed = request.action == AgentAction::CreateSession
+                    && value["persisted"].as_bool() == Some(false)
+                    && value["turn"]["status"].as_str() == Some("failed");
+                if unpersisted_failed || request.action == AgentAction::DeleteSession {
+                    if let Some(ref sid) = session_id_str {
+                        purge_session_state(&mut state, &request.project_id, sid).await?;
+                    }
+                } else {
+                    if request.action != AgentAction::Resume
+                        && (request.action == AgentAction::Stop || request.starts_turn())
+                        && let Some(ref sid) = session_id_str
+                    {
+                        state.clear_session_answers(&request.project_id, sid);
+                    } else if request.action == AgentAction::Respond
+                        && let (Some(sid), Some(turn), Some(action_id), Some(answers)) = (
+                            request.session_id.clone(),
+                            request.turn,
+                            request.action_id.clone(),
+                            request.answers.clone(),
+                        )
+                    {
+                        state.record_answer(
+                            &request.project_id,
+                            PendingAnswer {
+                                session_id: sid,
+                                turn,
+                                action_id,
+                                answers,
+                            },
+                        );
+                    }
+                    if let Some(guard) = execution {
+                        tokio::spawn(hold_while_active(
+                            Arc::clone(&self.state),
+                            request.project_id.clone(),
+                            guard,
+                        ));
+                    } else if request.action == AgentAction::Respond
+                        && request.answers.is_some()
+                        && let Ok(guard) = queue.try_lock_execution()
+                    {
+                        tokio::spawn(hold_while_active(
+                            Arc::clone(&self.state),
+                            request.project_id.clone(),
+                            guard,
+                        ));
+                    }
+                }
                 value["project_id"] = Value::String(request.project_id);
                 Ok(value)
             }
-            Err(error) if request.writes() => anyhow::bail!(
-                "outcome_unknown (project {}, session {session_id}): {error:#}",
-                request.project_id
-            ),
-            Err(error) => Err(error),
+            Err(error) => {
+                if let Some(guard) = execution {
+                    tokio::spawn(hold_while_active(
+                        Arc::clone(&self.state),
+                        request.project_id.clone(),
+                        guard,
+                    ));
+                } else if request.action == AgentAction::Respond
+                    && request.answers.is_some()
+                    && let Ok(guard) = queue.try_lock_execution()
+                {
+                    tokio::spawn(hold_while_active(
+                        Arc::clone(&self.state),
+                        request.project_id.clone(),
+                        guard,
+                    ));
+                }
+                if request.writes() {
+                    anyhow::bail!(
+                        "outcome_unknown (project {}, session {session_id}): {error:#}",
+                        request.project_id
+                    );
+                }
+                Err(error)
+            }
         }
     }
+}
+
+/// Removes a session from local state and clears browser drafts and caches.
+async fn purge_session_state(
+    state: &mut AgentState,
+    project_id: &str,
+    session_id: &str,
+) -> Result<()> {
+    state.remove_draft(project_id, session_id);
+    state.clear_session_answers(project_id, session_id);
+    if let Some(ref agent) = state.agent
+        && agent.page.is_alive()
+    {
+        let result = agent
+            .page
+            .call("agentPurge", json!([project_id, session_id]))
+            .await?;
+        checked_runtime_result(result)?;
+    }
+    Ok(())
 }
 
 impl AgentPage {
@@ -416,22 +663,77 @@ impl AgentPage {
     }
 }
 
-/// Holds the job queue lock while the browser reports an active turn.
+/// Returns the active Agent page for `project_id`, or clears saved answers when unbound.
+async fn active_project_page(
+    state: &Mutex<AgentState>,
+    project_id: &str,
+) -> Option<Arc<BackgroundPage>> {
+    let mut locked = state.lock().await;
+    let Some(agent) = locked.agent.as_ref() else {
+        locked.answers.remove(project_id);
+        return None;
+    };
+    if !agent.page.is_alive() || agent.project_id != project_id {
+        locked.answers.remove(project_id);
+        return None;
+    }
+    Some(Arc::clone(&agent.page))
+}
+
+/// Returns saved question answers when `project_id` remains bound on a live page.
+async fn pending_project_answers(
+    state: &Mutex<AgentState>,
+    project_id: &str,
+) -> Option<Vec<PendingAnswer>> {
+    let mut locked = state.lock().await;
+    let Some(agent) = locked.agent.as_ref() else {
+        locked.answers.remove(project_id);
+        return None;
+    };
+    if !agent.page.is_alive() || agent.project_id != project_id {
+        locked.answers.remove(project_id);
+        return None;
+    }
+    Some(locked.answers.get(project_id).cloned().unwrap_or_default())
+}
+
+/// Keeps the job queue lock and sends dropped question answers again while a turn is active.
 async fn hold_while_active(
-    page: Arc<BackgroundPage>,
+    state: Arc<Mutex<AgentState>>,
     project_id: String,
     _guard: OwnedMutexGuard<()>,
 ) {
     let mut errors = 0;
-    while page.is_alive() {
-        match page.call("agentBusy", json!([project_id])).await {
+    loop {
+        let Some(page) = active_project_page(&state, &project_id).await else {
+            break;
+        };
+        let poll_ok = match page.call("agentBusy", json!([&project_id])).await {
             Ok(Value::Bool(false)) => break,
-            Ok(Value::Bool(true)) => errors = 0,
-            _ => {
-                errors += 1;
-                if errors == TURN_POLL_ERROR_LIMIT {
+            Ok(Value::Bool(true)) => {
+                let Some(replay) = pending_project_answers(&state, &project_id).await else {
                     break;
+                };
+                if replay.is_empty() {
+                    true
+                } else {
+                    match page.call("agentReplay", json!([&project_id, replay])).await {
+                        Ok(reply) if reply["ok"].as_bool() == Some(true) => true,
+                        Ok(reply) if reply["error"].as_str() == Some("agent_project_changed") => {
+                            break;
+                        }
+                        Ok(_) | Err(_) => false,
+                    }
                 }
+            }
+            Ok(_) | Err(_) => false,
+        };
+        if poll_ok {
+            errors = 0;
+        } else {
+            errors += 1;
+            if errors >= TURN_POLL_ERROR_LIMIT {
+                break;
             }
         }
         sleep(TURN_POLL_INTERVAL).await;
