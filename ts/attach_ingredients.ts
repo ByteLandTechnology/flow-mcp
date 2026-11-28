@@ -13,12 +13,16 @@ import {
   type PickerMatchTarget,
 } from "./angular";
 import {
+  AGENT_COMPOSER_SELECTOR,
   closeSettingsAndMenus,
   ensureManualComposer,
   findLiveBasePromptBox,
   findProjectPageInstance,
   findPromptBoxHost,
   findTextbox,
+  isPromptItemLoading,
+  promptItemDisabledReason,
+  readComposerItems,
   settingsOpen,
 } from "./composer";
 import {
@@ -69,21 +73,6 @@ function itemMatchesTarget(item: unknown, target: IngredientTarget): boolean {
     name.trim().toLowerCase() === target.name.toLowerCase());
 }
 
-/** Live `Rp` ingredient disable codes defined in `level1.js` (`n7b` / `l7b`). */
-const LIVE_RP_DISABLE_CODES: ReadonlySet<string> = new Set([
-  "CAPACITY_EXCEEDED",
-  "AGENT_CAPACITY_EXCEEDED",
-  "IMAGE_REFERENCES_EXCEEDED",
-  "AUDIO_REFERENCES_EXCEEDED",
-  "DURATION_NOT_SUPPORTED",
-  "TYPE_NOT_SUPPORTED",
-  "IMAGE_MODE_NOT_SUPPORTED",
-  "MISSING_VISUAL_INGREDIENT",
-  "INVALID_CHARACTER_NO_IMAGES",
-  "MISSING_PAIRED_FRAME",
-  "DIFFERENT_AGENT_SESSION",
-]);
-
 /** Selector matching `flow-ingredient-chip`, all 7 `flow-*-ingredient-chip` tags, and `.upload-slot-filled-chip`. */
 const COMPOSER_CHIP_HOST_SELECTOR = [
   "flow-ingredient-chip",
@@ -111,32 +100,6 @@ const COMPOSER_CHIP_BUTTON_SELECTOR = [
   'flow-prompt-box button[aria-label*="Remove" i]',
 ].join(", ");
 
-/** Selector excluding Flow Agent drawer composers from manual composer cleanup. */
-const AGENT_COMPOSER_EXCLUSION_SELECTOR =
-  "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
-
-/** Returns true while a prompt item is still loading asynchronously. */
-function itemLoading(item: unknown): boolean {
-  return readOwn(item, "isLoading") === true;
-}
-
-/** Returns the terminal `Rp` disable code (or legacy invalid `tl` state) when an item cannot be submitted. */
-function itemDisabledReason(item: unknown): string | null {
-  const rp = readOwn(item, "Rp");
-  if (typeof rp === "string" && rp.trim().length > 0) {
-    const code = rp.trim();
-    return LIVE_RP_DISABLE_CODES.has(code) ? code : code;
-  }
-  const tl = readOwn(item, "tl");
-  if (
-    typeof tl === "string" &&
-    /^(?:INVALID|ERROR|FAILED)(?:_|$)/i.test(tl.trim())
-  ) {
-    return tl.trim();
-  }
-  return null;
-}
-
 /** Verifies the requested frame in each slot before the prompt can be submitted. */
 function framesReady(items: unknown[] | null, targets: IngredientTarget[]): boolean {
   if (!items || items.length !== targets.length) return false;
@@ -144,26 +107,33 @@ function framesReady(items: unknown[] | null, targets: IngredientTarget[]): bool
   return targets.every((target, index) => {
     const slot = index === 0 ? "FIRST_FRAME" : "LAST_FRAME";
     const item = hasSlots ? items.find((entry) => readOwn(entry, "Ud") === slot) : items[index];
-    return !itemLoading(item) && !itemDisabledReason(item) && itemMatchesTarget(item, target);
+    return (
+      !isPromptItemLoading(item) &&
+      !promptItemDisabledReason(item) &&
+      itemMatchesTarget(item, target)
+    );
   });
 }
 
 /** Attaches reference ingredients or characters and writes the generation prompt text. */
 export async function attachIngredients(cfg: GenerationConfig): Promise<unknown> {
   const onEditPage = /\/edit\//.test(location.pathname || "");
+  const skipCleanup = onEditPage || Boolean(cfg.inline_edit);
 
   const ingredientTargets: IngredientTarget[] = [];
   const tileMap = runtimeState.store?.getTileMap?.();
 
   if (Array.isArray(cfg.asset_ids)) {
     for (const id of cfg.asset_ids) {
-      const t = tileMap?.get(String(id));
+      const idStr = String(id ?? "").trim();
+      if (!idStr) continue;
+      const t = tileMap?.get(idStr);
       const hasDisplayName = Boolean(t?.displayName && String(t.displayName).trim());
       ingredientTargets.push({
-        id: String(id),
+        id: idStr,
         primaryMediaId: t?.primaryMediaId || t?.Fb?.id || t?.Fb?.mediaId || null,
         hasDisplayName,
-        name: hasDisplayName && t?.displayName ? String(t.displayName).trim() : String(id),
+        name: hasDisplayName && t?.displayName ? String(t.displayName).trim() : idStr,
         url: pickTileUrl(t),
         tile: t || null,
       });
@@ -172,7 +142,8 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
 
   if (Array.isArray(cfg.characters)) {
     for (const c of cfg.characters) {
-      const key = String(c);
+      const key = String(c ?? "").trim();
+      if (!key) continue;
       let matched: FlowTile | null = tileMap?.get(key) || null;
       if (!matched && tileMap instanceof Map) {
         const low = key.toLowerCase();
@@ -247,22 +218,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   const initialTb = onEditPage ? findTextbox(true) : await ensureManualComposer();
   if (!onEditPage && !initialTb) return { ok: false, error: "manual_prompt_not_ready" };
 
-  const readPageItems = (
-    page: ReturnType<typeof findProjectPageInstance>,
-    ux?: ReturnType<typeof findLiveBasePromptBox>,
-  ): Array<Record<string, unknown>> | null => {
-    const raw =
-      page?.Qa?.oc?.all?.() ??
-      page?.Qa?.kc?.all?.() ??
-      page?.oc?.all?.() ??
-      ux?.Qa?.oc?.all?.() ??
-      ux?.Qa?.kc?.all?.() ??
-      runtimeState.promptState?.oc?.all?.() ??
-      runtimeState.promptState?.kc?.all?.();
-    return Array.isArray(raw) ? raw : null;
-  };
-
-  if (!onEditPage && !(runtimeState.ngLViewMap instanceof Map)) {
+  if (!skipCleanup && !(runtimeState.ngLViewMap instanceof Map)) {
     const tipEls = Array.from(
       document.querySelectorAll("[mattooltip], button[aria-label]"),
     ).slice(0, 8);
@@ -273,14 +229,14 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     }
   }
 
-  if (!onEditPage) {
+  if (!skipCleanup) {
     const clearBtn = Array.from(
       document.querySelectorAll(
         'flow-prompt-box button[aria-label="Clear prompt"], button[aria-label="Clear prompt"]',
       ),
     ).find(
       (el): el is HTMLElement =>
-        isVisibleEnabled(el) && !el.closest(AGENT_COMPOSER_EXCLUSION_SELECTOR),
+        isVisibleEnabled(el) && !el.closest(AGENT_COMPOSER_SELECTOR),
     );
     if (clearBtn) {
       clearBtn.click();
@@ -292,7 +248,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         document.querySelectorAll(COMPOSER_CHIP_BUTTON_SELECTOR),
       ).filter((el): el is HTMLElement => {
         if (!(el instanceof HTMLElement)) return false;
-        if (el.closest(AGENT_COMPOSER_EXCLUSION_SELECTOR)) return false;
+        if (el.closest(AGENT_COMPOSER_SELECTOR)) return false;
         if (isDisabledProp(el) || el.getClientRects().length === 0) return false;
         if (el.closest(COMPOSER_CHIP_HOST_SELECTOR)) return true;
         if (!isVisibleEnabled(el)) return false;
@@ -314,10 +270,10 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
       document.querySelectorAll(`flow-prompt-box ${COMPOSER_CHIP_HOST_SELECTOR}`),
     ).filter(
       (el) =>
-        !el.closest(AGENT_COMPOSER_EXCLUSION_SELECTOR) &&
+        !el.closest(AGENT_COMPOSER_SELECTOR) &&
         el.getClientRects().length > 0,
     );
-    let remainingItems = readPageItems(cleanupPage, cleanupUx);
+    let remainingItems = readComposerItems(cleanupPage, cleanupUx);
     if (
       (remainingItems && remainingItems.length > 0) ||
       remainingChips.length > 0
@@ -330,7 +286,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         clearFn.call(cleanupUx?.Qa ?? cleanupPage?.Qa ?? runtimeState.promptState);
         await delay(100);
       }
-      remainingItems = readPageItems(cleanupPage, cleanupUx);
+      remainingItems = readComposerItems(cleanupPage, cleanupUx);
     }
     if (remainingItems && remainingItems.length > 0) {
       return { ok: false, error: "stale_composer_items_not_cleared" };
@@ -408,7 +364,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     if (!onEditPage && target.tile && (!isVideoFrames || !hasFrameSlotBtn)) {
       const projPage = findProjectPageInstance();
       if (projPage && typeof projPage.Ph === "function") {
-        const beforeItems = readPageItems(projPage) || [];
+        const beforeItems = readComposerItems(projPage, null) || [];
         const prevCount = beforeItems.length;
         try {
           projPage.Ph(target.tile);
@@ -416,7 +372,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         } catch {
           // Fall back to DOM picker below.
         }
-        const afterItems = readPageItems(projPage) || [];
+        const afterItems = readComposerItems(projPage, null) || [];
         const added = afterItems.some((item) => itemMatchesTarget(item, target)) ||
           (!isVideoFrames && afterItems.length > prevCount);
         if (added) {
@@ -675,11 +631,11 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     const liveUx = !onEditPage
       ? findLiveBasePromptBox(false, findPromptBoxHost(projPage))
       : null;
-    let finalItems = !onEditPage ? readPageItems(projPage, liveUx) : null;
+    let finalItems = !onEditPage ? readComposerItems(projPage, liveUx) : null;
     const findDisabledError = (items: unknown[] | null): string | null => {
       if (!items) return null;
       for (const item of items) {
-        const reason = itemDisabledReason(item);
+        const reason = promptItemDisabledReason(item);
         if (reason) return reason;
       }
       return null;
@@ -689,7 +645,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
         ? framesReady(finalItems, ingredientTargets)
         : finalItems === null ||
           (finalItems.length >= ingredientTargets.length &&
-            !finalItems.some(itemLoading) &&
+            !finalItems.some(isPromptItemLoading) &&
             !findDisabledError(finalItems));
     for (
       let attempt = 0;
@@ -700,7 +656,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
       attempt++
     ) {
       await delay(100);
-      finalItems = readPageItems(projPage, liveUx);
+      finalItems = readComposerItems(projPage, liveUx);
     }
     const disabledCode = findDisabledError(finalItems);
     if (disabledCode) {
@@ -733,10 +689,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
   const writeInfo = await writePromptBox(tb, cfg.prompt, {
     liveUx: findLiveBasePromptBox(onEditPage, promptHost),
     seeds: composerSeeds,
-    excludeSelector:
-      !onEditPage
-        ? "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box"
-        : null,
+    excludeSelector: !onEditPage ? AGENT_COMPOSER_SELECTOR : null,
     strictSync: true,
     onCloseSettings: closeSettingsAndMenus,
   });

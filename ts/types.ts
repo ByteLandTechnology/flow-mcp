@@ -657,6 +657,10 @@ export interface GenerationConfig {
   model?: string | null;
   /** Ordered default model family candidates used when `model` is omitted. */
   default_models?: string[] | null;
+  /** True when `flow_edit` reuses the composer without forcing default model or aspect ratio. */
+  edit?: boolean | null;
+  /** True when `openEditAsset` already opened an inline edit session in the workspace UI. */
+  inline_edit?: boolean | null;
   /** Requested output count. */
   count?: number | null;
   /** Prompt text. */

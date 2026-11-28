@@ -18,7 +18,22 @@ const TEXTBOX_SELECTOR =
   '.ProseMirror[contenteditable="true"], [role="textbox"][contenteditable="true"], [contenteditable="true"], textarea';
 
 /** Containers that belong to the Agent composer. */
-const AGENT_COMPOSER = "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+export const AGENT_COMPOSER_SELECTOR =
+  "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+
+/** Live `Rp` terminal ingredient disable codes in Google Flow (`l7b`). */
+const LIVE_RP_DISABLE_CODES: ReadonlySet<string> = new Set([
+  "CAPACITY_EXCEEDED",
+  "AGENT_CAPACITY_EXCEEDED",
+  "IMAGE_REFERENCES_EXCEEDED",
+  "AUDIO_REFERENCES_EXCEEDED",
+  "DURATION_NOT_SUPPORTED",
+  "TYPE_NOT_SUPPORTED",
+  "IMAGE_MODE_NOT_SUPPORTED",
+  "MISSING_VISUAL_INGREDIENT",
+  "INVALID_CHARACTER_NO_IMAGES",
+  "DIFFERENT_AGENT_SESSION",
+]);
 
 /** Detected quota or high-demand warning button inside a Flow composer. */
 export interface ComposerWarning {
@@ -33,7 +48,7 @@ function composerTextbox(root: ParentNode | null, edit: boolean): HTMLElement | 
   return Array.from(root?.querySelectorAll(TEXTBOX_SELECTOR) ?? []).find(
     (el): el is HTMLElement =>
       el instanceof HTMLElement && el.getClientRects().length > 0 &&
-      !isDisabledProp(el) && (edit || !el.closest(AGENT_COMPOSER)),
+      !isDisabledProp(el) && (edit || !el.closest(AGENT_COMPOSER_SELECTOR)),
   ) ?? null;
 }
 
@@ -275,11 +290,81 @@ export function findLiveBasePromptBox(
   );
 }
 
+/** Reads attached composer items from live `Qa.oc.all()` or `Qa.kc.all()` signals. */
+export function readComposerItems(
+  page?: ProjectPageInstance | null,
+  ux?: BasePromptBoxInstance | null,
+): Array<Record<string, unknown>> | null {
+  const resolvedPage = page === undefined ? findProjectPageInstance() : page;
+  const resolvedUx =
+    ux === undefined
+      ? findLiveBasePromptBox(false, findPromptBoxHost(resolvedPage))
+      : ux;
+  const raw =
+    resolvedPage?.Qa?.oc?.all?.() ??
+    resolvedPage?.Qa?.kc?.all?.() ??
+    resolvedPage?.oc?.all?.() ??
+    resolvedUx?.Qa?.oc?.all?.() ??
+    resolvedUx?.Qa?.kc?.all?.() ??
+    runtimeState.promptState?.oc?.all?.() ??
+    runtimeState.promptState?.kc?.all?.();
+  return Array.isArray(raw) ? raw : null;
+}
+
+/** Returns true while a composer prompt item is still loading asynchronously. */
+export function isPromptItemLoading(item: unknown): boolean {
+  return readOwn(item, "isLoading") === true;
+}
+
+/** Returns a known terminal `Rp` disable code (or legacy invalid `tl` code) when an item is disabled. */
+export function promptItemDisabledReason(item: unknown): string | null {
+  const rp = readOwn(item, "Rp");
+  if (typeof rp === "string") {
+    const code = rp.trim();
+    if (LIVE_RP_DISABLE_CODES.has(code)) {
+      return code;
+    }
+  }
+  const tl = readOwn(item, "tl");
+  if (
+    typeof tl === "string" &&
+    /^(?:INVALID|ERROR|FAILED)(?:_|$)/i.test(tl.trim())
+  ) {
+    return tl.trim();
+  }
+  return null;
+}
+
+/** Inspects attached composer items for loading state or known `Rp` disable codes. */
+export function inspectPromptAttachments(skipCheck: boolean): {
+  loading: boolean;
+  disabledReason: string | null;
+} {
+  if (skipCheck) {
+    return { loading: false, disabledReason: null };
+  }
+  const items = readComposerItems();
+  if (!items) {
+    return { loading: false, disabledReason: null };
+  }
+  let loading = false;
+  for (const item of items) {
+    const reason = promptItemDisabledReason(item);
+    if (reason) {
+      return { loading: false, disabledReason: reason };
+    }
+    if (isPromptItemLoading(item)) {
+      loading = true;
+    }
+  }
+  return { loading, disabledReason: null };
+}
+
 /** Returns true when a custom warning element or one of its children is visible on screen. */
 function isWarningElementVisible(el: Element, excludeAgent: boolean): boolean {
   if (!(el instanceof HTMLElement) || !el.isConnected) return false;
   if (el.closest('[hidden], [aria-hidden="true"]')) return false;
-  if (excludeAgent && el.closest(AGENT_COMPOSER)) return false;
+  if (excludeAgent && el.closest(AGENT_COMPOSER_SELECTOR)) return false;
   const style = window.getComputedStyle(el);
   if (style.display === "none" || style.visibility === "hidden") return false;
   if (el.getClientRects().length > 0) return true;

@@ -16,6 +16,7 @@ import {
 import { delay, elText, hoverProbe, isVisibleEnabled } from "./dom";
 import {
   escapeRegex,
+  hasReadableModelState,
   readModelOptions,
   resolveCandidateModelSpecs,
   resolveExpectedAspect,
@@ -277,7 +278,8 @@ async function ensureLViewCapture(allowSettingsClick = false): Promise<void> {
 export async function setupGeneration(
   cfg: GenerationConfig,
 ): Promise<{ ok: boolean; error?: string }> {
-  const onEditPage = /\/edit\//.test(location.pathname || "");
+  const onEditPage =
+    /\/edit\//.test(location.pathname || "") || Boolean(cfg.inline_edit);
 
   if (!onEditPage) {
     const textbox = await ensureManualComposer();
@@ -325,10 +327,28 @@ export async function setupGeneration(
     await delay(140);
 
     try {
-      if (!wantImageMode) {
+      if (!wantImageMode && !cfg.edit) {
         const qaMode = String(resolvePromptState()?.config?.mode?.() || "");
+        const explicitVideoType = Boolean(
+          cfg.video_type && String(cfg.video_type).trim(),
+        );
+        const hasFrameSlots = Array.from(
+          document.querySelectorAll(
+            'flow-prompt-box button, flow-prompt-box [role="button"]',
+          ),
+        ).some(
+          (el) =>
+            isVisibleEnabled(el) &&
+            /^(?:start|end)$/i.test(
+              (el.getAttribute("aria-label") || elText(el)).trim(),
+            ),
+        );
+        const isAlreadyIngredients =
+          qaMode === "VIDEO_REFERENCES" || qaMode === "VIDEO_INGREDIENTS";
         const needsSwitch = wantVideoIngredients
-          ? !qaMode || qaMode === "VIDEO_FRAMES" || Boolean(cfg.video_type)
+          ? qaMode
+            ? !isAlreadyIngredients
+            : explicitVideoType || hasFrameSlots
           : qaMode !== "VIDEO_FRAMES";
         if (needsSwitch) {
           const vtRe = wantVideoIngredients
@@ -414,107 +434,116 @@ export async function setupGeneration(
       // Optional resolution control may be unavailable.
     }
 
+    const isExplicitModel = Boolean(cfg.model && String(cfg.model).trim());
     const candidateSpecs = resolveCandidateModelSpecs(cfg, wantImageMode);
     let targetSpec: ModelMatcher | null = null;
     let hadModelPickerItems = false;
     let clickedModelItem = false;
-    try {
-      const preQa = resolvePromptState();
-      const preOptions = readModelOptions(preQa);
-      let exactDisplay = "";
-      if (preOptions !== null) {
-        for (const spec of candidateSpecs) {
-          const hit = preOptions.find((opt) => {
-            if (opt?.isDisabled === true) return false;
-            const disp = String(opt?.displayName || "").trim();
-            const hg = String(opt?.hg || "").trim();
-            return spec.labelRe.test(disp) || spec.hgRe.test(hg);
-          });
-          if (hit) {
-            targetSpec = spec;
-            exactDisplay = String(hit.displayName || "").trim();
-            break;
+    if (candidateSpecs.length > 0) {
+      try {
+        const preQa = resolvePromptState();
+        const preOptions = readModelOptions(preQa);
+        let exactDisplay = "";
+        if (preOptions !== null && preOptions.length > 0) {
+          for (const spec of candidateSpecs) {
+            const hit = preOptions.find((opt) => {
+              if (opt?.isDisabled === true) return false;
+              const disp = String(opt?.displayName || "").trim();
+              const hg = String(opt?.hg || "").trim();
+              return spec.labelRe.test(disp) || spec.hgRe.test(hg);
+            });
+            if (hit) {
+              targetSpec = spec;
+              exactDisplay = String(hit.displayName || "").trim();
+              break;
+            }
+          }
+          if (!targetSpec) {
+            const anyEnabled = preOptions.some((opt) => opt?.isDisabled !== true);
+            if (isExplicitModel || !anyEnabled) {
+              if (settingsOpen()) {
+                await closeSettingsAndMenus();
+              }
+              return { ok: false, error: "unsupported_model" };
+            }
           }
         }
-        if (!targetSpec) {
-          if (settingsOpen()) {
-            await closeSettingsAndMenus();
+        const specsToTry = targetSpec
+          ? [targetSpec]
+          : preOptions !== null && preOptions.length > 0
+            ? []
+            : candidateSpecs;
+        const familyBtn = document.querySelector(
+          'button[aria-label="Select model family"]',
+        );
+        if (isVisibleEnabled(familyBtn)) {
+          familyBtn.click();
+          let pickerPane: Element | null = null;
+          for (let w = 0; w < 8; w += 1) {
+            await delay(50);
+            pickerPane =
+              document.querySelector(".flow-model-picker-panel") ||
+              Array.from(document.querySelectorAll(".cdk-overlay-pane"))
+                .reverse()
+                .find(
+                  (p) =>
+                    !p.querySelector(".mdc-tooltip") && !p.contains(familyBtn),
+                ) ||
+              null;
+            if (pickerPane) break;
           }
-          return { ok: false, error: "unsupported_model" };
-        }
-      }
-      const specsToTry = targetSpec ? [targetSpec] : candidateSpecs;
-      const familyBtn = document.querySelector(
-        'button[aria-label="Select model family"]',
-      );
-      if (isVisibleEnabled(familyBtn)) {
-        familyBtn.click();
-        let pickerPane: Element | null = null;
-        for (let w = 0; w < 8; w += 1) {
-          await delay(50);
-          pickerPane =
-            document.querySelector(".flow-model-picker-panel") ||
-            Array.from(document.querySelectorAll(".cdk-overlay-pane"))
-              .reverse()
-              .find(
-                (p) =>
-                  !p.querySelector(".mdc-tooltip") && !p.contains(familyBtn),
-              ) ||
-            null;
-          if (pickerPane) break;
-        }
-        if (pickerPane) {
-          hadModelPickerItems =
-            pickerPane.querySelectorAll(
-              'flow-menu-item, .model-select-option, [role="menuitem"], [role="option"]',
-            ).length > 0;
+          if (pickerPane) {
+            hadModelPickerItems =
+              pickerPane.querySelectorAll(
+                'flow-menu-item, .model-select-option, [role="menuitem"], [role="option"]',
+              ).length > 0;
+            for (const spec of specsToTry) {
+              const menuRe =
+                spec === targetSpec && exactDisplay
+                  ? new RegExp(`^${escapeRegex(exactDisplay)}$`, "i")
+                  : spec.labelRe;
+              if (
+                clickByText(menuRe, pickerPane, false) ||
+                (menuRe !== spec.labelRe &&
+                  clickByText(spec.labelRe, pickerPane, false)) ||
+                clickByText(spec.hgRe, pickerPane, false)
+              ) {
+                targetSpec = spec;
+                clickedModelItem = true;
+                break;
+              }
+            }
+          }
+          await delay(120);
+          await closeModelMenu();
+        } else {
           for (const spec of specsToTry) {
             const menuRe =
               spec === targetSpec && exactDisplay
                 ? new RegExp(`^${escapeRegex(exactDisplay)}$`, "i")
                 : spec.labelRe;
             if (
-              clickByText(menuRe, pickerPane, false) ||
-              (menuRe !== spec.labelRe &&
-                clickByText(spec.labelRe, pickerPane, false)) ||
-              clickByText(spec.hgRe, pickerPane, false)
+              clickByText(menuRe, settingsScope(), false) ||
+              clickByText(spec.hgRe, settingsScope(), false)
             ) {
               targetSpec = spec;
               clickedModelItem = true;
+              await delay(120);
               break;
             }
           }
         }
-        await delay(120);
-        await closeModelMenu();
-      } else {
-        for (const spec of specsToTry) {
-          const menuRe =
-            spec === targetSpec && exactDisplay
-              ? new RegExp(`^${escapeRegex(exactDisplay)}$`, "i")
-              : spec.labelRe;
-          if (
-            clickByText(menuRe, settingsScope(), false) ||
-            clickByText(spec.hgRe, settingsScope(), false)
-          ) {
-            targetSpec = spec;
-            clickedModelItem = true;
-            await delay(120);
-            break;
-          }
+        if (!targetSpec && (isExplicitModel || specsToTry.length > 0)) {
+          const postTryQa = resolvePromptState();
+          targetSpec =
+            candidateSpecs.find((spec) =>
+              verifyModelSpec(postTryQa, wantImageMode, spec),
+            ) ??
+            (isExplicitModel ? (candidateSpecs[0] ?? null) : null);
         }
+      } catch {
+        // Optional model selector may differ by mode.
       }
-      if (!targetSpec) {
-        const postTryQa = resolvePromptState();
-        targetSpec =
-          candidateSpecs.find((spec) =>
-            verifyModelSpec(postTryQa, wantImageMode, spec),
-          ) ??
-          candidateSpecs[0] ??
-          null;
-      }
-    } catch {
-      // Optional model selector may differ by mode.
     }
 
     try {
@@ -540,10 +569,10 @@ export async function setupGeneration(
     try {
       let qa = resolvePromptState();
       let curMode = String(qa?.config?.mode?.() || "");
-      if (wantImageMode && curMode && curMode !== "IMAGE") {
+      if (wantImageMode && curMode && !curMode.startsWith("IMAGE")) {
         clickInsideGroup("Mode", /\bimage\b/i, settingsScope());
         await delay(140);
-      } else if (!wantImageMode) {
+      } else if (!wantImageMode && !cfg.edit) {
         if (curMode && !curMode.startsWith("VIDEO")) {
           clickInsideGroup("Mode", /\bvideo\b/i, settingsScope());
           await delay(140);
@@ -638,16 +667,23 @@ export async function setupGeneration(
       return { ok: false, error: "unsupported_aspect_ratio" };
     }
 
-    const pickerRejected = hadModelPickerItems && !clickedModelItem;
-    if (
-      pickerRejected ||
-      !targetSpec ||
-      !verifyModelSpec(verifiedQa, wantImageMode, targetSpec)
-    ) {
-      if (settingsOpen()) {
-        await closeSettingsAndMenus();
+    if (candidateSpecs.length > 0) {
+      const modelStateExposed = hasReadableModelState(verifiedQa, wantImageMode);
+      const pickerRejected =
+        hadModelPickerItems && !clickedModelItem && isExplicitModel;
+      if (
+        pickerRejected ||
+        (isExplicitModel && !targetSpec) ||
+        (targetSpec && !verifyModelSpec(verifiedQa, wantImageMode, targetSpec)) ||
+        (!targetSpec &&
+          modelStateExposed &&
+          readModelOptions(verifiedQa)?.every((opt) => opt?.isDisabled === true))
+      ) {
+        if (settingsOpen()) {
+          await closeSettingsAndMenus();
+        }
+        return { ok: false, error: "unsupported_model" };
       }
-      return { ok: false, error: "unsupported_model" };
     }
 
     if (!aspectSpec && !verifyAspectState(verifiedQa, wantImageMode, null)) {

@@ -5,6 +5,7 @@
 
 import { isLiveLView, resolveLView } from "./angular";
 import {
+  AGENT_COMPOSER_SELECTOR,
   findLiveBasePromptBox,
   findProjectPageInstance,
   findPromptBoxHost,
@@ -125,17 +126,18 @@ export function resolveCandidateModelSpecs(
   if (rawModel) {
     return [buildModelMatchers(rawModel)];
   }
-  const rawDefaults = Array.isArray(cfg.default_models)
-    ? cfg.default_models
-        .map((m) => String(m || "").trim())
-        .filter((m) => m.length > 0)
-    : [];
-  const defaults =
-    rawDefaults.length > 0
-      ? rawDefaults
-      : wantImageMode
-        ? ["Nano Banana 2"]
-        : ["Veo 3.1 Lite", "Veo 3.1 Fast"];
+  if (cfg.edit) {
+    return [];
+  }
+  if (Array.isArray(cfg.default_models)) {
+    return cfg.default_models
+      .map((m) => String(m || "").trim())
+      .filter((m) => m.length > 0)
+      .map((m) => buildModelMatchers(m));
+  }
+  const defaults = wantImageMode
+    ? ["Nano Banana 2"]
+    : ["Veo 3.1 Lite", "Veo 3.1 Fast"];
   return defaults.map((m) => buildModelMatchers(m));
 }
 
@@ -188,8 +190,6 @@ export function resolvePromptState(): PromptStateController | null {
   if (projPage?.Qa) {
     return projPage.Qa;
   }
-  const agentSel =
-    "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
   const isPromptState = (cand: unknown): cand is PromptStateController => {
     if (!cand || typeof cand !== "object" || cand instanceof Node) return false;
     const obj = cand as Partial<PromptStateController>;
@@ -214,7 +214,7 @@ export function resolvePromptState(): PromptStateController | null {
     document.querySelector("flow-prompt-box flow-base-prompt-box"),
     document.querySelector("flow-prompt-box"),
     document.querySelector("flow-project-page"),
-  ].filter((el): el is Element => Boolean(el && !el.closest(agentSel)));
+  ].filter((el): el is Element => Boolean(el && !el.closest(AGENT_COMPOSER_SELECTOR)));
   for (const seed of seeds) {
     let lv: NgLView | null = resolveLView(seed);
     for (let d = 0; d < 6 && Array.isArray(lv); d += 1) {
@@ -226,7 +226,7 @@ export function resolvePromptState(): PromptStateController | null {
   if (runtimeState.ngLViewMap instanceof Map) {
     for (const lv of runtimeState.ngLViewMap.values()) {
       if (!isLiveLView(lv)) continue;
-      if (lv[0] instanceof Element && lv[0].closest(agentSel)) continue;
+      if (lv[0] instanceof Element && lv[0].closest(AGENT_COMPOSER_SELECTOR)) continue;
       const hit = scanLv(lv);
       if (hit) return hit;
     }
@@ -303,41 +303,66 @@ function readActiveAspectRatio(qa: PromptStateController | null): string {
   }
 }
 
-/** Returns true only when `Qa.config.aspectRatio()` is readable, valid for `wantImageMode`, and matches `aspectSpec`. */
+/** Returns true when Flow exposes readable `Qa.model` options, IDs, or family state. */
+export function hasReadableModelState(
+  qa: PromptStateController | null,
+  wantImageMode: boolean,
+): boolean {
+  if (!qa?.model) {
+    return false;
+  }
+  const opts = readModelOptions(qa);
+  if (opts !== null && opts.length > 0) {
+    return true;
+  }
+  return Boolean(
+    typeof qa.model.family === "function" ||
+      readActiveModelId(qa, wantImageMode) ||
+      readActiveModelFamilyName(qa),
+  );
+}
+
+/** Verifies `Qa.config.aspectRatio()` when exposed, falling back to best-effort when absent. */
 export function verifyAspectState(
   qa: PromptStateController | null,
   wantImageMode: boolean,
   aspectSpec: AspectSpec | null,
 ): boolean {
+  if (aspectSpec) {
+    if (
+      !aspectSpec.enumValue ||
+      (!wantImageMode && aspectSpec.enumValue === "SQUARE")
+    ) {
+      return false;
+    }
+  }
   const actualAspect = readActiveAspectRatio(qa);
-  if (!actualAspect || !SKB_ASPECT_ENUM_VALUES.has(actualAspect)) {
-    return false;
+  if (!actualAspect) {
+    return true;
   }
   if (!wantImageMode && actualAspect === "SQUARE") {
     return false;
   }
   if (aspectSpec) {
-    return Boolean(aspectSpec.enumValue && actualAspect === aspectSpec.enumValue);
+    return actualAspect === aspectSpec.enumValue;
   }
   return true;
 }
 
-/** Returns true only when `Qa.model` exposes a readable active model matching `spec`. */
+/** Verifies `Qa.model` matches `spec` when Flow exposes model signals, or returns true when unexposed. */
 export function verifyModelSpec(
   qa: PromptStateController | null,
   wantImageMode: boolean,
   spec: ModelMatcher,
 ): boolean {
-  if (!qa?.model) {
-    return false;
+  if (!hasReadableModelState(qa, wantImageMode) || !qa?.model) {
+    return true;
   }
   const postOptions = readModelOptions(qa);
   const activeId = readActiveModelId(qa, wantImageMode);
   const activeFamilyName = readActiveModelFamilyName(qa);
-  if (!activeId && !activeFamilyName) {
-    return false;
-  }
-  if (postOptions !== null) {
+  const hasFamilyFn = typeof qa.model.family === "function";
+  if (postOptions !== null && postOptions.length > 0) {
     const matchedOpt = postOptions.find((opt) => {
       const disp = String(opt?.displayName || "").trim();
       const hg = String(opt?.hg || "").trim();
@@ -345,6 +370,16 @@ export function verifyModelSpec(
     });
     if (!matchedOpt || matchedOpt.isDisabled === true) {
       return false;
+    }
+    if (!activeId && !activeFamilyName) {
+      if (hasFamilyFn) {
+        try {
+          return Boolean(qa.model.family?.());
+        } catch {
+          return false;
+        }
+      }
+      return true;
     }
     const targetHg = String(matchedOpt.hg || "").trim();
     const targetDisp = String(matchedOpt.displayName || "").trim();
@@ -367,9 +402,9 @@ export function verifyModelSpec(
         : spec.labelRe.test(activeFamilyName),
     );
   }
-  if (typeof qa.model.family === "function") {
+  if (hasFamilyFn) {
     try {
-      if (!qa.model.family()) {
+      if (!qa.model.family?.()) {
         return false;
       }
     } catch {
@@ -391,12 +426,15 @@ export function verifyModelSpec(
   return spec.labelRe.test(activeFamilyName);
 }
 
-/** Verifies readable matching aspect ratio and model state on the project composer before submission. */
+/** Verifies aspect ratio and model state on the project composer when Flow exposes those signals. */
 export function verifyComposerGenerationState(
   cfg?: GenerationConfig,
 ): { ok: true } | { ok: false; error: string } {
   const qa = resolvePromptState();
   if (cfg) {
+    if (cfg.inline_edit) {
+      return { ok: true };
+    }
     const mode = String(cfg.mode || "video").toLowerCase();
     const wantImageMode =
       mode === "image" || mode === "character" || mode === "scene";
@@ -406,7 +444,10 @@ export function verifyComposerGenerationState(
       return { ok: false, error: "unsupported_aspect_ratio" };
     }
     const candidates = resolveCandidateModelSpecs(cfg, wantImageMode);
-    if (!candidates.some((spec) => verifyModelSpec(qa, wantImageMode, spec))) {
+    if (
+      candidates.length > 0 &&
+      !candidates.some((spec) => verifyModelSpec(qa, wantImageMode, spec))
+    ) {
       return { ok: false, error: "unsupported_model" };
     }
     if (!aspectSpec && !verifyAspectState(qa, wantImageMode, null)) {
@@ -424,13 +465,25 @@ export function verifyComposerGenerationState(
   if (!verifyAspectState(qa, wantImageMode, null)) {
     return { ok: false, error: "unsupported_aspect_ratio" };
   }
+  if (!hasReadableModelState(qa, wantImageMode) || !qa?.model) {
+    return { ok: true };
+  }
   const activeId = readActiveModelId(qa, wantImageMode);
   const activeName = readActiveModelFamilyName(qa);
-  if (!qa?.model || (!activeId && !activeName)) {
-    return { ok: false, error: "unsupported_model" };
-  }
   const opts = readModelOptions(qa);
-  if (opts !== null) {
+  if (opts !== null && opts.length > 0) {
+    if (!activeId && !activeName) {
+      if (typeof qa.model.family === "function") {
+        try {
+          if (!qa.model.family()) {
+            return { ok: false, error: "unsupported_model" };
+          }
+        } catch {
+          return { ok: false, error: "unsupported_model" };
+        }
+      }
+      return { ok: true };
+    }
     const found = opts.find((opt) => {
       const hg = String(opt?.hg || "").trim();
       const disp = String(opt?.displayName || "").trim();

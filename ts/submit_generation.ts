@@ -5,49 +5,14 @@
 
 import { readAngularTooltip, readOwn, resolveLView } from "./angular";
 import {
+  AGENT_COMPOSER_SELECTOR,
   findComposerWarning,
-  findLiveBasePromptBox,
-  findProjectPageInstance,
-  findPromptBoxHost,
+  inspectPromptAttachments,
 } from "./composer";
 import { delay, elText, isVisibleEnabled } from "./dom";
 import { verifyComposerGenerationState } from "./generation_state";
 import { runtimeState } from "./state";
 import type { GenerationConfig, NgLView } from "./types";
-
-/** Inspects `Qa.oc.all()` for loading or `Rp`-disabled attachments before submit. */
-function inspectPromptAttachments(onEditPage: boolean): {
-  loading: boolean;
-  disabledReason: string | null;
-} {
-  if (onEditPage) {
-    return { loading: false, disabledReason: null };
-  }
-  const projPage = findProjectPageInstance();
-  const liveUx = findLiveBasePromptBox(false, findPromptBoxHost(projPage));
-  const raw =
-    projPage?.Qa?.oc?.all?.() ??
-    projPage?.Qa?.kc?.all?.() ??
-    projPage?.oc?.all?.() ??
-    liveUx?.Qa?.oc?.all?.() ??
-    liveUx?.Qa?.kc?.all?.() ??
-    runtimeState.promptState?.oc?.all?.() ??
-    runtimeState.promptState?.kc?.all?.();
-  if (!Array.isArray(raw)) {
-    return { loading: false, disabledReason: null };
-  }
-  let loading = false;
-  for (const item of raw) {
-    const rp = readOwn(item, "Rp");
-    if (typeof rp === "string" && rp.trim().length > 0) {
-      return { loading: false, disabledReason: rp.trim() };
-    }
-    if (readOwn(item, "isLoading") === true) {
-      loading = true;
-    }
-  }
-  return { loading, disabledReason: null };
-}
 
 /** Extracts a disabled submit validator message from a component or controller candidate. */
 function readCandidateValidatorReason(cand: unknown): string {
@@ -149,8 +114,7 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
   }
 
   const onEditPage = /\/edit\//.test(location.pathname || "");
-  const agentSelector =
-    "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+  const skipAttachmentCheck = onEditPage || Boolean(cfg?.inline_edit);
   const scopedSelectors = onEditPage
     ? [
         'flow-edit-video-prompt-box button[aria-label="Start generation"]',
@@ -192,7 +156,7 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
       const match = Array.from(document.querySelectorAll(sel)).find(
         (b): b is HTMLElement => {
           if (!isVisible(b)) return false;
-          if (!onEditPage && b.closest(agentSelector)) {
+          if (!onEditPage && b.closest(AGENT_COMPOSER_SELECTOR)) {
             return false;
           }
           return true;
@@ -204,7 +168,7 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
       document.querySelectorAll('button[aria-label="Start generation"]'),
     ).find((b): b is HTMLElement => {
       if (!isVisible(b)) return false;
-      if (!onEditPage && b.closest(agentSelector)) {
+      if (!onEditPage && b.closest(AGENT_COMPOSER_SELECTOR)) {
         return false;
       }
       return true;
@@ -213,7 +177,7 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
   };
 
   for (let i = 0; i < 120; i += 1) {
-    const attachmentState = inspectPromptAttachments(onEditPage);
+    const attachmentState = inspectPromptAttachments(skipAttachmentCheck);
     if (attachmentState.disabledReason) {
       return {
         ok: false,
@@ -244,7 +208,7 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
     }
   }
 
-  const attachmentAfter = inspectPromptAttachments(onEditPage);
+  const attachmentAfter = inspectPromptAttachments(skipAttachmentCheck);
   if (attachmentAfter.disabledReason) {
     return {
       ok: false,
@@ -263,6 +227,7 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
   if (exactAfter && isVisible(exactAfter) && !isVisibleEnabled(exactAfter)) {
     let reason =
       runtimeState.promptState?.Ff?.N7a?.() ||
+      runtimeState.promptState?.Ff?.S7a?.() ||
       runtimeState.promptState?.lf?.jYa?.() ||
       "";
     if (!reason) {
@@ -289,7 +254,7 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
         if (
           !onEditPage &&
           lv[0] instanceof Element &&
-          lv[0].closest(agentSelector)
+          lv[0].closest(AGENT_COMPOSER_SELECTOR)
         ) {
           continue;
         }
@@ -307,7 +272,9 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
       reason = readAngularTooltip(exactAfter);
     }
     const visiblePm = Array.from(document.querySelectorAll(".ProseMirror")).find(
-      (el) => el.getClientRects().length > 0 && (!onEditPage ? !el.closest(agentSelector) : true),
+      (el) =>
+        el.getClientRects().length > 0 &&
+        (!onEditPage ? !el.closest(AGENT_COMPOSER_SELECTOR) : true),
     );
     const detail = [
       reason,
@@ -324,7 +291,7 @@ export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown>
   const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
   const createBtn = btns.find((b): b is HTMLElement => {
     if (b.tagName === "A" || !isVisibleEnabled(b)) return false;
-    if (!onEditPage && b.closest(agentSelector)) {
+    if (!onEditPage && b.closest(AGENT_COMPOSER_SELECTOR)) {
       return false;
     }
     if (

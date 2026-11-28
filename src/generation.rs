@@ -87,66 +87,53 @@ struct AssetWaitSpec<'a> {
     submit_summary: &'a str,
 }
 
+/// Context for `apply_generation_controls` distinguishing standard generation from edit flows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmissionKind {
+    /// Standard `flow_generate` request.
+    Generate,
+    /// Image edit fallback on the project workspace when no edit view opens.
+    EditFallback,
+    /// Edit session already opened via `/edit/` or an inline tile edit button.
+    InlineEdit,
+}
+
 /// Validated and normalized control parameters sent to the browser generation runtime.
 struct NormalizedControls {
     /// Canonical mode string (`"video"` or `"image"`).
     mode: &'static str,
-    /// Canonical aspect ratio label.
-    aspect: String,
-    /// Explicit model family display name or caller override when specified.
+    /// Canonical aspect ratio label when explicitly provided or defaulted for generation.
+    aspect: Option<String>,
+    /// Trimmed explicit model family override when specified by the caller.
     model: Option<String>,
-    /// Ordered default model family candidates when `model` is omitted.
-    default_models: &'static [&'static str],
-    /// Normalized video mode (`Some("ingredients")` or `Some("frames")`) for video runs.
-    video_type: Option<&'static str>,
+    /// Explicit video sub-mode (`Some("ingredients")` or `Some("frames")`) when supplied by the caller.
+    explicit_video_type: Option<&'static str>,
+    /// Non-empty trimmed project asset IDs to attach.
+    asset_ids: Option<Vec<String>>,
+    /// Non-empty trimmed character IDs or names to attach.
+    characters: Option<Vec<String>>,
     /// Clamped batch output count in `1..=4`.
     count: u32,
 }
 
-/// Returns ordered default `Select model family` names for `mode` when `model` is omitted.
-fn default_model_families(mode: &str) -> &'static [&'static str] {
-    if mode == "image" {
-        &["Nano Banana 2"]
-    } else {
-        &["Veo 3.1 Lite", "Veo 3.1 Fast"]
-    }
-}
-
-/// Normalizes an explicit model identifier to its canonical family name without cross-family substitution.
-fn normalize_explicit_model(raw: Option<&str>) -> Option<String> {
-    let trimmed = raw.map(str::trim).unwrap_or("");
-    if trimmed.is_empty() {
-        return None;
-    }
-    let key = trimmed
-        .split(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '_' | '.'))
-        .filter(|part| !part.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect::<Vec<_>>()
-        .join("_");
-    let canonical = match key.as_str() {
-        "veo_3_1_fast" => "Veo 3.1 Fast",
-        "veo_3_1_lite" => "Veo 3.1 Lite",
-        "veo_3_1" => "Veo 3.1",
-        "veo_3_1_quality" => "Veo 3.1 Quality",
-        "veo_3_fast" => "Veo 3 Fast",
-        "veo_3" => "Veo 3",
-        "veo_2" => "Veo 2",
-        "veo_2_fast" => "Veo 2 Fast",
-        "veo_2_quality" => "Veo 2 Quality",
-        "gemini_omni" | "macaron_cookie" => "Gemini Omni",
-        "nano_banana" => "Nano Banana",
-        "nano_banana_2" => "Nano Banana 2",
-        "nano_banana_pro" => "Nano Banana Pro",
-        "imagen_3" => "Imagen 3",
-        "imagen_4" => "Imagen 4",
-        _ => return Some(trimmed.to_string()),
-    };
-    Some(canonical.to_string())
+/// Trims items in `raw` and drops empty strings, returning `None` when none remain.
+fn clean_string_list(raw: Option<&[String]>) -> Option<Vec<String>> {
+    let items: Vec<String> = raw
+        .unwrap_or(&[])
+        .iter()
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect();
+    (!items.is_empty()).then_some(items)
 }
 
 /// Normalizes generation parameters and rejects invalid video aspect, character, and frame combinations.
-fn resolve_generation_controls(scene: &SceneParams) -> Result<NormalizedControls> {
+fn resolve_generation_controls(
+    scene: &SceneParams,
+    kind: SubmissionKind,
+) -> Result<NormalizedControls> {
+    let is_edit = kind != SubmissionKind::Generate;
     let raw_mode = scene
         .mode
         .as_deref()
@@ -161,23 +148,30 @@ fn resolve_generation_controls(scene: &SceneParams) -> Result<NormalizedControls
     } else {
         "video"
     };
-    let aspect = scene
+    let explicit_aspect = scene
         .aspect
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("16:9");
-    if mode == "video" && (aspect == "1:1" || aspect.eq_ignore_ascii_case("square")) {
-        anyhow::bail!("Video mode does not support aspect ratio '{aspect}'; use '16:9' or '9:16'");
+        .filter(|s| !s.is_empty());
+    let aspect = if is_edit {
+        explicit_aspect.map(str::to_string)
+    } else {
+        Some(explicit_aspect.unwrap_or("16:9").to_string())
+    };
+    if let Some(a) = aspect.as_deref()
+        && mode == "video"
+        && (a == "1:1" || a.eq_ignore_ascii_case("square"))
+    {
+        anyhow::bail!("Video mode does not support aspect ratio '{a}'; use '16:9' or '9:16'");
     }
-    let video_type = if mode == "video" {
+    let explicit_video_type = if mode == "video" && !is_edit {
         match scene
             .video_type
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            None => Some("ingredients"),
+            None => None,
             Some(vt)
                 if vt.eq_ignore_ascii_case("ingredients")
                     || vt.eq_ignore_ascii_case("ingredient")
@@ -200,29 +194,39 @@ fn resolve_generation_controls(scene: &SceneParams) -> Result<NormalizedControls
     } else {
         None
     };
-    if video_type == Some("frames") {
-        let has_characters = scene
-            .characters
-            .as_ref()
-            .is_some_and(|chars| chars.iter().any(|c| !c.trim().is_empty()) || !chars.is_empty());
-        if has_characters {
+    let effective_video_type = if mode == "video" && !is_edit {
+        Some(explicit_video_type.unwrap_or("ingredients"))
+    } else {
+        None
+    };
+    let asset_ids = clean_string_list(scene.asset_ids.as_deref());
+    let characters = clean_string_list(scene.characters.as_deref());
+    if effective_video_type == Some("frames") {
+        if characters.is_some() {
             anyhow::bail!(
                 "Video frames mode does not support character references; use video_type 'ingredients'"
             );
         }
-        let ref_count = scene.frames.as_ref().map_or(0, Vec::len)
-            + scene.asset_ids.as_ref().map_or(0, Vec::len);
+        let ref_count =
+            scene.frames.as_ref().map_or(0, Vec::len) + asset_ids.as_ref().map_or(0, Vec::len);
         anyhow::ensure!(
             ref_count <= 2,
             "Frame mode accepts at most two references, got {ref_count}"
         );
     }
+    let model = scene
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     Ok(NormalizedControls {
         mode,
-        aspect: aspect.to_string(),
-        model: normalize_explicit_model(scene.model.as_deref()),
-        default_models: default_model_families(mode),
-        video_type,
+        aspect,
+        model,
+        explicit_video_type,
+        asset_ids,
+        characters,
         count: scene.count.unwrap_or(2).clamp(1, 4),
     })
 }
@@ -231,24 +235,22 @@ fn resolve_generation_controls(scene: &SceneParams) -> Result<NormalizedControls
 async fn apply_generation_controls(
     engine: &ChromeEngine,
     scene: &SceneParams,
+    kind: SubmissionKind,
 ) -> Result<serde_json::Value> {
-    let controls = resolve_generation_controls(scene)?;
+    let controls = resolve_generation_controls(scene, kind)?;
     validate_local_files(scene.frames.as_deref(), "Reference image").await?;
 
     let cfg = json!({
         "mode": controls.mode,
         "aspect": controls.aspect,
         "model": controls.model,
-        "default_models": if controls.model.is_none() {
-            Some(controls.default_models)
-        } else {
-            None
-        },
+        "edit": kind != SubmissionKind::Generate,
+        "inline_edit": kind == SubmissionKind::InlineEdit,
         "count": controls.count,
         "prompt": scene.prompt,
-        "asset_ids": scene.asset_ids,
-        "characters": scene.characters,
-        "video_type": controls.video_type,
+        "asset_ids": controls.asset_ids,
+        "characters": controls.characters,
+        "video_type": controls.explicit_video_type,
         "duration": scene.duration,
         "resolution": scene.resolution,
     });
@@ -661,11 +663,13 @@ pub(crate) async fn run_generation(
     scene: &SceneParams,
     on_progress: ProgressCallback,
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
-    let controls = resolve_generation_controls(scene)?;
+    let controls = resolve_generation_controls(scene, SubmissionKind::Generate)?;
     ensure_project_workspace_root(engine).await?;
     ensure_flow_store(engine).await?;
     let mut normalized_scene = scene.clone();
-    normalized_scene.video_type = controls.video_type.map(str::to_string);
+    normalized_scene.video_type = controls.explicit_video_type.map(str::to_string);
+    normalized_scene.asset_ids = controls.asset_ids;
+    normalized_scene.characters = controls.characters;
     let scene = &normalized_scene;
     // Upload local frames into the library first and attach them as assets, so that the
     // uploaded tiles are not counted as generated outputs.
@@ -696,7 +700,7 @@ pub(crate) async fn run_generation(
     let expected_count = scene.count.unwrap_or(2).clamp(1, 4) as usize;
 
     let mut net_rx = engine.subscribe_network().await?;
-    let submit_res = apply_generation_controls(engine, scene).await?;
+    let submit_res = apply_generation_controls(engine, scene, SubmissionKind::Generate).await?;
     let submit_summary = format_submit_progress("submitted generation", &submit_res);
     on_progress(submit_summary.clone());
 
@@ -822,8 +826,13 @@ pub(crate) async fn run_edit(
         count: Some(1),
         ..Default::default()
     };
+    let edit_kind = if opened_in_ui || in_edit_route {
+        SubmissionKind::InlineEdit
+    } else {
+        SubmissionKind::EditFallback
+    };
     let mut net_rx = engine.subscribe_network().await?;
-    let submit_res = apply_generation_controls(engine, &scene).await?;
+    let submit_res = apply_generation_controls(engine, &scene, edit_kind).await?;
     let submit_summary = format_submit_progress("submitted edit", &submit_res);
     on_progress(submit_summary.clone());
 
