@@ -155,9 +155,9 @@ pub(crate) async fn apply_voice_with_fallback(
 
 /// Deletes the portrait image of the open character so that a new portrait can be attached.
 pub(crate) async fn delete_portrait(engine: &ChromeEngine) -> Result<()> {
-    let _ = engine
+    engine
         .bind_angular_views("flow-character-preview-panel, flow-character-image-preview")
-        .await;
+        .await?;
     let res = engine
         .call_flow_async("characterExtraOp", json!([{ "action": "delete_portrait" }]))
         .await?;
@@ -174,9 +174,10 @@ pub(crate) async fn delete_portrait(engine: &ChromeEngine) -> Result<()> {
 
 /// Scrolls the whole voice dialog list of the open character and returns all voices, or None on failure.
 pub(crate) async fn list_all_voices(engine: &ChromeEngine) -> Option<Value> {
-    let _ = engine
+    engine
         .bind_angular_views("flow-character-form, flow-character-edit-page")
-        .await;
+        .await
+        .ok()?;
     let res = engine
         .call_flow_async("characterExtraOp", json!([{ "action": "list_all_voices" }]))
         .await
@@ -233,9 +234,6 @@ pub(crate) async fn preview_voice(
         .with_context(|| format!("No character matches '{}' in active project", character))?;
 
     open_character_editor(engine, &cur_url, &project_id, &target.id).await?;
-    let _ = engine
-        .bind_angular_views("flow-character-form, flow-character-edit-page")
-        .await;
     let op = match audition {
         Some(voice) => json!([{
             "action": "audition_voice",
@@ -245,7 +243,13 @@ pub(crate) async fn preview_voice(
         }]),
         None => json!([{ "action": "preview_voice" }]),
     };
-    let res = engine.call_flow_async("characterExtraOp", op).await;
+    let res = async {
+        engine
+            .bind_angular_views("flow-character-form, flow-character-edit-page")
+            .await?;
+        engine.call_flow_async("characterExtraOp", op).await
+    }
+    .await;
     exit_character_editor(engine, Some(&project_id)).await;
     let res = res?;
     if !op_ok(&res) {

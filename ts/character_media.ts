@@ -15,7 +15,7 @@ import {
   clearCharacterSlot,
   openSlotProjectPicker,
   waitForCharacterSlot,
-} from "./character_extra";
+} from "./character_slots";
 import {
   clickButtonByRegex,
   delay,
@@ -499,7 +499,15 @@ export async function characterMediaOp(
       const targetUrl = pickTileUrl(targetTile);
       const targetFife = fifeBase(targetUrl);
 
-      await waitForCharacterSlot("portrait");
+      if (!(await waitForCharacterSlot("portrait"))) {
+        return {
+          ok: false,
+          error: "character_portrait_slot_unavailable",
+          id: charId,
+          applied,
+          completed_assets: completedAssets,
+        };
+      }
       previewCompBefore = (await ensurePreviewBound()) ?? previewCompBefore;
       if (!previewCompBefore && requiresBoundPreview()) {
         return {
@@ -544,7 +552,15 @@ export async function characterMediaOp(
         }
       }
       const targetSlot: CharacterSlot = wantBodySlot ? "body" : "portrait";
-      await waitForCharacterSlot(targetSlot);
+      if (!(await waitForCharacterSlot(targetSlot))) {
+        return {
+          ok: false,
+          error: `character_${targetSlot}_slot_unavailable`,
+          id: charId,
+          applied,
+          completed_assets: completedAssets,
+        };
+      }
       previewCompBefore = getCharacterPreviewInstance() ?? previewCompBefore;
       const prevSlotMedia = previewCompBefore?.media(targetSlot);
       const prevSlotMediaId = String(prevSlotMedia?.id || "").trim();
