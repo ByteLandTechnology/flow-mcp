@@ -12,14 +12,13 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tokio::time::Instant;
-use url::Url;
 
 use crate::config::{
     FLOW_SSO_URL, FLOW_URL, chrome_profile_dir, cookies_path, has_persisted_session,
 };
 use crate::cookies::{has_google_auth_cookies, read_cookies_file};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
-use crate::project_route::{is_flow_origin_host, is_workspace_flow_route, split_flow_path};
+use crate::flow_url::{is_about_landing_url, is_signed_in_flow_url};
 
 /// Maximum number of `/about` passive SSO redirect attempts during session promotion.
 const MAX_ABOUT_SSO_RETRIES: usize = 2;
@@ -37,38 +36,6 @@ pub(crate) struct LoginParams {
     pub(crate) force: Option<bool>,
     /// Cookie objects to import directly during "sync_cookies".
     pub(crate) cookies: Option<Vec<Map<String, Value>>>,
-}
-
-/// Returns `true` when `path` equals `prefix` or begins with `prefix` plus `/`.
-fn has_segment_prefix(path: &str, prefix: &str) -> bool {
-    path == prefix
-        || (path.len() > prefix.len()
-            && path.starts_with(prefix)
-            && path.as_bytes().get(prefix.len()) == Some(&b'/'))
-}
-
-/// Returns true when the URL targets a Google Flow host.
-pub(crate) fn is_flow_host_url(raw: &str) -> bool {
-    Url::parse(raw).is_ok_and(|url| {
-        matches!(url.scheme(), "http" | "https") && is_flow_origin_host(url.host_str())
-    })
-}
-
-/// Returns `true` when `raw` points to a Google Flow workspace host and allowlisted route.
-pub(crate) fn is_signed_in_flow_url(raw: &str) -> bool {
-    let Ok(parsed) = Url::parse(raw) else {
-        return false;
-    };
-    if !matches!(parsed.scheme(), "http" | "https") || !is_flow_origin_host(parsed.host_str()) {
-        return false;
-    }
-    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
-    let on_labs = host == "labs.google" || host.ends_with(".labs.google");
-    let stripped = split_flow_path(parsed.path());
-    if on_labs && !stripped.has_labs_flow_prefix {
-        return false;
-    }
-    is_workspace_flow_route(&stripped.route)
 }
 
 /// Evaluates `checkAuth` once in the active page, retrying brief context resets during navigation.
@@ -162,22 +129,6 @@ fn signed_in_login_result(mode: &str, count: usize, url: String) -> Value {
     })
 }
 
-/// Returns `true` when `url` points to a Google Flow `/about` landing route under any supported prefix.
-pub(crate) fn is_about_landing_url(url: &str) -> bool {
-    let Ok(parsed) = Url::parse(url) else {
-        return url.contains("flow.google.com/about") || url.contains("/fx/about");
-    };
-    if !matches!(parsed.scheme(), "http" | "https") || !is_flow_origin_host(parsed.host_str()) {
-        return false;
-    }
-    let stripped = split_flow_path(parsed.path());
-    let rel = stripped.route.as_str();
-    rel == "/flow"
-        || has_segment_prefix(rel, "/about")
-        || has_segment_prefix(rel, "/flow/about")
-        || has_segment_prefix(rel, "/tools/flow/about")
-}
-
 /// Returns `true` when `url` points to an interactive Google Accounts sign-in route.
 fn is_interactive_signin_url(url: &str) -> bool {
     url.contains("/InteractiveLogin")
@@ -243,24 +194,23 @@ async fn finalize_promoted_login(engine: &ChromeEngine, start_url: &str) -> Resu
             }
             continue;
         }
-        if is_flow_host_url(&cur) && !is_signed_in_flow_url(&cur) {
-            break;
-        }
         if is_signed_in_flow_url(&cur) && !cur.contains("accounts.google.com") {
             let cookies = engine.flow_cookies().await.unwrap_or_default();
             if has_google_auth_cookies(&cookies) {
                 let auth = check_page_auth(engine, true).await;
                 if auth.get("signed_in").and_then(Value::as_bool) == Some(true) {
                     let final_url = engine.current_url().await.unwrap_or_default();
-                    return Ok(Some(signed_in_login_result(
-                        "interactive-chrome",
-                        cookies.len(),
-                        final_url,
-                    )));
+                    if is_signed_in_flow_url(&final_url) {
+                        return Ok(Some(signed_in_login_result(
+                            "interactive-chrome",
+                            cookies.len(),
+                            final_url,
+                        )));
+                    }
                 }
                 if matches!(
                     auth.get("reason").and_then(Value::as_str),
-                    Some("unsupported_country" | "age_restricted" | "unavailable")
+                    Some("unsupported_country" | "age_restricted")
                 ) {
                     break;
                 }
@@ -292,12 +242,33 @@ async fn login_with_chrome(
                     rejected
                 );
             }
-            if st.exited {
-                let target_url = st.flow_url.as_deref().unwrap_or(FLOW_URL);
+            if st.exited || st.has_google_auth_cookies {
+                let mut target_flow_url = st.flow_url;
+                if st.has_google_auth_cookies && !st.exited {
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    if let Some(after_settle) = engine.poll_login_chrome().await? {
+                        if let Some(rejected) = after_settle.rejected_url {
+                            engine.shutdown().await;
+                            anyhow::bail!(
+                                "Google Accounts rejected sign-in in this browser session (URL: {}).",
+                                rejected
+                            );
+                        }
+                        if after_settle.flow_url.is_some() {
+                            target_flow_url = after_settle.flow_url;
+                        }
+                    }
+                }
+                let target_url = target_flow_url.as_deref().unwrap_or(FLOW_URL);
                 if let Some(res) = finalize_promoted_login(engine, target_url).await? {
                     return Ok(res);
                 }
-                engine.launch_interactive_login(FLOW_SSO_URL, false).await?;
+                if st.exited {
+                    anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
+                }
+                anyhow::bail!(
+                    "Google Sign-In wrote authentication cookies, but workspace verification did not succeed. Run flow_login again."
+                );
             }
         }
     } else {
@@ -332,8 +303,6 @@ async fn login_with_chrome(
 
     let clamped_secs = timeout_secs.clamp(15, 3600);
     let deadline = Instant::now() + Duration::from_secs(clamped_secs);
-    let mut ready_polls = 0usize;
-    let mut ready_url: Option<String> = None;
     let mut last_flow_url: Option<String> = None;
 
     loop {
@@ -353,31 +322,30 @@ async fn login_with_chrome(
             last_flow_url = Some(observed.clone());
         }
 
-        if st.has_google_auth_cookies {
-            if ready_url.as_deref() == st.flow_url.as_deref() {
-                ready_polls += 1;
-            } else {
-                ready_url = st.flow_url.clone();
-                ready_polls = 1;
+        if st.exited || st.has_google_auth_cookies {
+            let mut target_flow_url = st.flow_url.or_else(|| last_flow_url.clone());
+            if st.has_google_auth_cookies && !st.exited {
+                tokio::time::sleep(Duration::from_secs(4)).await;
+                if let Some(after_settle) = engine.poll_login_chrome().await? {
+                    if let Some(rejected) = after_settle.rejected_url {
+                        engine.shutdown().await;
+                        anyhow::bail!(
+                            "Google Accounts rejected sign-in in this browser session (URL: {}).",
+                            rejected
+                        );
+                    }
+                    if after_settle.flow_url.is_some() {
+                        target_flow_url = after_settle.flow_url;
+                    }
+                }
             }
-        } else {
-            ready_polls = 0;
-            ready_url = None;
-        }
-
-        if st.exited || ready_polls >= 2 {
-            let target_url = st
-                .flow_url
-                .as_deref()
-                .or(last_flow_url.as_deref())
-                .unwrap_or(FLOW_URL);
+            let target_url = target_flow_url.as_deref().unwrap_or(FLOW_URL);
             if let Some(res) = finalize_promoted_login(engine, target_url).await? {
                 return Ok(res);
             }
             if st.exited {
                 anyhow::bail!("Sign-in window was closed before Google Sign-In completed.");
             }
-            engine.launch_interactive_login(FLOW_SSO_URL, false).await?;
             anyhow::bail!(
                 "Google Sign-In wrote authentication cookies, but workspace verification did not succeed. Run flow_login again."
             );

@@ -398,7 +398,7 @@ async fn check_flow_build_in_engine(engine: &ChromeEngine) -> Value {
         return check("flow-build", "fail", format!("{e:#}"));
     }
     let mut url = engine.current_url().await.unwrap_or_default();
-    if !auth::is_flow_host_url(&url) {
+    if !crate::flow_url::is_flow_host_url(&url) {
         if let Err(e) = engine.navigate(FLOW_URL).await {
             return check("flow-build", "fail", format!("{e:#}"));
         }

@@ -18,6 +18,7 @@ mod cookies;
 mod db;
 mod download;
 mod engine;
+mod flow_url;
 mod generation;
 mod http;
 mod instance;

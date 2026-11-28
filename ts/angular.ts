@@ -8,16 +8,13 @@ import {
   delay,
   elText,
   fifeBase,
-  hoverProbe,
   normalizeFlowMediaUrl,
   readMediaUrl,
 } from "./dom";
+import { splitFlowPath } from "./flow_route";
 import { frontendBuild, readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type {
-  AngularQueryCache,
-  AngularQueryClient,
-  AngularQueryEntry,
   AngularRouter,
   FlowStoreHandle,
   FlowTile,
@@ -43,7 +40,7 @@ export function readOwn(obj: unknown, key: string): unknown {
 }
 
 /** Returns `true` when `val` is a non-null, non-array, non-`Map`, non-DOM object. */
-function isPlainRecord(val: unknown): val is Record<string, unknown> {
+export function isPlainRecord(val: unknown): val is Record<string, unknown> {
   return Boolean(
     val &&
       typeof val === "object" &&
@@ -192,106 +189,6 @@ export function withLViewMapCapture<T>(
 /** Cached query-parameter key per Angular Router instance. */
 const routerQueryParamKeys = new WeakMap<AngularRouter, string>();
 
-/** Parsed prefix and normalized route details of a Flow pathname. */
-export interface StrippedFlowPath {
-  /** Active prefix starting with `/` when present, preserving original case. */
-  prefix: string;
-  /** Normalized lowercase route starting with `/` without trailing slashes. */
-  route: string;
-  /** True when `/fx/tools/flow` appears among the stripped prefixes. */
-  hasLabsFlowPrefix: boolean;
-  /** Account index extracted from `/u/<digits>` when present. */
-  pathAuthuser: string | null;
-}
-
-/** Reserved Flow top-level route names that cannot act as `<org>` before `/global`. */
-const RESERVED_FLOW_SEGMENTS = new Set([
-  "project", "projects", "search", "changelogs", "about", "shared", "flow",
-  "tools", "fx", "u", "unsupported-country", "unsupported-browser", "unavailable",
-  "age-restricted", "privacy", "credits-terms", "academy", "404", "login", "debug",
-]);
-
-/** Strips `/fx/tools/flow`, `/fx`, `/u/<digits>`, and `/<org>/global` prefixes from `pathname`. */
-export function splitFlowPath(pathname: string = location.pathname): StrippedFlowPath {
-  const cleanPath = (pathname || "/").split(/[?#]/)[0] || "/";
-  const segs = cleanPath.split("/").filter(Boolean);
-  const prefixSegs: string[] = [];
-  let hasLabsFlowPrefix = false;
-  let pathAuthuser: string | null = null;
-  let i = 0;
-  while (i < segs.length) {
-    const low0 = segs[i].toLowerCase();
-    const low1 = (segs[i + 1] || "").toLowerCase();
-    const low2 = (segs[i + 2] || "").toLowerCase();
-    if (low0 === "fx" && low1 === "tools" && low2 === "flow") {
-      hasLabsFlowPrefix = true;
-      prefixSegs.push(segs[i], segs[i + 1], segs[i + 2]);
-      i += 3;
-    } else if (low0 === "fx") {
-      prefixSegs.push(segs[i]);
-      i += 1;
-    } else if (low0 === "u" && /^\d+$/.test(segs[i + 1] || "")) {
-      pathAuthuser = segs[i + 1];
-      prefixSegs.push(segs[i], segs[i + 1]);
-      i += 2;
-    } else if (low1 === "global" && !RESERVED_FLOW_SEGMENTS.has(low0)) {
-      prefixSegs.push(segs[i], segs[i + 1]);
-      i += 2;
-    } else {
-      break;
-    }
-  }
-  const prefix = prefixSegs.length > 0 ? `/${prefixSegs.join("/")}` : "";
-  const route =
-    i >= segs.length ? "/" : `/${segs.slice(i).join("/").toLowerCase()}`;
-  return { prefix, route, hasLabsFlowPrefix, pathAuthuser };
-}
-
-/** Returns `true` when a prefix-stripped lowercase `route` is a recognized Flow workspace path. */
-export function isWorkspaceFlowRoute(route: string): boolean {
-  if (route === "/" || route === "/projects" || route === "/search" || route === "/changelogs") {
-    return true;
-  }
-  if (!route.startsWith("/project/")) return false;
-  const [projectId, ...sub] = route.slice("/project/".length).split("/");
-  if (!projectId) return false;
-  if (sub.length === 0) return true;
-  if (sub.length === 1) {
-    return ["character", "tools", "create-tool", "trash", "chat"].includes(sub[0]);
-  }
-  if (sub.length === 2) {
-    return Boolean(sub[1]) && ["character", "scene", "edit", "tool", "collection", "chat"].includes(sub[0]);
-  }
-  if (sub.length === 3) {
-    return (
-      (sub[0] === "collection" && Boolean(sub[1]) && sub[2] === "character") ||
-      (sub[0] === "trash" && sub[1] === "collection" && Boolean(sub[2]))
-    );
-  }
-  return false;
-}
-
-/** Resolves the active `authuser` value from URL query, `/u/<digits>` prefix, or `WIZ_global_data`. */
-export function resolveFlowAuthuser(
-  search: string = location.search,
-  pathname: string = location.pathname,
-): string | null {
-  const fromQuery = new URLSearchParams(search).get("authuser")?.trim();
-  if (fromQuery) return fromQuery;
-  const { pathAuthuser } = splitFlowPath(pathname);
-  if (pathAuthuser) return pathAuthuser;
-  const fromWiz = window.WIZ_global_data?.QrtxK;
-  return typeof fromWiz === "string" && fromWiz.trim() ? fromWiz.trim() : null;
-}
-
-/** Resolves the active `pageId` value from URL query or `WIZ_global_data.S06Grb`. */
-export function resolveFlowPageId(search: string = location.search): string | null {
-  const fromQuery = new URLSearchParams(search).get("pageId")?.trim();
-  if (fromQuery) return fromQuery;
-  const fromWiz = window.WIZ_global_data?.S06Grb;
-  return typeof fromWiz === "string" && fromWiz.trim() ? fromWiz.trim() : null;
-}
-
 /** Builds the query parameters that Google Flow routes keep across transitions. */
 function flowQueryParams(search: string = location.search): Record<string, string> {
   const params: Record<string, string> = { hl: "en" };
@@ -381,11 +278,11 @@ export function buildProjectUrl(
 }
 
 /** Host selectors searched first for Angular Ivy `LView` trees and root injectors. */
-const ANGULAR_SHELL_SELECTOR =
+export const ANGULAR_SHELL_SELECTOR =
   "flow-project-shell, flow-project-page, flow-character-edit-page, flow-editor-dispatcher, flow-editor-page, flow-scene-builder, router-outlet, aisandbox-root, app-root, main, header";
 
 /** Searches visible shell nodes, injectors, and captured LViews for a service matching `match`. */
-function findInAngular<T>(match: (cand: unknown) => cand is T): T | null {
+export function findInAngular<T>(match: (cand: unknown) => cand is T): T | null {
   const ownMaps = (obj: object): Array<Map<unknown, unknown>> => {
     const maps: Array<Map<unknown, unknown>> = [];
     const named = readOwn(obj, "records");
@@ -515,135 +412,6 @@ export function findRouter(): AngularRouter | null {
       "location" in cand &&
       "options" in cand,
   );
-}
-
-/** Returns `true` when `cand` is a non-DOM object holding a `find` function. */
-function hasQueryFind(cand: unknown): cand is AngularQueryCache {
-  return isPlainRecord(cand) && typeof readOwn(cand, "find") === "function";
-}
-
-/** Returns `true` when `cand` matches Angular's standalone `QueryCache` shape. */
-function isAngularQueryCache(cand: unknown): cand is AngularQueryCache {
-  return (
-    hasQueryFind(cand) &&
-    (typeof readOwn(cand, "getAll") === "function" ||
-      readOwn(cand, "queries") instanceof Map)
-  );
-}
-
-/** Searches Angular injectors and LViews for the live `QueryClient` or `QueryCache`. */
-export function findQueryCache(): AngularQueryCache | null {
-  const clientOrCache = findInAngular(
-    (cand): cand is AngularQueryClient | AngularQueryCache => {
-      if (isAngularQueryCache(cand)) return true;
-      if (!cand || typeof cand !== "object" || cand instanceof Node) return false;
-      return hasQueryFind(readOwn(cand, "queryCache"));
-    },
-  );
-  if (!clientOrCache) return null;
-  const nested = readOwn(clientOrCache, "queryCache");
-  return hasQueryFind(nested) ? nested : (clientOrCache as AngularQueryCache);
-}
-
-/** Resolves Angular's `QueryCache`, capturing `ngLViewMap` once if numeric contexts are unbound. */
-export async function ensureAngularQueryCache(): Promise<AngularQueryCache | null> {
-  const direct = findQueryCache();
-  if (direct) return direct;
-  if (!(runtimeState.ngLViewMap instanceof Map)) {
-    const hasNumericContext = Array.from(
-      document.querySelectorAll(ANGULAR_SHELL_SELECTOR),
-    ).some((el) => typeof readOwn(el, "__ngContext__") === "number");
-    if (hasNumericContext) {
-      await withLViewMapCapture(async () => {
-        const targets = Array.from(
-          document.querySelectorAll(
-            "[mattooltip], [cdkoverlayorigin], button[aria-label], button, a[href]",
-          ),
-        );
-        if (targets.length > 0) {
-          await hoverProbe(targets.slice(0, 8), 20);
-        }
-      });
-    }
-  }
-  return findQueryCache();
-}
-
-/** Returns `true` when any DOM host on the page carries an Angular Ivy `__ngContext__`. */
-export function hasAngularContext(): boolean {
-  if (runtimeState.ngLViewMap instanceof Map && runtimeState.ngLViewMap.size > 0) {
-    return true;
-  }
-  for (const el of document.querySelectorAll(ANGULAR_SHELL_SELECTOR)) {
-    if (readOwn(el, "__ngContext__") !== undefined) return true;
-  }
-  const all = document.querySelectorAll("*");
-  const limit = Math.min(all.length, 200);
-  for (let i = 0; i < limit; i += 1) {
-    if ("__ngContext__" in all[i]) return true;
-  }
-  return false;
-}
-
-/** Returns `true` when Angular's `Router` has an active navigation in flight. */
-export function isRouterNavigating(): boolean {
-  const router = findRouter();
-  if (!router) return false;
-  for (const key of ["currentNavigation", "getCurrentNavigation"]) {
-    const fn = readOwn(router, key);
-    if (typeof fn === "function") {
-      try {
-        if (fn.call(router) != null) return true;
-      } catch {
-        // Ignore router accessor errors.
-      }
-    }
-  }
-  return readOwn(router, "navigating") === true;
-}
-
-/** Reads a cached query entry matching `queryKey` from `cache`. */
-export function readQueryCacheEntry(
-  cache: AngularQueryCache | null,
-  queryKey: readonly unknown[],
-): AngularQueryEntry | undefined {
-  if (!cache) return undefined;
-  if (typeof cache.find === "function") {
-    try {
-      const hit = cache.find({ queryKey, exact: true });
-      if (hit) return hit;
-    } catch {
-      // Fall through to hash or list lookup.
-    }
-  }
-  const hash = JSON.stringify(queryKey);
-  if (typeof cache.get === "function") {
-    try {
-      const hit = cache.get(hash);
-      if (hit) return hit;
-    } catch {
-      // Fall through to map or list lookup.
-    }
-  }
-  if (cache.queries instanceof Map) {
-    const hit = cache.queries.get(hash);
-    if (hit) return hit;
-  }
-  if (typeof cache.getAll === "function") {
-    try {
-      for (const entry of cache.getAll()) {
-        if (
-          entry?.queryHash === hash ||
-          JSON.stringify(entry?.queryKey) === hash
-        ) {
-          return entry;
-        }
-      }
-    } catch {
-      // Ignore concurrent cache iteration errors.
-    }
-  }
-  return undefined;
 }
 
 /** Maximum time to confirm scene creation and the initial clip load. */

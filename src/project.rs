@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::{Duration, Instant};
 
-use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redirect_sso_if_about};
+use crate::auth::{check_page_auth, check_page_signed_in, redirect_sso_if_about};
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME};
+use crate::flow_url::{is_flow_host_url, is_signed_in_flow_url};
 pub(crate) use crate::project_route::{
     is_project_subroute_url, project_id_from_url, project_subroute_url, project_workspace_url,
 };
@@ -508,8 +509,8 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
 pub(crate) async fn create_project(engine: &ChromeEngine, title: Option<&str>) -> Result<Value> {
     engine.ensure_page().await?;
     let initial_url = engine.current_url().await.unwrap_or_default();
-    let already_on_home = crate::auth::is_signed_in_flow_url(&initial_url)
-        && project_id_from_url(&initial_url).is_none();
+    let already_on_home =
+        is_signed_in_flow_url(&initial_url) && project_id_from_url(&initial_url).is_none();
     if !already_on_home {
         engine.navigate(FLOW_URL).await?;
         tokio::time::sleep(Duration::from_millis(900)).await;

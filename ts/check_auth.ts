@@ -3,17 +3,18 @@
 
 // Verify Google Flow workspace access with route allowlists, Angular QueryCache state, and RPC fallback.
 
+import { readOwn } from "./angular";
 import {
   ensureAngularQueryCache,
   hasAngularContext,
   isRouterNavigating,
-  isWorkspaceFlowRoute,
-  readOwn,
   readQueryCacheEntry,
+} from "./angular_query";
+import {
+  isWorkspaceLocation,
   resolveFlowAuthuser,
   resolveFlowPageId,
-  splitFlowPath,
-} from "./angular";
+} from "./flow_route";
 import type { AngularQueryEntry, AuthCheckResult } from "./types";
 
 /** Read-only `FLOW_APP_CONFIG` RPC identifier in the Flow workspace route guard. */
@@ -52,20 +53,6 @@ const PROBE_TIMEOUT_MS = 5000;
 /** Selector that matches explicit Google Sign-In prompts and Flow landing shells. */
 const SIGN_IN_SELECTOR =
   'flow-landing-page, a[aria-label="Sign in" i], button[aria-label="Sign in" i], button[aria-label="Create with Google Flow" i], a[href*="accounts.google.com/ServiceLogin" i], a[href*="accounts.google.com/v3/signin" i], a[href*="accounts.google.com/InteractiveLogin" i]';
-
-/** Returns `true` when `hostname` and `pathname` target an allowlisted Flow workspace route. */
-export function isWorkspaceLocation(hostname: string, pathname: string): boolean {
-  const host = (hostname || "").toLowerCase();
-  const onLabsHost = host === "labs.google" || host.endsWith(".labs.google");
-  if (host !== "flow.google.com" && !onLabsHost) {
-    return false;
-  }
-  const stripped = splitFlowPath(pathname || "/");
-  if (onLabsHost && !stripped.hasLabsFlowPrefix) {
-    return false;
-  }
-  return isWorkspaceFlowRoute(stripped.route);
-}
 
 /** Builds an `AuthCheckResult` record from the active document metadata. */
 function authResult(
@@ -186,10 +173,10 @@ function evaluateAppConfigPayload(
   return "ok";
 }
 
-/** Evaluates `CHECK_TOOL_AVAILABILITY` (`KV2T2d`) field `1` (`Cla()`) codes `4`..`8`. */
+/** Evaluates `CHECK_TOOL_AVAILABILITY` (`KV2T2d`) field `1` (`Cla()`) for verified age restriction (`7`). */
 function evaluateToolAvailabilityPayload(
   payload: unknown,
-): "ok" | "age_restricted" | "unavailable" {
+): "ok" | "age_restricted" {
   if (!payload || typeof payload !== "object") {
     return "ok";
   }
@@ -210,9 +197,6 @@ function evaluateToolAvailabilityPayload(
       : undefined;
   if (code === 7) {
     return "age_restricted";
-  }
-  if (code === 4 || code === 5 || code === 6 || code === 8) {
-    return "unavailable";
   }
   return "ok";
 }
@@ -313,7 +297,10 @@ async function checkAngularQueryEligibility(): Promise<AuthCheckResult | null> {
       continue;
     }
 
-    if (appData !== undefined && toolData !== undefined) {
+    if (
+      appData !== undefined &&
+      (toolData !== undefined || toolQuery?.state?.status === "error")
+    ) {
       if (evaluateAppConfigPayload(appData) !== "ok") {
         return null;
       }
@@ -362,13 +349,16 @@ function parseProbeEnvelope(text: string, status: number): AuthCheckResult {
         if (rpcErr[0] === 16) {
           return authResult(false, false, true, status, "rpc_unauthenticated");
         }
-        return authResult(
-          false,
-          true,
-          false,
-          status,
-          `rpc_error_${rpcErr[0]}`,
-        );
+        if (entry[1] === APP_CONFIG_RPC_ID) {
+          return authResult(
+            false,
+            true,
+            false,
+            status,
+            `rpc_error_${rpcErr[0]}`,
+          );
+        }
+        continue;
       }
       if (typeof entry[2] !== "string") {
         continue;

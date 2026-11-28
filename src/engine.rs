@@ -140,7 +140,7 @@ pub(crate) struct LoginPollStatus {
     pub(crate) rejected_url: Option<String>,
     /// Latest signed-in Google Flow workspace URL observed in profile history.
     pub(crate) flow_url: Option<String>,
-    /// True when Google cookies, Flow cookies, and a workspace history entry exist.
+    /// True when Google authentication cookies exist in the login profile.
     pub(crate) has_google_auth_cookies: bool,
 }
 
