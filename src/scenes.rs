@@ -135,12 +135,24 @@ fn clip_entered_error(asset: &FlowAsset, before: &HashMap<String, ClipBaseline>)
         return false;
     }
     match before.get(&asset.id) {
-        None => true,
+        None => {
+            matches!(asset.media_status.as_deref(), Some("failed" | "canceled"))
+                || asset.media_error.is_some()
+                || (asset.primary_ready != Some(true)
+                    && asset.media_status.is_none()
+                    && !asset.failed_history.is_empty())
+        }
         Some(prior) => {
-            if asset.has_new_failures(&prior.failed_history) {
+            if asset.new_failure(&prior.failed_history).is_some() {
                 return true;
             }
             if asset.primary_ready == Some(true) {
+                return false;
+            }
+            let primary_failed =
+                matches!(asset.media_status.as_deref(), Some("failed" | "canceled"))
+                    || asset.media_error.is_some();
+            if !primary_failed {
                 return false;
             }
             !prior.was_failed()
@@ -413,14 +425,17 @@ pub(crate) async fn run_video_extend(
                 .iter()
                 .find(|a| clip_entered_error(a, &before))
             {
+                let detail = before
+                    .get(&failed_tile.id)
+                    .and_then(|prior| failed_tile.new_failure(&prior.failed_history))
+                    .or(failed_tile.media_error.as_deref())
+                    .or_else(|| failed_tile.latest_failure_detail())
+                    .or(failed_tile.media_status.as_deref())
+                    .unwrap_or("failed");
                 extend_err = Some(anyhow::anyhow!(
                     "Flow video extend failed on tile {}: {}",
                     failed_tile.id,
-                    failed_tile
-                        .media_error
-                        .as_deref()
-                        .or(failed_tile.media_status.as_deref())
-                        .unwrap_or("failed")
+                    detail
                 ));
                 break;
             }

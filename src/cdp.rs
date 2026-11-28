@@ -17,6 +17,9 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::FLOW_URL;
 use crate::engine::NetworkResponseEvent;
+use crate::generation::{
+    has_generation_batchexecute_rpc, is_generation_rpc_id, is_generation_rpc_url,
+};
 
 /// Error object returned inside a CDP JSON-RPC response frame.
 #[derive(Debug, Deserialize)]
@@ -349,8 +352,8 @@ fn handle_network_event(
                 .remove(req_id)
                 .unwrap_or_else(|| "GET".to_string());
 
-            let inspect_body = is_error_body_candidate(&url)
-                && (status >= 400 || is_batchexecute_post(&req_method, status, &url));
+            let inspect_body = network_tx.receiver_count() > 0
+                && should_inspect_response_body(&req_method, status, &url);
             if inspect_body {
                 if pending_bodies.len() > 256 {
                     pending_bodies.clear();
@@ -415,18 +418,20 @@ fn flow_host() -> &'static str {
         .unwrap_or("flow.google.com")
 }
 
-/// Returns `true` when `url` belongs to a Flow or Google auth host worth inspecting for errors.
-fn is_error_body_candidate(url: &str) -> bool {
+/// Returns `true` when `url` belongs to a Google Flow host.
+fn is_flow_api_host(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.contains(&flow_host().to_ascii_lowercase())
         || lower.contains("aisandbox-pa.googleapis.com")
         || lower.contains("labs.google")
-        || lower.contains("recaptcha")
 }
 
-/// Returns `true` when the request is an HTTP 200 `batchexecute` `POST` call.
-fn is_batchexecute_post(method: &str, status: u16, url: &str) -> bool {
-    status == 200 && method.eq_ignore_ascii_case("POST") && url.contains("batchexecute")
+/// Returns `true` when an active subscriber needs the body of this CDP HTTP response.
+fn should_inspect_response_body(method: &str, status: u16, url: &str) -> bool {
+    method.eq_ignore_ascii_case("POST")
+        && is_flow_api_host(url)
+        && ((status >= 400 && is_generation_rpc_url(url))
+            || (status == 200 && has_generation_batchexecute_rpc(url)))
 }
 
 /// Truncates non-empty error text to at most 500 characters.
@@ -434,6 +439,49 @@ fn truncate_excerpt(text: &str) -> Option<String> {
     let excerpt: String = text.trim().chars().take(500).collect();
     let trimmed = excerpt.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Reads 1-based protobuf `field` from a JSPB array with a message ID at index `0` (`Wa` offset).
+fn jspb_msg_field(frame: &[Value], field: usize) -> Option<&Value> {
+    let last_idx = frame.len().checked_sub(1)?;
+    if last_idx < 1 || field == 0 {
+        return None;
+    }
+    let val = if field >= last_idx {
+        let last = &frame[last_idx];
+        if let Value::Object(map) = last {
+            map.get(&field.to_string())?
+        } else if field == last_idx {
+            last
+        } else {
+            return None;
+        }
+    } else {
+        &frame[field]
+    };
+    (!val.is_null()).then_some(val)
+}
+
+/// Reads 1-based protobuf `field` from a JSPB submessage array without a message ID.
+fn jspb_submsg_field(arr: &[Value], field: usize) -> Option<&Value> {
+    if arr.is_empty() || field == 0 {
+        return None;
+    }
+    let idx = field - 1;
+    let last_idx = arr.len() - 1;
+    let val = if idx >= last_idx {
+        let last = &arr[last_idx];
+        if let Value::Object(map) = last {
+            map.get(&field.to_string())?
+        } else if idx == last_idx {
+            last
+        } else {
+            return None;
+        }
+    } else {
+        &arr[idx]
+    };
+    (!val.is_null()).then_some(val)
 }
 
 /// Extracts the first readable non-type-URL string inside a nested error payload.
@@ -453,93 +501,38 @@ fn first_detail_text(val: &Value) -> Option<String> {
     }
 }
 
-/// Formats one `wrb.fr` frame when field 5 carries a Google RPC error payload.
-fn format_wrb_error(frame: &[Value]) -> Option<String> {
-    let rpc_id = frame
-        .get(1)
+/// Formats a `wrb.fr` frame when `Yp` (`[2, 9, 10]`) is empty and field 5 holds a `google.rpc.Status` array.
+fn format_wrb_error(frame: &[Value], rpc_id: Option<&str>) -> Option<String> {
+    let status_arr = jspb_msg_field(frame, 5)?.as_array()?;
+    let code = jspb_submsg_field(status_arr, 1).and_then(Value::as_i64);
+    let direct_msg = jspb_submsg_field(status_arr, 2)
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let has_payload = frame.get(2).is_some_and(|v| !v.is_null());
-    let err_val = frame.get(5).filter(|v| !v.is_null())?;
-    let format_prefix = |code: Option<&str>| match (rpc_id, code) {
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let detail_msg =
+        direct_msg.or_else(|| jspb_submsg_field(status_arr, 3).and_then(first_detail_text));
+    if code.unwrap_or(0) == 0 && detail_msg.is_none() {
+        return None;
+    }
+    let code_str = code.filter(|c| *c != 0).map(|c| c.to_string());
+    let prefix = match (rpc_id, code_str.as_deref()) {
         (Some(id), Some(c)) => format!("wrb.fr {id} error {c}"),
         (Some(id), None) => format!("wrb.fr {id} error"),
         (None, Some(c)) => format!("wrb.fr error {c}"),
         (None, None) => "wrb.fr error".to_string(),
     };
-    match err_val {
-        Value::Array(items) => {
-            if items.is_empty() && has_payload {
-                return None;
-            }
-            let code = items.first().and_then(|v| {
-                v.as_i64().map(|n| n.to_string()).or_else(|| {
-                    v.as_str()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string)
-                })
-            });
-            let direct_msg = items
-                .get(1)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-            let detail_msg = direct_msg.or_else(|| {
-                items
-                    .get(2..)
-                    .and_then(|rest| rest.iter().find_map(first_detail_text))
-            });
-            if has_payload && code.as_deref() == Some("0") && detail_msg.is_none() {
-                return None;
-            }
-            let prefix = format_prefix(code.as_deref());
-            Some(match detail_msg {
-                Some(msg) => format!("{prefix}: {msg}"),
-                None => prefix,
-            })
-        }
-        Value::String(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() && has_payload {
-                return None;
-            }
-            let prefix = format_prefix(None);
-            Some(if trimmed.is_empty() {
-                prefix
-            } else {
-                format!("{prefix}: {trimmed}")
-            })
-        }
-        Value::Number(n) => {
-            if has_payload && n.as_i64() == Some(0) {
-                return None;
-            }
-            let code = n.to_string();
-            Some(format_prefix(Some(&code)))
-        }
-        Value::Bool(false) if has_payload => None,
-        other => {
-            let detail = first_detail_text(other)
-                .or_else(|| serde_json::to_string(other).ok())
-                .unwrap_or_default();
-            let prefix = format_prefix(None);
-            Some(if detail.is_empty() {
-                prefix
-            } else {
-                format!("{prefix}: {detail}")
-            })
-        }
-    }
+    Some(match detail_msg {
+        Some(msg) => format!("{prefix}: {msg}"),
+        None => prefix,
+    })
 }
 
-/// Formats one `er` batch executor error frame into a summary string.
+/// Formats one `er` (`DA`) batch executor error frame into a summary string.
 fn format_er_error(frame: &[Value]) -> String {
     let mut parts: Vec<String> = Vec::new();
-    for idx in [2usize, 4, 1, 9] {
-        if let Some(val) = frame.get(idx) {
+    for field in [2usize, 4, 9] {
+        if let Some(val) = jspb_msg_field(frame, field) {
             let piece = val
                 .as_str()
                 .map(str::trim)
@@ -553,20 +546,10 @@ fn format_er_error(frame: &[Value]) -> String {
             }
         }
     }
-    for idx in [5usize, 6, 10] {
-        if let Some(detail) = frame.get(idx).and_then(first_detail_text)
-            && !parts.contains(&detail)
-        {
-            parts.push(detail);
-        }
-    }
-    if parts.is_empty()
-        && let Some(rest) = frame.get(1..)
-        && let Some(fallback) = first_detail_text(&Value::Array(rest.to_vec()))
-            .or_else(|| (!rest.is_empty()).then(|| serde_json::to_string(rest).unwrap_or_default()))
-        && !fallback.is_empty()
+    if let Some(detail) = jspb_msg_field(frame, 10).and_then(first_detail_text)
+        && !parts.contains(&detail)
     {
-        parts.push(fallback);
+        parts.push(detail);
     }
     if parts.is_empty() {
         "er".to_string()
@@ -575,32 +558,69 @@ fn format_er_error(frame: &[Value]) -> String {
     }
 }
 
-/// Collects `wrb.fr` and `er` error descriptions from one parsed `batchexecute` JSON value.
-fn collect_envelope_errors(val: &Value, out: &mut Vec<String>) {
+/// Accumulates RPC-specific and batch-level errors while scanning `batchexecute` chunks.
+struct EnvelopeScanState {
+    /// Restricts `wrb.fr` errors to `BATCH_GENERATION_RPC_IDS` when true.
+    only_generation_rpcs: bool,
+    /// True once a generation RPC `wrb.fr` frame carries a response payload in `[2, 9, 10]`.
+    saw_generation_data: bool,
+    /// Matched `wrb.fr` RPC errors.
+    rpc_errors: Vec<String>,
+    /// Unattributed `wrb.fr` or `er` batch executor errors.
+    batch_errors: Vec<String>,
+}
+
+/// Collects `wrb.fr` and `er` frames from one parsed `batchexecute` JSON value.
+fn collect_envelope_errors(val: &Value, state: &mut EnvelopeScanState) {
     let Some(arr) = val.as_array() else {
         return;
     };
     match arr.first().and_then(Value::as_str) {
         Some("wrb.fr") => {
-            if let Some(err) = format_wrb_error(arr) {
-                out.push(err);
+            let rpc_id = jspb_msg_field(arr, 1)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let has_data = [2usize, 9, 10]
+                .into_iter()
+                .any(|field| jspb_msg_field(arr, field).is_some());
+            if has_data {
+                if rpc_id.is_some_and(is_generation_rpc_id) {
+                    state.saw_generation_data = true;
+                }
+                return;
+            }
+            let Some(err) = format_wrb_error(arr, rpc_id) else {
+                return;
+            };
+            match rpc_id {
+                Some(id) if !state.only_generation_rpcs || is_generation_rpc_id(id) => {
+                    state.rpc_errors.push(err);
+                }
+                Some(_) => {}
+                None => state.batch_errors.push(err),
             }
         }
-        Some("er") => out.push(format_er_error(arr)),
+        Some("er") => state.batch_errors.push(format_er_error(arr)),
         Some(_) => {}
         None => {
             for item in arr {
-                collect_envelope_errors(item, out);
+                collect_envelope_errors(item, state);
             }
         }
     }
 }
 
-/// Parses a Google `batchexecute` response body and returns formatted `wrb.fr` or `er` errors.
-fn parse_batchexecute_error(text: &str) -> Option<String> {
+/// Parses a Google `batchexecute` response body for `wrb.fr` or `er` errors.
+fn parse_batchexecute_error(text: &str, only_generation_rpcs: bool) -> Option<String> {
     let trimmed = text.trim_start();
     let mut rest = trimmed.strip_prefix(")]}'").unwrap_or(trimmed);
-    let mut errors = Vec::new();
+    let mut state = EnvelopeScanState {
+        only_generation_rpcs,
+        saw_generation_data: false,
+        rpc_errors: Vec::new(),
+        batch_errors: Vec::new(),
+    };
     while !rest.is_empty() {
         rest = rest.trim_start();
         if rest.is_empty() {
@@ -617,7 +637,7 @@ fn parse_batchexecute_error(text: &str) -> Option<String> {
         if rest.starts_with('[') {
             let mut stream = serde_json::Deserializer::from_str(rest).into_iter::<Value>();
             if let Some(Ok(parsed)) = stream.next() {
-                collect_envelope_errors(&parsed, &mut errors);
+                collect_envelope_errors(&parsed, &mut state);
                 let consumed = stream.byte_offset();
                 if consumed > 0 {
                     rest = &rest[consumed..];
@@ -629,6 +649,10 @@ fn parse_batchexecute_error(text: &str) -> Option<String> {
             Some(pos) => &rest[pos + 1..],
             None => "",
         };
+    }
+    let mut errors = state.rpc_errors;
+    if !only_generation_rpcs || !state.saw_generation_data {
+        errors.extend(state.batch_errors);
     }
     (!errors.is_empty()).then(|| errors.join("; "))
 }
@@ -661,9 +685,9 @@ async fn fetch_error_excerpt(
         raw_body.to_string()
     };
     if status == 200 {
-        let rpc_err = parse_batchexecute_error(&text)?;
+        let rpc_err = parse_batchexecute_error(&text, true)?;
         truncate_excerpt(&rpc_err)
-    } else if let Some(rpc_err) = parse_batchexecute_error(&text) {
+    } else if let Some(rpc_err) = parse_batchexecute_error(&text, false) {
         truncate_excerpt(&rpc_err)
     } else {
         truncate_excerpt(&text)

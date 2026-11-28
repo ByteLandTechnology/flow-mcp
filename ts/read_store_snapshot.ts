@@ -265,19 +265,34 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     }
   };
 
+  const markerKey = (marker: string): string => {
+    const sep = marker.indexOf("|");
+    return sep >= 0 ? marker.slice(0, sep) : marker;
+  };
+
+  const markerHasError = (marker: string): boolean => {
+    const first = marker.indexOf("|");
+    if (first < 0) return false;
+    const second = marker.indexOf("|", first + 1);
+    return second >= 0 && second + 1 < marker.length;
+  };
+
   const mergeFailedHistory = (base: string[], next: string[]): string[] => {
     if (next.length === 0) return base;
     if (base.length === 0) return [...next];
-    const counts = new Map<string, number>();
-    for (const item of base) counts.set(item, (counts.get(item) ?? 0) + 1);
     const merged = [...base];
-    const seen = new Map<string, number>();
+    const keyIndex = new Map<string, number>();
+    for (let i = 0; i < merged.length; i++) {
+      keyIndex.set(markerKey(merged[i]), i);
+    }
     for (const item of next) {
-      const count = (seen.get(item) ?? 0) + 1;
-      seen.set(item, count);
-      if (count > (counts.get(item) ?? 0)) {
+      const key = markerKey(item);
+      const existingIdx = keyIndex.get(key);
+      if (existingIdx === undefined) {
+        keyIndex.set(key, merged.length);
         merged.push(item);
-        counts.set(item, count);
+      } else if (!markerHasError(merged[existingIdx]) && markerHasError(item)) {
+        merged[existingIdx] = item;
       }
     }
     return merged;
@@ -285,13 +300,13 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
 
   const summarizeHistoryFailures = (
     items: readonly (FlowMediaPayload | null | undefined)[] | undefined,
-  ): { status: string | null; error: string | null; failedHistory: string[] } => {
+  ): string[] => {
     if (!Array.isArray(items) || items.length === 0) {
-      return { status: null, error: null, failedHistory: [] };
+      return [];
     }
     const failedHistory: string[] = [];
-    let lastStatus: string | null = null;
-    let lastError: string | null = null;
+    const idCounts = new Map<string, number>();
+    let anonIndex = 0;
     for (const rawItem of items) {
       if (!rawItem || typeof rawItem !== "object") continue;
       const item = legacyMedia(rawItem);
@@ -300,12 +315,19 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       if (status === "failed" || status === "canceled" || error) {
         const normStatus = status === "canceled" ? "canceled" : "failed";
         const itemId = cleanMediaId(String(item?.id ?? item?.mediaId ?? ""));
-        failedHistory.push(`${itemId}|${normStatus}|${error ?? ""}`);
-        lastStatus = normStatus;
-        lastError = error;
+        let key: string;
+        if (itemId) {
+          const occ = idCounts.get(itemId) ?? 0;
+          idCounts.set(itemId, occ + 1);
+          key = occ === 0 ? `id:${itemId}` : `id:${itemId}#${occ}`;
+        } else {
+          key = `anon:${anonIndex}`;
+          anonIndex += 1;
+        }
+        failedHistory.push(`${key}|${normStatus}|${error ?? ""}`);
       }
     }
-    return { status: lastStatus, error: lastError, failedHistory };
+    return failedHistory;
   };
 
   const collectionIds = new Set<string>();
@@ -426,17 +448,9 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         : tileMediaUrl || cachedMediaUrl || null;
     const mediaUrl = mediaNotReady ? null : rawMediaUrl;
     const primaryReady = !mediaNotReady && Boolean(primaryMediaId || rawMediaUrl);
-    const histFail = summarizeHistoryFailures(t.history);
-    const primaryFailMarker = primaryFailed
-      ? [
-          `${cleanMediaId(String(primaryMediaId ?? ""))}|${primaryStatus === "canceled" ? "canceled" : "failed"}|${primaryError ?? ""}`,
-        ]
-      : [];
-    const failedHistory = mergeFailedHistory(primaryFailMarker, histFail.failedHistory);
-    const mediaStatus = histFail.status ?? (primaryStatus || null);
-    const mediaError = histFail.status
-      ? (histFail.error ?? primaryError)
-      : primaryError;
+    const failedHistory = summarizeHistoryFailures(t.history);
+    const mediaStatus = primaryStatus || null;
+    const mediaError = primaryError;
 
     const bio =
       (ttype === "CHARACTER" ? characterPersonalityNotes(t) : null) ??
@@ -537,9 +551,11 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     const candidates: Array<
       [string, SceneClipItem | null, FlowMediaPayload | null]
     > = [];
+    const seenWorkflows = new Set<string>();
     for (const clip of clips) {
       const wfId = clip?.workflowId ? String(clip.workflowId) : null;
-      if (!wfId) continue;
+      if (!wfId || seenWorkflows.has(wfId)) continue;
+      seenWorkflows.add(wfId);
       const hist = history.get(wfId);
       const primaryId = clip?.primaryMediaId
         ? cleanMediaId(String(clip.primaryMediaId))
@@ -561,6 +577,8 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       candidates.push([wfId, clip, mObj]);
     }
     for (const [wfId, hist] of history) {
+      if (!wfId || seenWorkflows.has(wfId)) continue;
+      seenWorkflows.add(wfId);
       const mObj = Array.isArray(hist)
         ? hist.find(
             (x) =>
@@ -584,7 +602,7 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         mPrimaryStatus === "failed" ||
         mPrimaryStatus === "canceled" ||
         Boolean(mPrimaryError);
-      const histFail = summarizeHistoryFailures(history.get(wfId));
+      const candFailedHistory = summarizeHistoryFailures(history.get(wfId));
       const clipPrimaryMediaId = clip?.primaryMediaId
         ? String(clip.primaryMediaId)
         : mObj?.id
@@ -592,39 +610,17 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
           : mObj?.mediaId
             ? String(mObj.mediaId)
             : null;
-      const candPrimaryMarker = mPrimaryFailed
-        ? [
-            `${cleanMediaId(String(clipPrimaryMediaId ?? ""))}|${mPrimaryStatus === "canceled" ? "canceled" : "failed"}|${mPrimaryError ?? ""}`,
-          ]
-        : [];
-      const candFailedHistory = mergeFailedHistory(
-        candPrimaryMarker,
-        histFail.failedHistory,
-      );
-      const mStatus = histFail.status ?? (mPrimaryStatus || null);
-      const mError = histFail.status
-        ? (histFail.error ?? mPrimaryError)
-        : mPrimaryError;
+      const mStatus = mPrimaryStatus || null;
+      const mError = mPrimaryError;
       const existing = byId.get(wfId);
       if (existing) {
-        const prevHistory = existing.failed_history ?? [];
-        const mergedHistory = mergeFailedHistory(prevHistory, candFailedHistory);
-        const addedFailure = mergedHistory.length > prevHistory.length;
-        existing.failed_history = mergedHistory;
-        if (
-          mStatus === "failed" ||
-          mStatus === "canceled" ||
-          Boolean(mError) ||
-          candFailedHistory.length > 0
-        ) {
-          if (
-            addedFailure ||
-            (existing.media_status !== "failed" &&
-              existing.media_status !== "canceled")
-          ) {
-            existing.media_status = mStatus || existing.media_status;
-          }
-          if ((addedFailure && mError) || (!existing.media_error && mError)) {
+        existing.failed_history = mergeFailedHistory(
+          existing.failed_history ?? [],
+          candFailedHistory,
+        );
+        if (mPrimaryFailed && !existing.primary_ready && !existing.media_status) {
+          existing.media_status = mStatus;
+          if (!existing.media_error && mError) {
             existing.media_error = mError;
           }
         }

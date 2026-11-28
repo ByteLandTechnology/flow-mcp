@@ -89,14 +89,60 @@ pub(crate) struct FlowAsset {
     pub(crate) created_at: Option<String>,
 }
 
+/// Splits one `<key>|<status>|<error>` history failure marker into key, payload, and display text.
+fn parse_failure_marker(entry: &str) -> (&str, &str, &str) {
+    let (key, payload) = entry.split_once('|').unwrap_or((entry, ""));
+    let (status, error) = payload.split_once('|').unwrap_or((payload, ""));
+    let detail = if !error.is_empty() {
+        error
+    } else if !status.is_empty() {
+        status
+    } else {
+        "failed"
+    };
+    (key, payload, detail)
+}
+
 impl FlowAsset {
-    /// Returns `true` when `failed_history` holds more or newer failure entries than `baseline`.
-    pub(crate) fn has_new_failures(&self, baseline: &[String]) -> bool {
-        self.failed_history.len() > baseline.len()
-            || self.failed_history.iter().any(|item| {
-                self.failed_history.iter().filter(|x| *x == item).count()
-                    > baseline.iter().filter(|x| *x == item).count()
+    /// Returns the error or status text of a history failure added after `baseline`.
+    pub(crate) fn new_failure<'a>(&'a self, baseline: &[String]) -> Option<&'a str> {
+        let has_new_key = self.failed_history.iter().any(|entry| {
+            let (key, _, _) = parse_failure_marker(entry);
+            !baseline.iter().any(|b| parse_failure_marker(b).0 == key)
+        });
+        if !has_new_key && self.failed_history.len() <= baseline.len() {
+            return None;
+        }
+        self.failed_history
+            .iter()
+            .rev()
+            .find(|entry| {
+                let (_, payload, _) = parse_failure_marker(entry);
+                let cur_count = self
+                    .failed_history
+                    .iter()
+                    .filter(|x| parse_failure_marker(x).1 == payload)
+                    .count();
+                let base_count = baseline
+                    .iter()
+                    .filter(|x| parse_failure_marker(x).1 == payload)
+                    .count();
+                cur_count > base_count
             })
+            .or_else(|| {
+                self.failed_history.iter().rev().find(|entry| {
+                    let (key, _, _) = parse_failure_marker(entry);
+                    !baseline.iter().any(|b| parse_failure_marker(b).0 == key)
+                })
+            })
+            .map(|entry| parse_failure_marker(entry).2)
+    }
+
+    /// Returns the display text of the last recorded entry in `failed_history`.
+    pub(crate) fn latest_failure_detail(&self) -> Option<&str> {
+        self.failed_history
+            .last()
+            .map(|entry| parse_failure_marker(entry).2)
     }
 }
 
