@@ -76,6 +76,16 @@ function sourcePrimaryMediaId(rawTile: FlowTile | undefined): string | null {
   return raw == null || raw === "" ? null : String(raw);
 }
 
+/** Returns true when `tile` exists in the store and cannot act as a target scene. */
+function isInvalidSceneTile(tile: FlowTile | undefined): boolean {
+  return Boolean(
+    tile &&
+      (isTrashedTile(tile) ||
+        tile.isPending === true ||
+        (typeof tile.type === "string" && tile.type.toUpperCase() !== "SCENE")),
+  );
+}
+
 /** Finds a live, non-trashed scene tile in `tiles` by ID. */
 function findLiveSceneTile(
   tiles: Map<string, FlowTile> | null | undefined,
@@ -219,6 +229,32 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     };
   }
 
+  if (action === "prepare_add_clips") {
+    const sceneId = String(req?.scene_id || "").trim();
+    const assetIds = Array.isArray(req?.asset_ids)
+      ? req.asset_ids.map((id) => String(id).trim()).filter(Boolean)
+      : [];
+    if (!sceneId || !assetIds.length) {
+      return { ok: false, error: "scene_id_and_asset_ids_required" };
+    }
+    if (projectMutationPending) {
+      return { ok: false, error: "project_mutation_pending" };
+    }
+    const projectId = helper.projectId;
+    const store = projectId ? currentProjectStore(projectId) : null;
+    if (projectId && projectsToRefresh.has(projectId)) {
+      const refreshed = store ? await refreshAfterUnknown(store) : null;
+      if (!refreshed) {
+        return { ok: false, error: "project_refresh_failed", project_id: projectId };
+      }
+      tileMap = refreshed;
+    }
+    if (isInvalidSceneTile(tileMap.get(sceneId))) {
+      return { ok: false, error: "scene_not_found", scene_id: sceneId };
+    }
+    return { ok: true, project_id: projectId };
+  }
+
   if (action === "add_clips") {
     const sceneId = String(req?.scene_id || "").trim();
     const assetIds = Array.isArray(req?.asset_ids)
@@ -232,25 +268,26 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     }
     const projectId = helper.projectId;
     const store = projectId ? currentProjectStore(projectId) : null;
-    const finishMutation = beginProjectMutation();
-    if (projectId && projectsToRefresh.has(projectId)) {
-      const refreshed = store ? await refreshAfterUnknown(store) : null;
-      if (!refreshed) {
-        finishMutation();
-        return { ok: false, error: "project_refresh_failed", project_id: projectId };
+    const mutation = beginProjectMutation();
+    try {
+      if (projectId && projectsToRefresh.has(projectId)) {
+        const refreshed = store ? await refreshAfterUnknown(store) : null;
+        if (!refreshed) {
+          mutation.finish();
+          return { ok: false, error: "project_refresh_failed", project_id: projectId };
+        }
+        tileMap = refreshed;
       }
-      tileMap = refreshed;
-    }
-    const existingTile = tileMap.get(sceneId);
-    if (
-      existingTile &&
-      (isTrashedTile(existingTile) ||
-        existingTile.isPending === true ||
-        (typeof existingTile.type === "string" &&
-          existingTile.type.toUpperCase() !== "SCENE"))
-    ) {
-      finishMutation();
-      return { ok: false, error: "scene_not_found", scene_id: sceneId };
+      if (isInvalidSceneTile(tileMap.get(sceneId))) {
+        mutation.finish();
+        return { ok: false, error: "scene_not_found", scene_id: sceneId };
+      }
+    } catch (err) {
+      mutation.finish();
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err ?? "project_refresh_failed"),
+      };
     }
 
     const beforeScene = findLiveSceneTile(tileMap, sceneId);
@@ -267,129 +304,174 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
     });
     const workflowIds = expectedClips.map((clip) => clip.workflowId);
 
-    let resolveCallback: () => void = () => {};
-    let rejectCallback: (err: unknown) => void = () => {};
-    const callbackPromise = new Promise<void>((resolve, reject) => {
-      resolveCallback = resolve;
-      rejectCallback = reject;
+    let callbackErr: unknown = null;
+    let resolveSettled: () => void = () => {};
+    let rejectSettled: (err: unknown) => void = () => {};
+    const settledPromise = new Promise<void>((resolve, reject) => {
+      resolveSettled = resolve;
+      rejectSettled = reject;
     });
     const completion = {
-      resolve: () => resolveCallback(),
-      reject: (err: unknown) => rejectCallback(err),
+      resolve: () => {
+        if (callbackErr === null) {
+          resolveSettled();
+        }
+      },
+      reject: (err: unknown) => {
+        callbackErr ??= err;
+        rejectSettled(callbackErr);
+      },
     };
 
     if (projectId) projectsToRefresh.add(projectId);
-    let timedOut = false;
     let mutateSettled = false;
+    let mutateSucceeded = false;
+    let releaseOnMutateSettle = false;
     let lateError: string | null = null;
-    const mutatePromise = Promise.resolve().then(() =>
-      helper.mutate({
-        type: "add_workflows_to_scene",
-        Lc: sceneId,
-        Ic: sceneId,
-        rg: workflowIds,
-        YWa: workflowIds,
-        position: typeof req.position === "number" ? req.position : undefined,
-        Mh: undefined,
-        Eh: undefined,
-        De: completion,
-        ve: completion,
-      }),
-    );
-    void callbackPromise.then(
-      () => {
-        void mutatePromise.then(
-          () => finishMutation(),
-          () => finishMutation(),
-        );
-      },
-      (err: unknown) => {
-        lateError ??=
-          err instanceof Error ? err.message : String(err ?? "add_workflows_failed");
-        void mutatePromise.then(
-          () => finishMutation(),
-          () => finishMutation(),
-        );
-      },
-    );
+    const payload = mutation.attach({
+      type: "add_workflows_to_scene",
+      Lc: sceneId,
+      Ic: sceneId,
+      rg: workflowIds,
+      YWa: workflowIds,
+      position: typeof req.position === "number" ? req.position : undefined,
+      Mh: undefined,
+      Eh: undefined,
+      De: completion,
+      ve: completion,
+    });
+    const mutatePromise = Promise.resolve().then(() => helper.mutate(payload));
     void mutatePromise.then(
       () => {
         mutateSettled = true;
-        if (timedOut) {
-          finishMutation();
+        if (callbackErr === null) {
+          mutateSucceeded = true;
+        }
+        completion.resolve();
+        if (releaseOnMutateSettle) {
+          mutation.finish();
         }
       },
       (err: unknown) => {
         mutateSettled = true;
         const message =
           err instanceof Error ? err.message : String(err ?? "add_workflows_failed");
+        if (message === "mutation_timeout") {
+          rejectSettled(new Error("mutation_timeout"));
+        } else {
+          lateError ??= message;
+          completion.reject(err);
+        }
+        if (releaseOnMutateSettle) {
+          mutation.finish();
+        }
+      },
+    );
+    void settledPromise.then(
+      () => undefined,
+      (err: unknown) => {
+        const message =
+          err instanceof Error ? err.message : String(err ?? "add_workflows_failed");
         if (message !== "mutation_timeout") {
           lateError ??= message;
-          finishMutation();
         }
       },
     );
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const outcome: AddClipsWaitOutcome = await Promise.race([
-      Promise.all([mutatePromise, callbackPromise]).then(
-        (): AddClipsWaitOutcome => ({ kind: "settled" }),
-        (err: unknown): AddClipsWaitOutcome => {
-          const message =
-            err instanceof Error ? err.message : String(err ?? "add_workflows_failed");
-          if (message === "mutation_timeout") {
-            timedOut = true;
-            return { kind: "timeout" };
-          }
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const outcome: AddClipsWaitOutcome = await Promise.race([
+        settledPromise.then(
+          (): AddClipsWaitOutcome => ({ kind: "settled" }),
+          (err: unknown): AddClipsWaitOutcome => {
+            const message =
+              err instanceof Error ? err.message : String(err ?? "add_workflows_failed");
+            if (message === "mutation_timeout") {
+              return { kind: "timeout" };
+            }
+            return {
+              kind: "rejected",
+              error: message,
+              preSubmit: PRE_SUBMIT_ERRORS.has(message),
+            };
+          },
+        ),
+        new Promise<AddClipsWaitOutcome>((resolve) => {
+          timer = setTimeout(() => {
+            resolve({ kind: "timeout" });
+          }, SCENE_ADD_CLIPS_TIMEOUT_MS);
+        }),
+      ]).finally(() => {
+        if (timer !== undefined) clearTimeout(timer);
+      });
+
+      if (outcome.kind === "rejected") {
+        if (mutateSettled) {
+          mutation.finish();
+        } else {
+          releaseOnMutateSettle = true;
+        }
+        if (outcome.preSubmit && projectId) {
+          projectsToRefresh.delete(projectId);
+        }
+        return { ok: false, error: outcome.error };
+      }
+
+      if (outcome.kind === "timeout") {
+        const freshTiles = store ? await fetchProjectStore(store) : null;
+        const afterScene = findLiveSceneTile(freshTiles, sceneId);
+        if (
+          baseline !== null &&
+          afterScene !== null &&
+          sceneClipsConfirmed(baseline, afterScene, expectedClips, req.position)
+        ) {
+          mutation.finish();
+          if (projectId) projectsToRefresh.delete(projectId);
           return {
-            kind: "rejected",
-            error: message,
-            preSubmit: PRE_SUBMIT_ERRORS.has(message),
+            ok: true,
+            scene_id: sceneId,
+            added: assetIds.length,
+            confirmed: true,
           };
-        },
-      ),
-      new Promise<AddClipsWaitOutcome>((resolve) => {
-        timer = setTimeout(() => {
-          timedOut = true;
-          resolve({ kind: "timeout" });
-        }, SCENE_ADD_CLIPS_TIMEOUT_MS);
-      }),
-    ]).finally(() => {
-      if (timer !== undefined) clearTimeout(timer);
-    });
-
-    if (outcome.kind === "rejected") {
-      if (mutateSettled) {
-        finishMutation();
-      }
-      if (outcome.preSubmit && projectId) {
-        projectsToRefresh.delete(projectId);
-      }
-      return { ok: false, error: outcome.error };
-    }
-
-    if (outcome.kind === "timeout") {
-      const freshTiles = store ? await fetchProjectStore(store) : null;
-      const afterScene = findLiveSceneTile(freshTiles, sceneId);
-      if (
-        baseline !== null &&
-        afterScene !== null &&
-        sceneClipsConfirmed(baseline, afterScene, expectedClips, req.position)
-      ) {
-        finishMutation();
-        if (projectId) projectsToRefresh.delete(projectId);
+        }
+        if (lateError !== null) {
+          if (mutateSettled) {
+            mutation.finish();
+          } else {
+            releaseOnMutateSettle = true;
+          }
+          return { ok: false, error: lateError };
+        }
+        if (mutateSucceeded) {
+          mutation.finish();
+          if (projectId) projectsToRefresh.delete(projectId);
+          await delay(400);
+          return { ok: true, scene_id: sceneId, added: assetIds.length };
+        }
+        if (mutateSettled) {
+          mutation.finish();
+        } else {
+          releaseOnMutateSettle = true;
+        }
         return {
-          ok: true,
+          ok: false,
+          error: "outcome_unknown",
+          project_id: projectId,
+          stage: "add_clips",
           scene_id: sceneId,
-          added: assetIds.length,
-          confirmed: true,
+          asset_ids: assetIds,
         };
       }
-      if (lateError !== null) {
-        if (mutateSettled) {
-          finishMutation();
-        }
-        return { ok: false, error: lateError };
+
+      mutation.finish();
+      if (projectId) projectsToRefresh.delete(projectId);
+      await delay(400);
+      return { ok: true, scene_id: sceneId, added: assetIds.length };
+    } catch {
+      if (mutateSettled) {
+        mutation.finish();
+      } else {
+        releaseOnMutateSettle = true;
       }
       return {
         ok: false,
@@ -400,11 +482,6 @@ export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
         asset_ids: assetIds,
       };
     }
-
-    finishMutation();
-    if (projectId) projectsToRefresh.delete(projectId);
-    await delay(400);
-    return { ok: true, scene_id: sceneId, added: assetIds.length };
   }
 
   return { ok: false, error: `unknown_scene_action:${action}` };

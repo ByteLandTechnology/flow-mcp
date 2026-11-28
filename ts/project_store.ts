@@ -52,8 +52,8 @@ let boundStore: ProjectStore | null = null;
 let boundHandle: FlowStoreHandle | null = null;
 /** Promise chain that serializes general store mutations in this document. */
 let mutationChain: Promise<void> = Promise.resolve();
-/** Callback that unblocks `mutationChain` after server confirmation. */
-let releaseMutationChain: (() => void) | null = null;
+/** Per-payload gates that unblock `mutationChain` when the server confirms a mutation early. */
+const mutationGates = new WeakMap<Record<string, unknown>, Promise<void>>();
 
 /** Returns the project ID in the current route. */
 export function projectInRoute(): string | null {
@@ -285,23 +285,12 @@ async function dispatchStoreMutation(
 
 /** Serializes general store mutations in the current page session. */
 function mutateStore(store: ProjectStore, payload: Record<string, unknown>): Promise<unknown> {
-  let unblock: (() => void) | undefined;
-  const gate = new Promise<void>((resolve) => {
-    unblock = resolve;
-  });
+  const gate = mutationGates.get(payload);
+  mutationGates.delete(payload);
   const prev = mutationChain;
-  const run = prev.then(() => {
-    releaseMutationChain = unblock ?? null;
-    return dispatchStoreMutation(store, payload);
-  });
-  mutationChain = Promise.race([
-    run.then(() => undefined, () => undefined),
-    gate,
-  ]).finally(() => {
-    if (releaseMutationChain === unblock) {
-      releaseMutationChain = null;
-    }
-  });
+  const run = prev.then(() => dispatchStoreMutation(store, payload));
+  const settled = run.then(() => undefined, () => undefined);
+  mutationChain = gate ? prev.then(() => Promise.race([settled, gate])) : settled;
   return run;
 }
 
@@ -483,17 +472,33 @@ export let projectMutationPending = false;
 /** Projects that need a new query result after a mutation. */
 export const projectsToRefresh = new Set<string>();
 
-/** Marks one project submission as pending and returns an idempotent release function. */
-export function beginProjectMutation(): () => void {
+/** Guard for one active project submission and its optional `mutationChain` gate. */
+export interface ProjectMutationGuard {
+  /** Marks this submission settled or confirmed and releases its gate. */
+  readonly finish: () => void;
+  /** Binds this submission's gate to a `mutateStore` payload. */
+  readonly attach: <T extends Record<string, unknown>>(payload: T) => T;
+}
+
+/** Marks one project submission as pending and returns its idempotent guard. */
+export function beginProjectMutation(): ProjectMutationGuard {
   const token = Symbol("project_mutation");
   activeProjectMutations.add(token);
   projectMutationPending = true;
-  return () => {
-    if (!activeProjectMutations.delete(token)) return;
-    projectMutationPending = activeProjectMutations.size > 0;
-    if (!projectMutationPending) {
-      releaseMutationChain?.();
-    }
+  let releaseGate: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  return {
+    finish: () => {
+      if (!activeProjectMutations.delete(token)) return;
+      projectMutationPending = activeProjectMutations.size > 0;
+      releaseGate?.();
+    },
+    attach: <T extends Record<string, unknown>>(payload: T): T => {
+      mutationGates.set(payload, gate);
+      return payload;
+    },
   };
 }
 
@@ -503,7 +508,7 @@ export async function mutateAndVerify(
   payload: Record<string, unknown>,
   verified: (tiles: Map<string, FlowTile>) => boolean,
 ): Promise<Map<string, FlowTile> | null> {
-  const finishMutation = beginProjectMutation();
+  const mutation = beginProjectMutation();
   projectsToRefresh.add(store.projectId);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
@@ -530,7 +535,7 @@ export async function mutateAndVerify(
     } catch {
       return null;
     } finally {
-      finishMutation();
+      mutation.finish();
     }
   })();
   try {

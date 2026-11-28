@@ -178,6 +178,23 @@ fn runtime_scene_error(res: Value) -> anyhow::Error {
     }
 }
 
+/// Returns `true` when `call_flow_async` failed after the CDP evaluation request left for the page.
+fn write_could_have_happened(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    if message.starts_with("Timed out waiting for CDP command Runtime.evaluate")
+        || message.starts_with("Chrome CDP closed during Runtime.evaluate")
+        || message == "Chrome CDP connection closed"
+    {
+        return true;
+    }
+    if let Some(cdp_err) = message.strip_prefix("Chrome CDP error:") {
+        let detail = cdp_err.trim();
+        return !detail.starts_with("Cannot find default execution context")
+            && !detail.starts_with("Cannot find context with specified id");
+    }
+    false
+}
+
 /// Dispatches `flow_scenes` actions (`list`, `create`, `add_clips`, `rename`, `trash`).
 pub(crate) async fn handle_scenes(
     engine: &ChromeEngine,
@@ -220,6 +237,17 @@ pub(crate) async fn handle_scenes(
                 .context("flow_scenes add_clips requires non-empty 'asset_ids'")?;
             let snap = read_snapshot(engine).await?;
             let project_id = snap.get("projectId").and_then(Value::as_str);
+            let prepare = json!({
+                "action": "prepare_add_clips",
+                "scene_id": scene_id,
+                "asset_ids": asset_ids,
+            });
+            let prepared = engine.call_flow_async("sceneOp", json!([prepare])).await?;
+            if prepared.get("ok").and_then(Value::as_bool) != Some(true) {
+                let err = runtime_scene_error(prepared);
+                anyhow::bail!("Failed to add clips to scene: {err:#}");
+            }
+            anyhow::ensure!(engine.has_page().await, "Chrome CDP connection closed");
             let payload = json!({
                 "action": "add_clips",
                 "scene_id": scene_id,
@@ -228,7 +256,7 @@ pub(crate) async fn handle_scenes(
             });
             let res = match engine.call_flow_async("sceneOp", json!([payload])).await {
                 Ok(res) => res,
-                Err(error) => match project_id {
+                Err(error) if write_could_have_happened(&error) => match project_id {
                     Some(pid) => anyhow::bail!(
                         "outcome_unknown (project {pid}, scene {scene_id} add_clips): {error:#}"
                     ),
@@ -236,6 +264,7 @@ pub(crate) async fn handle_scenes(
                         anyhow::bail!("outcome_unknown (scene {scene_id} add_clips): {error:#}")
                     }
                 },
+                Err(error) => return Err(error),
             };
             if res.get("ok").and_then(Value::as_bool) != Some(true) {
                 let err = runtime_scene_error(res);
