@@ -59,7 +59,6 @@ impl<'a> ProjectStoreSession<'a> {
                 continue;
             }
             if matches!(err, Some("store_loading" | ANGULAR_REQUIRED_INPUT_ERROR)) {
-                dom_probed = false;
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 status = store_loading_result(bind_current_store(engine, &project_id).await)?;
                 continue;

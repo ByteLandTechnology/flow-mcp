@@ -5,10 +5,10 @@
 
 import {
   buildProjectUrl,
+  readLViewSlotId,
   readOwn,
   resolveLView,
   withMapCapture,
-  type NgContextCarrier,
 } from "./angular";
 import { delay, elText, setNativeValue } from "./dom";
 import { projectTitleFormat } from "./frontend_builds";
@@ -141,13 +141,7 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
         if (resolved) {
           pid = extractIdFromObject(resolved, 0, new Set());
         } else {
-          const ng = (card as NgContextCarrier).__ngContext__;
-          const slotId =
-            typeof ng === "number"
-              ? ng
-              : typeof readOwn(ng, "lViewId") === "number"
-                ? (readOwn(ng, "lViewId") as number)
-                : null;
+          const slotId = readLViewSlotId(card);
           if (slotId !== null) {
             for (const sm of seenMaps) {
               try {

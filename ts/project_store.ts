@@ -14,8 +14,8 @@ import type { FlowStoreHandle, FlowTile, NgLView, StoreProbeCheck } from "./type
 interface ProjectTileQuery {
   /** Key that includes the project ID. */
   queryKey: unknown;
-  /** Most recent query status and result. */
-  state: { status: string; data: unknown };
+  /** Most recent query status, fetch state, and result. */
+  state: { status: string; fetchStatus?: string; data: unknown };
   /** Runs the query and returns the fetched result. */
   fetch: (options: undefined, settings: { cancelRefetch: boolean }) => Promise<unknown>;
 }
@@ -68,6 +68,10 @@ const PROJECT_ROUTE_HOST_SELECTOR = [
   "flow-applet-view-header",
   "flow-agent-panel",
 ].join(", ");
+
+/** Shell banner hosts inside `aisandbox-root` before the primary route outlet activates. */
+const SHELL_BANNER_SELECTOR =
+  "flow-banner, flow-g1-promotional-banner, flow-retention-optin-banner";
 
 /** Angular error code for a required input that has no value yet. */
 const ANGULAR_REQUIRED_INPUT_ERROR = "NG0950";
@@ -203,21 +207,23 @@ export function isProjectStorePending(store: ProjectStore): boolean {
   if (!isCurrent(store)) return false;
   const signalQuery = readOwn(store.service, store.format.tileQuery);
   if (signalQuery && typeof signalQuery === "object") {
-    const pending = readQueryField(signalQuery, "isPending");
     const loading = readQueryField(signalQuery, "isLoading");
+    const fetchStatus = readQueryField(signalQuery, "fetchStatus");
     const status = readQueryField(signalQuery, "status");
     if (
-      pending === true ||
-      loading === true ||
-      status === "pending" ||
-      pending === ANGULAR_REQUIRED_INPUT_ERROR ||
       loading === ANGULAR_REQUIRED_INPUT_ERROR ||
+      fetchStatus === ANGULAR_REQUIRED_INPUT_ERROR ||
       status === ANGULAR_REQUIRED_INPUT_ERROR
     ) {
       return true;
     }
+    if (typeof loading === "boolean") return loading;
+    if (typeof fetchStatus === "string") {
+      return status === "pending" && fetchStatus === "fetching";
+    }
   }
-  return projectQuery(store)?.state.status === "pending";
+  const state = projectQuery(store)?.state;
+  return state?.status === "pending" && state.fetchStatus === "fetching";
 }
 
 /** Indexes a validated tile row array by tile ID. */
@@ -472,15 +478,6 @@ export function inspectProjectStoreInView(
   return { matches, inputPending };
 }
 
-/** Collects live `ProjectStore` candidates from one Angular `LView` array. */
-export function findProjectStoreInView(
-  view: unknown,
-  projectId: string,
-  seen = new Set<object>(),
-): ProjectStore[] {
-  return inspectProjectStoreInView(view, projectId, seen).matches;
-}
-
 /** Scans connected project route hosts and parent `LView` chains for verified stores. */
 function scanConnectedRouteViews(
   projectId: string,
@@ -489,7 +486,13 @@ function scanConnectedRouteViews(
   const matches: Array<{ store: ProjectStore; view: NgLView }> = [];
   let inputPending = false;
   const seenViews = new Set<NgLView>();
-  for (const host of document.querySelectorAll(PROJECT_ROUTE_HOST_SELECTOR)) {
+  const listedHosts = Array.from(document.querySelectorAll(PROJECT_ROUTE_HOST_SELECTOR));
+  const fallbackHost = listedHosts.length === 0
+    ? document.querySelector("aisandbox-root router-outlet:not([name]), app-root router-outlet:not([name])")
+        ?.nextElementSibling ?? null
+    : null;
+  const hosts = fallbackHost ? [fallbackHost] : listedHosts;
+  for (const host of hosts) {
     let cur: Element | null = host;
     for (let steps = 0; cur && steps < 6; steps += 1) {
       let view: NgLView | null = resolveLView(cur);
@@ -525,8 +528,24 @@ function hasPendingProjectStoreInput(projectId: string): boolean {
 export function isProjectRouteLoading(): boolean {
   if (document.querySelector(PROJECT_ROUTE_HOST_SELECTOR)) return false;
   if (document.querySelector("flow-landing-page")) return false;
+  if (document.querySelector("flow-loading-page, .projects-loading-container")) return true;
   if (document.readyState !== "complete") return true;
-  return Boolean(document.querySelector("aisandbox-root, app-root"));
+  const root = document.querySelector("aisandbox-root, app-root");
+  if (!root) return false;
+  if (root.childElementCount === 0) return true;
+  const outlet = root.querySelector("router-outlet:not([name])");
+  if (!outlet || outlet.nextElementSibling) return false;
+  for (const el of root.querySelectorAll("*")) {
+    if (
+      el !== outlet &&
+      el.tagName.includes("-") &&
+      !el.matches(SHELL_BANNER_SELECTOR) &&
+      !el.closest(SHELL_BANNER_SELECTOR)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Reports whether the current runtime has a bound and ready store for `projectId`. */
@@ -576,7 +595,7 @@ export function bindProjectStore(maps: unknown[], projectId: string): ProjectSto
   }
 
   if (!(runtimeState.ngLViewMap instanceof Map)) {
-    bindAngularViews(maps, PROJECT_ROUTE_HOST_SELECTOR);
+    bindAngularViews(maps, `${PROJECT_ROUTE_HOST_SELECTOR}, aisandbox-root, app-root`);
   }
 
   const seen = new Set<object>();
