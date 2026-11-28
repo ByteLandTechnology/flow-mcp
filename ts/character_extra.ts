@@ -13,7 +13,11 @@ import {
   isVisibleEnabled,
   setNativeValue,
 } from "./dom";
-import { frontendBuild, readBuildLabel, type VoiceConfirmationFormat } from "./frontend_builds";
+import {
+  frontendBuild,
+  readBuildLabel,
+  type VoiceConfirmationFormat,
+} from "./frontend_builds";
 import type { CharacterExtraOpRequest } from "./types";
 import { bindCustomVoiceReceipt, bindVoiceConfirmation } from "./voice_confirmation";
 

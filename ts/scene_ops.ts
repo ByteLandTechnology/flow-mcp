@@ -5,15 +5,14 @@
 
 import { createScene } from "./angular";
 import { delay } from "./dom";
-import { activeProjectStoreFormat } from "./frontend_builds";
+import { activeProjectStoreFormat, readBuildLabel } from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, SceneOpRequest } from "./types";
 
 /** Creates a scene or adds workflow clips to an existing scene. */
 export async function sceneOp(req: SceneOpRequest): Promise<unknown> {
   if (!activeProjectStoreFormat()) {
-    clearStore();
-    return { ok: false, error: "unsupported_front_end" };
+    return { ok: false, error: "unsupported_front_end", build: readBuildLabel() };
   }
   const helper = runtimeState.store;
   if (!helper || !helper.isCurrent()) {

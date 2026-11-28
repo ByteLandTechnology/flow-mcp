@@ -6,7 +6,7 @@
 import { buildProjectUrl, createScene, findRouter, navigateSpa, readAngularTooltip, withLViewMapCapture } from "./angular";
 import { findComposerWarning } from "./composer";
 import { delay, elText, hoverProbe, isDisabledProp, isVisibleEnabled, legacyTile, videoTrimBounds } from "./dom";
-import { activeProjectStoreFormat } from "./frontend_builds";
+import { activeProjectStoreFormat, readBuildLabel } from "./frontend_builds";
 import { writePromptBox } from "./prompt_writer";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, VideoOpRequest } from "./types";
@@ -51,8 +51,7 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
 
   if (action === "trim") {
     if (!activeProjectStoreFormat()) {
-      clearStore();
-      return { ok: false, error: "unsupported_front_end" };
+      return { ok: false, error: "unsupported_front_end", build: readBuildLabel() };
     }
     if (!helper || !helper.isCurrent()) {
       if (helper) clearStore();
@@ -141,22 +140,21 @@ export async function videoOp(req: VideoOpRequest): Promise<unknown> {
     const id = String(req?.asset_id || "").trim();
     const activeScene = /\/scene\/([^/?#]+)/.exec(location.pathname)?.[1];
     if (!activeScene || (req.scene_id && activeScene !== req.scene_id)) {
-      if (!activeProjectStoreFormat()) {
-        clearStore();
-        return { ok: false, error: "unsupported_front_end" };
-      }
-      if (!helper || !helper.isCurrent()) {
-        if (helper) clearStore();
-        return { ok: false, error: "store_not_bound" };
-      }
-      if (!helper.isReady()) {
-        return { ok: false, error: "store_loading" };
-      }
-      if (!(tileMap instanceof Map) || !helper.mutate) {
-        return { ok: false, error: "store_not_bound" };
-      }
       let sceneId = req?.scene_id ? String(req.scene_id).trim() : null;
       if (!sceneId) {
+        if (!activeProjectStoreFormat()) {
+          return { ok: false, error: "unsupported_front_end", build: readBuildLabel() };
+        }
+        if (!helper || !helper.isCurrent()) {
+          if (helper) clearStore();
+          return { ok: false, error: "store_not_bound" };
+        }
+        if (!helper.isReady()) {
+          return { ok: false, error: "store_loading" };
+        }
+        if (!(tileMap instanceof Map) || !helper.mutate) {
+          return { ok: false, error: "store_not_bound" };
+        }
         const wfId = String(tileMap.get(id)?.workflowId || id);
         const created = await createScene(helper, getMap, [wfId]);
         if (!created?.ok || !created.id) {

@@ -11,7 +11,10 @@ use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
 use crate::assets::{FlowAsset, list_assets_with_project, match_asset, trash_asset};
-use crate::character_bio::{edit_character_bio, set_character_bio};
+use crate::character_bio::{
+    confirm_character_bio_saved, edit_character_bio, open_verified_bio_store, set_character_bio,
+    update_character_form_fields,
+};
 use crate::db::FlowDb;
 use crate::download::download_resolved_asset;
 use crate::engine::{ChromeEngine, checked_runtime_result, validate_local_files};
@@ -20,8 +23,6 @@ use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_subroute_url,
     project_workspace_url,
 };
-use crate::project_route::character_id_from_url;
-use crate::project_store::ProjectStoreSession;
 use crate::queue::{ProgressCallback, SceneParams};
 use crate::voices::{
     VoiceRequest, apply_voice_with_fallback, delete_portrait, list_all_voices, scene_voice,
@@ -422,19 +423,12 @@ pub(crate) async fn create_or_update_character_job(
     let project_id = snap.project_id.clone();
     let project_title = snap.project_title.clone();
     let mut bio_store = if effective_bio.is_some() {
-        let store = ProjectStoreSession::open(engine).await?;
-        anyhow::ensure!(
-            project_id.as_deref() == Some(store.project_id()),
-            "The active project changed before the character update"
-        );
-        store
-            .call("characterBioOp", json!({ "action": "check" }), None)
-            .await?;
-        Some(store)
+        open_verified_bio_store(engine, project_id.as_deref()).await?
     } else {
         None
     };
     let editor_opened;
+    let mut form_bio_to_confirm: Option<String> = None;
     let mut net_rx = if look_prompt.is_some() || has_refs {
         Some(engine.subscribe_network().await?)
     } else {
@@ -542,60 +536,25 @@ pub(crate) async fn create_or_update_character_job(
                 format!("No character matches '{}' in active project", target_query)
             })?;
         on_progress(format!("editing character '{}'", target.name));
-        if let (Some(store), Some(bio)) = (bio_store.take(), effective_bio.as_deref()) {
-            set_character_bio(&store, &target.id, bio).await?;
+        let form_bio =
+            if let (Some(store), Some(bio)) = (bio_store.take(), effective_bio.as_deref()) {
+                set_character_bio(&store, &target.id, bio).await?;
+                None
+            } else {
+                effective_bio.as_deref()
+            };
+        if let Some(bio) = form_bio {
+            form_bio_to_confirm = Some(bio.to_owned());
         }
         editor_opened = true;
-
-        let payload = json!({
-            "action": "update",
-            "character_id": target.id,
-            "name": scene.new_name,
-        });
-        let mut res = engine
-            .call_flow_async("characterOp", json!([payload.clone()]))
-            .await?;
-        if let Some(nav_url) = res.get("need_navigate").and_then(|v| v.as_str()) {
-            if let (Some(pid), Some(cid)) =
-                (project_id_from_url(nav_url), character_id_from_url(nav_url))
-            {
-                open_character_editor(engine, nav_url, &pid, &cid).await?;
-            } else {
-                engine.navigate(nav_url).await?;
-                tokio::time::sleep(Duration::from_millis(1800)).await;
-                let _ = ensure_flow_store(engine).await;
-            }
-            res = engine
-                .call_flow_async("characterOp", json!([payload.clone()]))
-                .await?;
-        }
-        for _ in 0..25 {
-            if res.get("error").and_then(Value::as_str) != Some("store_loading") {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let _ = ensure_flow_store(engine).await;
-            res = engine
-                .call_flow_async("characterOp", json!([payload.clone()]))
-                .await?;
-        }
-        if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-            if engine
-                .current_url()
-                .await
-                .unwrap_or_default()
-                .contains("/character/")
-            {
-                exit_character_editor(engine, project_id.as_deref()).await;
-            }
-            anyhow::bail!(
-                "Failed to edit character '{}': {}",
-                target.id,
-                res.get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-            );
-        }
+        update_character_form_fields(
+            engine,
+            project_id.as_deref(),
+            &target.id,
+            scene.new_name.as_deref(),
+            form_bio,
+        )
+        .await?;
         let default_voice_name = scene
             .new_name
             .clone()
@@ -804,6 +763,9 @@ pub(crate) async fn create_or_update_character_job(
 
     if editor_opened {
         exit_character_editor(engine, project_id.as_deref()).await;
+    }
+    if let Some(ref bio) = form_bio_to_confirm {
+        confirm_character_bio_saved(engine, &char_id, bio).await?;
     }
 
     if let Some(err) = upload_err.or(look_err) {

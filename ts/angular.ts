@@ -11,7 +11,7 @@ import {
   normalizeFlowMediaUrl,
   readMediaUrl,
 } from "./dom";
-import { frontendBuild, readBuildLabel } from "./frontend_builds";
+import { frontendBuild, lContextViewFields, readBuildLabel } from "./frontend_builds";
 import { runtimeState } from "./state";
 import type { AngularRouter, FlowStoreHandle, FlowTile, NgLView } from "./types";
 
@@ -31,6 +31,11 @@ export function readOwn(obj: unknown, key: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** Returns true when `fn` carries an Angular signal symbol. */
+export function isAngularSignal(fn: Function): boolean {
+  return Object.getOwnPropertySymbols(fn).length > 0;
 }
 
 /** Returns `lv` if `lv` is a live Angular LView whose host node remains connected. */
@@ -83,12 +88,19 @@ export function resolveLView(elOrCtx: unknown): NgLView | null {
       ? runtimeState.ngLViewMap.get(raw) || null
       : null;
   }
-  if (raw && typeof raw === "object") {
+  if (raw && typeof raw === "object" && !(raw instanceof Node)) {
     const lView = readOwn(raw, "lView");
-    if (Array.isArray(lView)) return lView;
-    const contextField = frontendBuild(readBuildLabel())?.projectStore.lContextView;
-    const verifiedView = contextField ? readOwn(raw, contextField) : undefined;
-    return Array.isArray(verifiedView) ? verifiedView : null;
+    if (isLiveLView(lView)) return lView;
+    for (const contextField of lContextViewFields()) {
+      const candidateView = readOwn(raw, contextField);
+      if (isLiveLView(candidateView)) return candidateView;
+    }
+    const lViewId = readOwn(raw, "lViewId");
+    if (typeof lViewId === "number" && runtimeState.ngLViewMap instanceof Map) {
+      const mapped = runtimeState.ngLViewMap.get(lViewId);
+      return isLiveLView(mapped) ? mapped : null;
+    }
+    return null;
   }
   return null;
 }

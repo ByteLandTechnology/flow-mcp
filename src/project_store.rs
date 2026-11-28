@@ -41,7 +41,17 @@ impl<'a> ProjectStoreSession<'a> {
             let err = status.get("error").and_then(Value::as_str);
             if err == Some("collection_store_not_bound") && !dom_probed {
                 dom_probed = true;
-                let _ = engine.call_flow_async("discoverStore", json!([])).await;
+                if let Ok(discovery) = engine.call_flow_async("discoverStore", json!([])).await
+                    && discovery.get("error").and_then(Value::as_str)
+                        == Some("unsupported_front_end")
+                {
+                    status = json!({
+                        "ok": false,
+                        "error": "unsupported_front_end",
+                        "build": discovery.get("build").cloned().unwrap_or(Value::Null),
+                    });
+                    break;
+                }
                 status = engine
                     .call_flow_js("projectStoreStatus", json!([project_id]))
                     .await?;
@@ -94,6 +104,16 @@ impl<'a> ProjectStoreSession<'a> {
             (Err(error), None) => Err(error),
         }
     }
+}
+
+/// Returns true when `err` shows that direct store writes cannot run before sending a request.
+pub(crate) fn is_store_write_unavailable(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}");
+    !msg.contains("outcome_unknown")
+        && (msg.contains("unsupported_front_end")
+            || msg.contains("collection_store_not_bound")
+            || msg.contains("ambiguous_collection_store")
+            || msg.contains("project_upload_page_not_ready"))
 }
 
 /// Prepares the direct store for a status check without changing the page.

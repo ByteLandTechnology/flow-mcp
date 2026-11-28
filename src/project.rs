@@ -377,14 +377,14 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         );
         let status = store_loading_result(bind_current_store(engine, &project_id).await)?;
         let status_err = status.get("error").and_then(Value::as_str);
+        if status["ok"].as_bool() == Some(true) {
+            return Ok(());
+        }
         if status_err == Some("unsupported_front_end") {
             anyhow::bail!(
                 "Google Flow front end build is not supported (unsupported_front_end).{}",
                 build_suffix(engine).await
             );
-        }
-        if status["ok"].as_bool() == Some(true) {
-            return Ok(());
         }
         if status_err == Some("store_loading") {
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -473,9 +473,9 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
             );
         }
     }
+    ensure_flow_store(engine).await?;
     let mut last_err = "store_not_bound".to_string();
-    for _ in 0..25 {
-        ensure_flow_store(engine).await?;
+    for attempt in 0..25 {
         let snap = store_loading_result(engine.call_flow_js("readStoreSnapshot", json!([])).await)?;
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             return Ok(snap);
@@ -490,6 +490,15 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
                 "Google Flow front end build is not supported (unsupported_front_end).{}",
                 build_suffix(engine).await
             );
+        }
+        if attempt < 2
+            && matches!(
+                last_err.as_str(),
+                "store_not_bound" | "route_changed" | "project_mismatch"
+            )
+        {
+            ensure_flow_store(engine).await?;
+            continue;
         }
         let delay_ms = if matches!(
             last_err.as_str(),
@@ -682,28 +691,48 @@ async fn open_project(
     }))
 }
 
-/// Polls project snapshots until `projectTitle` holds `desired` after a short settle delay.
+/// Returns true when the header editable title control holds `desired` outside editing mode.
+async fn dom_project_title_matches(engine: &ChromeEngine, desired: &str) -> bool {
+    let Ok(res) = run_projects_op(engine, json!({ "action": "get_title" })).await else {
+        return false;
+    };
+    res.get("ok").and_then(Value::as_bool) == Some(true)
+        && res.get("editing").and_then(Value::as_bool) == Some(false)
+        && res.get("title").and_then(Value::as_str).map(str::trim) == Some(desired)
+}
+
+/// Polls project snapshots or the settled header title input until the title holds `desired`.
 async fn confirm_project_title(engine: &ChromeEngine, desired: &str) -> Result<String> {
     let deadline = Instant::now() + Duration::from_secs(6);
     tokio::time::sleep(Duration::from_millis(250)).await;
     while Instant::now() < deadline {
-        if let Ok(snap) = read_snapshot(engine).await
-            && snap
-                .get("projectTitle")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                == Some(desired)
-        {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            if let Ok(settled) = read_snapshot(engine).await
-                && settled
+        match read_snapshot(engine).await {
+            Ok(snap) => {
+                if snap
                     .get("projectTitle")
                     .and_then(Value::as_str)
                     .map(str::trim)
                     == Some(desired)
-            {
-                return Ok(desired.to_string());
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    if let Ok(settled) = read_snapshot(engine).await
+                        && settled
+                            .get("projectTitle")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            == Some(desired)
+                    {
+                        return Ok(desired.to_string());
+                    }
+                }
             }
+            Err(_) if dom_project_title_matches(engine, desired).await => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                if dom_project_title_matches(engine, desired).await {
+                    return Ok(desired.to_string());
+                }
+            }
+            Err(_) => {}
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -783,7 +812,8 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
             let _ = open_project(engine, Some(pid), None).await?;
         }
     } else {
-        ensure_flow_store(engine).await?;
+        ensure_project_workspace_root(engine).await?;
+        let _ = ensure_flow_store(engine).await;
     }
     let res = run_projects_op(engine, json!({ "action": "set_title", "title": trimmed })).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {

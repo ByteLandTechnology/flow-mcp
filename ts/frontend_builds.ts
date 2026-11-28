@@ -8,6 +8,7 @@ import type { AgentExport } from "./agent_protocol";
 import type { AgentWireFormat } from "./agent_wire";
 import type { AgentSettingsExport } from "./agent_settings_protocol";
 import type { MediaUploadExport } from "./project_upload";
+import { runtimeState } from "./state";
 
 /** Field names for the collection write requests of one build. */
 export interface CollectionWriteFormat {
@@ -836,7 +837,10 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
     legacy: true,
     projectStore: NOVEMBER_17_STORE,
+    characterPreview: LEGACY_CHARACTER_PREVIEW,
+    characterVoice: LEGACY_CHARACTER_VOICE,
     characterCreate: { ...LEGACY_CHARACTER_CREATE, lifecycle: "Ca", destroyed: "Wa" },
+    projectTitle: LEGACY_PROJECT_TITLE,
     operations: {
       collection_write: { tileId: "Uc", tileChange: "df", moveTarget: "Sj", moveTiles: "Bb" },
       asset_trash_store: {
@@ -852,8 +856,10 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
   ["boq_labs-ai-sandbox-frontend_20261118.14_p0", {
     projectStore: NOVEMBER_18_STORE,
+    characterPreview: LEGACY_CHARACTER_PREVIEW,
     characterCreate: { ...LEGACY_CHARACTER_CREATE, lifecycle: "Ba", destroyed: "Va" },
     characterVoice: { ...LEGACY_CHARACTER_VOICE, lifecycle: "Ba", destroyed: "Va" },
+    projectTitle: LEGACY_PROJECT_TITLE,
     operations: {
       collection_write: { tileId: "Vc", tileChange: "jf", moveTarget: "Wj", moveTiles: "Ab" },
       asset_trash_store: {
@@ -904,6 +910,14 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
 ]);
 
+/** Verified builds ordered from newest to oldest for read-only store discovery. */
+const CASCADED_BUILDS: readonly FrontendBuild[] = Array.from(VERIFIED_BUILDS.values()).reverse();
+
+/** Verified project store formats ordered from newest to oldest for read-only discovery. */
+const CASCADED_PROJECT_STORES: readonly ProjectStoreFormat[] = Array.from(
+  new Set(CASCADED_BUILDS.map((b) => b.projectStore)),
+);
+
 /** Returns the exact label published by the active page. */
 export function readBuildLabel(): string | null {
   const label = window.WIZ_global_data?.cfb2h;
@@ -915,9 +929,38 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
   return label === null ? undefined : VERIFIED_BUILDS.get(label);
 }
 
+/** Returns the verified build that owns `format`, or undefined. */
+function frontendBuildForStore(format: ProjectStoreFormat | null | undefined): FrontendBuild | undefined {
+  if (!format) return undefined;
+  return CASCADED_BUILDS.find((build) => build.projectStore === format);
+}
+
+/** Returns the active verified build, or the build paired with the bound read-only store. */
+function boundOrActiveBuild(): FrontendBuild | undefined {
+  return frontendBuild(readBuildLabel()) ?? frontendBuildForStore(runtimeState.storeFormat);
+}
+
 /** Returns the verified project store layout of the active build, or undefined. */
 export function activeProjectStoreFormat(): ProjectStoreFormat | undefined {
   return frontendBuild(readBuildLabel())?.projectStore;
+}
+
+/** Returns candidate store layouts from newest to oldest when the active build is unverified. */
+export function projectStoreFormats(): readonly ProjectStoreFormat[] {
+  const verified = activeProjectStoreFormat();
+  return verified ? [verified] : CASCADED_PROJECT_STORES;
+}
+
+/** Returns candidate Angular `LContext` view property names for the active or cascaded store. */
+export function lContextViewFields(): readonly string[] {
+  const paired = boundOrActiveBuild()?.projectStore;
+  if (paired) return [paired.lContextView];
+  return Array.from(new Set(CASCADED_PROJECT_STORES.map((s) => s.lContextView)));
+}
+
+/** Returns the scene clip and history field names paired with the active or bound store. */
+export function sceneTileFormat(): SceneTileFormat | undefined {
+  return boundOrActiveBuild()?.projectStore.scene;
 }
 
 /** Adds the native fields used by the verified project store mutator. */
@@ -954,27 +997,27 @@ export function withMutationAliases(payload: Record<string, unknown>): Record<st
   return payload;
 }
 
-/** Returns the character preview field mapping for the active build. */
-export function characterPreviewFormat(): CharacterPreviewFormat {
-  return frontendBuild(readBuildLabel())?.characterPreview ?? LEGACY_CHARACTER_PREVIEW;
+/** Returns the verified character preview field mapping for the active build. */
+export function characterPreviewFormat(): CharacterPreviewFormat | undefined {
+  return frontendBuild(readBuildLabel())?.characterPreview;
 }
 
-/** Returns the character voice form mapping for the active build. */
-export function characterVoiceFormat(): CharacterVoiceFormat {
-  return frontendBuild(readBuildLabel())?.characterVoice ?? LEGACY_CHARACTER_VOICE;
+/** Returns the verified character voice form mapping for the active build. */
+export function characterVoiceFormat(): CharacterVoiceFormat | undefined {
+  return frontendBuild(readBuildLabel())?.characterVoice;
 }
 
-/** Returns the character creation and store lifecycle mapping for the active build. */
-export function characterCreateFormat(): CharacterCreateFormat {
-  return frontendBuild(readBuildLabel())?.characterCreate ?? LEGACY_CHARACTER_CREATE;
+/** Returns the verified character creation mapping for the active build. */
+export function characterCreateFormat(): CharacterCreateFormat | undefined {
+  return frontendBuild(readBuildLabel())?.characterCreate;
 }
 
-/** Returns the editable project title mapping for the active build. */
-export function projectTitleFormat(): ProjectTitleFormat {
-  return frontendBuild(readBuildLabel())?.projectTitle ?? LEGACY_PROJECT_TITLE;
+/** Returns the verified editable project title mapping for the active build. */
+export function projectTitleFormat(): ProjectTitleFormat | undefined {
+  return frontendBuild(readBuildLabel())?.projectTitle;
 }
 
-/** Returns the verified snapshot field descriptors for the active build. */
+/** Returns the snapshot field descriptors paired with the active or bound store. */
 export function snapshotFormat(): SnapshotFormat | undefined {
-  return frontendBuild(readBuildLabel())?.snapshot;
+  return boundOrActiveBuild()?.snapshot;
 }

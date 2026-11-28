@@ -3,10 +3,16 @@
 
 // Bind, validate, read, and mutate the active project store from verified build formats.
 
-import { isNgLViewMap, readOwn } from "./angular";
+import { isAngularSignal, isNgLViewMap, readOwn } from "./angular";
 import { delay } from "./dom";
-import { activeProjectStoreFormat, readBuildLabel, withMutationAliases } from "./frontend_builds";
+import {
+  activeProjectStoreFormat,
+  projectStoreFormats,
+  readBuildLabel,
+  withMutationAliases,
+} from "./frontend_builds";
 import type { ProjectStoreFormat } from "./frontend_builds";
+import { hasReadableCascadedTiles } from "./frontend_compatibility";
 import { clearStore, runtimeState } from "./state";
 import type { FlowStoreHandle, FlowTile, NgLView, StoreProbeCheck } from "./types";
 
@@ -165,11 +171,6 @@ export function projectStore(projectId: string, expectedSession: string): Projec
   return active && session === expectedSession ? active : null;
 }
 
-/** Returns true when `fn` carries an Angular signal symbol. */
-function isAngularSignal(fn: Function): boolean {
-  return Object.getOwnPropertySymbols(fn).length > 0;
-}
-
 /** Resolves an async promise runner from the verified `mutator` field on the store. */
 function resolveAsyncMutator(
   owner: object,
@@ -255,7 +256,6 @@ async function dispatchStoreMutation(
   rawPayload: Record<string, unknown>,
 ): Promise<unknown> {
   if (!activeProjectStoreFormat()) {
-    clearProjectStore();
     throw new Error("unsupported_front_end");
   }
   if (activeBoundStore() !== store || !isCurrent(store)) {
@@ -309,16 +309,30 @@ export function installProjectStore(store: ProjectStore, views?: Map<number, NgL
   if (views) runtimeState.ngLViewMap = views;
   runtimeState.projectId = store.projectId;
   runtimeState.routePath = location.pathname;
+  runtimeState.storeFormat = store.format;
   runtimeState.store = handle;
 }
 
-/** Resolves the store class constructor for the active verified build. */
-function verifiedStoreLayout(): { format: ProjectStoreFormat; storeClass: Function } | null {
-  const format = activeProjectStoreFormat();
-  if (!format) return null;
+/** Returns true when the loaded unverified front end exports none of the known store classes. */
+export function hasNoCascadedStoreClasses(): boolean {
+  return (
+    !activeProjectStoreFormat() &&
+    Boolean(readOwn(window, "default_AiSandboxAngularFrontend")) &&
+    verifiedStoreLayouts().length === 0
+  );
+}
+
+/** Resolves candidate store class constructors ordered from newest to oldest. */
+function verifiedStoreLayouts(): Array<{ format: ProjectStoreFormat; storeClass: Function }> {
   const frontEnd = readOwn(window, "default_AiSandboxAngularFrontend");
-  const storeClass = readOwn(frontEnd, format.storeClass);
-  return typeof storeClass === "function" ? { format, storeClass } : null;
+  const layouts: Array<{ format: ProjectStoreFormat; storeClass: Function }> = [];
+  for (const format of projectStoreFormats()) {
+    const storeClass = readOwn(frontEnd, format.storeClass);
+    if (typeof storeClass === "function") {
+      layouts.push({ format, storeClass });
+    }
+  }
+  return layouts;
 }
 
 /** Collects live `ProjectStore` candidates from one Angular `LView` array. */
@@ -328,23 +342,27 @@ export function findProjectStoreInView(
   seen = new Set<object>(),
 ): ProjectStore[] {
   if (!Array.isArray(view)) return [];
-  const layout = verifiedStoreLayout();
-  if (!layout) return [];
-  const { format, storeClass } = layout;
+  const layouts = verifiedStoreLayouts();
+  if (layouts.length === 0) return [];
   const matches: ProjectStore[] = [];
   const consider = (value: unknown): void => {
     if (!value || typeof value !== "object" || seen.has(value)) return;
     seen.add(value);
-    if (!(value instanceof storeClass)) return;
-    const candidate: ProjectStore = { projectId, service: value, format };
-    if (isCurrent(candidate)) matches.push(candidate);
+    for (const { format, storeClass } of layouts) {
+      if (!(value instanceof storeClass)) continue;
+      const candidate: ProjectStore = { projectId, service: value, format };
+      if (isCurrent(candidate)) matches.push(candidate);
+      break;
+    }
   };
 
   for (const slot of view) {
     consider(slot);
     if (!slot || typeof slot !== "object" || slot instanceof Node) continue;
-    for (const key of format.componentSlots) {
-      consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
+    for (const { format } of layouts) {
+      for (const key of format.componentSlots) {
+        consider(Object.getOwnPropertyDescriptor(slot, key)?.value);
+      }
     }
   }
   return matches;
@@ -353,41 +371,55 @@ export function findProjectStoreInView(
 /** Reports whether the current runtime has a bound and ready store for `projectId`. */
 export function projectStoreStatus(projectId: string): ProjectStoreStatus {
   const build = readBuildLabel();
-  if (!activeProjectStoreFormat()) {
+  if (projectInRoute() !== projectId) return { ok: false, error: "project_changed", build };
+  if (hasNoCascadedStoreClasses()) {
     clearProjectStore();
     return { ok: false, error: "unsupported_front_end", build };
   }
-  if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
   const store = currentProjectStore(projectId);
-  if (!store) return { ok: false, error: "collection_store_not_bound" };
+  if (!store) return { ok: false, error: "collection_store_not_bound", build };
   if (isProjectStorePending(store)) {
-    return { ok: false, bound: true, error: "store_loading" };
+    return { ok: false, bound: true, error: "store_loading", build };
   }
-  if (!readProjectStore(store)) {
-    return { ok: false, error: "collection_store_not_bound" };
+  const tiles = readProjectStore(store);
+  if (!tiles) {
+    if (!activeProjectStoreFormat()) {
+      clearProjectStore();
+      return { ok: false, error: "unsupported_front_end", build };
+    }
+    return { ok: false, error: "collection_store_not_bound", build };
+  }
+  if (!activeProjectStoreFormat() && !hasReadableCascadedTiles(tiles)) {
+    clearProjectStore();
+    return { ok: false, error: "unsupported_front_end", build };
   }
   session ??= crypto.randomUUID();
-  return { ok: true, bound: true, session };
+  return { ok: true, bound: true, session, build };
 }
 
-/** Selects a single verified store. If several stores match, selects the only ready store. */
+/** Selects a store from the newest matching format, preferring the single ready store. */
 export function selectProjectStoreCandidate(candidates: ProjectStore[]): ProjectStore | undefined {
-  if (candidates.length === 1) return candidates[0];
-  const ready = candidates.filter((store) => Boolean(readProjectStore(store)));
-  return ready.length === 1 ? ready[0] : undefined;
+  for (const format of projectStoreFormats()) {
+    const matching = candidates.filter((store) => store.format === format);
+    if (matching.length === 0) continue;
+    if (matching.length === 1) return matching[0];
+    const ready = matching.filter((store) => Boolean(readProjectStore(store)));
+    return ready.length === 1 ? ready[0] : undefined;
+  }
+  return undefined;
 }
 
-/** Binds one live verified store found in the Angular view registry. */
+/** Binds one live store found in the Angular view registry using the newest matching verified layout. */
 export function bindProjectStore(maps: unknown[], projectId: string): ProjectStoreStatus {
   const build = readBuildLabel();
-  if (!activeProjectStoreFormat()) {
+  if (projectInRoute() !== projectId) return { ok: false, error: "project_changed", build };
+  if (hasNoCascadedStoreClasses()) {
     clearProjectStore();
     return { ok: false, error: "unsupported_front_end", build };
   }
-  if (projectInRoute() !== projectId) return { ok: false, error: "project_changed" };
-  if (!verifiedStoreLayout()) {
+  if (verifiedStoreLayouts().length === 0) {
     clearProjectStore();
-    return { ok: false, error: "collection_store_not_bound" };
+    return { ok: false, error: "collection_store_not_bound", build };
   }
 
   const seen = new Set<object>();
@@ -406,8 +438,8 @@ export function bindProjectStore(maps: unknown[], projectId: string): ProjectSto
   if (!selected) {
     clearProjectStore();
     return candidates.length > 1
-      ? { ok: false, error: "ambiguous_collection_store" }
-      : { ok: false, error: "collection_store_not_bound" };
+      ? { ok: false, error: "ambiguous_collection_store", build }
+      : { ok: false, error: "collection_store_not_bound", build };
   }
   installProjectStore(selected.store, selected.views);
   return projectStoreStatus(projectId);
@@ -437,6 +469,9 @@ async function submitProjectMutation(
   store: ProjectStore,
   payload: Record<string, unknown>,
 ): Promise<void> {
+  if (!activeProjectStoreFormat()) {
+    throw new Error("unsupported_front_end");
+  }
   const dispatch = storeDispatcher(store);
   if (!isCurrent(store) || activeBoundStore() !== store || typeof dispatch !== "function") {
     throw new Error("project_store_changed");

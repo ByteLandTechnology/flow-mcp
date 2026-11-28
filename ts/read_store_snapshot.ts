@@ -5,8 +5,9 @@
 
 import { readOwn } from "./angular";
 import { characterPersonalityNotes, characterVoice } from "./character_bio";
-import { activeProjectStoreFormat, snapshotFormat } from "./frontend_builds";
-import { currentProjectStore, projectInRoute } from "./project_store";
+import { frontendBuild, readBuildLabel, snapshotFormat } from "./frontend_builds";
+import { hasReadableCascadedTiles } from "./frontend_compatibility";
+import { clearProjectStore, currentProjectStore, projectInRoute } from "./project_store";
 import { sceneContents } from "./scene_tiles";
 import {
   asHttpOrDataUrl,
@@ -182,10 +183,6 @@ function normalizeVoiceVal(v: unknown): string | null {
 
 /** Reads project tiles, scenes, characters, and collections from bound runtime state. */
 export function readStoreSnapshot(): StoreSnapshotResult {
-  if (!activeProjectStoreFormat()) {
-    clearStore();
-    return { ok: false, error: "unsupported_front_end" };
-  }
   const match = /\/project\/([^/?#]+)/.exec(location.pathname || "");
   const projectId = match ? match[1] : null;
   const helper = runtimeState.store;
@@ -210,6 +207,10 @@ export function readStoreSnapshot(): StoreSnapshotResult {
   const tileMap = helper.getTileMap();
   if (!(tileMap instanceof Map)) {
     return { ok: false, error: "store_not_bound" };
+  }
+  if (!frontendBuild(readBuildLabel()) && !hasReadableCascadedTiles(tileMap)) {
+    clearProjectStore();
+    return { ok: false, error: "unsupported_front_end", build: readBuildLabel() };
   }
 
   const { assets, collections } = readStoreTiles(tileMap);

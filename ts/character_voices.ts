@@ -3,7 +3,7 @@
 
 // List and assign Google Flow character voices inside the character editor.
 
-import { readOwn, startMapCapture, type NgContextCarrier } from "./angular";
+import { readOwn, resolveLView, startMapCapture, type NgContextCarrier } from "./angular";
 import { VOICE_ICON_WORDS, voicePane } from "./character_extra";
 import {
   clickButtonByRegex,
@@ -55,11 +55,13 @@ export async function characterVoiceOp(
   const format = characterVoiceFormat();
 
   function isFormBusy(comp: CharacterFormComponent | null): boolean {
+    if (!format) return false;
     const busyFn = readOwn(comp, format.busy);
     return typeof busyFn === "function" && Boolean(busyFn.call(comp));
   }
 
   function getCharacterFormInstance(): CharacterFormComponent | null {
+    if (!format) return null;
     const form = document.querySelector("flow-character-form");
     if (!form) return null;
     const isDisposed = (cand: AngularLifecycleHandle): boolean => {
@@ -118,13 +120,14 @@ export async function characterVoiceOp(
       };
       return walk(rootLv, 0);
     };
-    const formNg = (form as NgContextCarrier).__ngContext__;
+    const formLv = resolveLView(form);
     const direct =
-      scanLView(formNg, isExactComp) || scanLView(formNg, isFormComp);
+      scanLView(formLv, isExactComp) || scanLView(formLv, isFormComp);
     if (direct) {
       formComponents.set(form, direct);
       return direct;
     }
+    const formNg = (form as NgContextCarrier).__ngContext__;
     if (typeof formNg !== "number" || probedForms.has(form)) {
       return null;
     }
@@ -215,7 +218,7 @@ export async function characterVoiceOp(
   function readVoiceMap(
     comp: CharacterFormComponent | null,
   ): Map<unknown, RawVoiceEntry> | null {
-    if (!comp) return null;
+    if (!comp || !format) return null;
     try {
       const mapFn = readOwn(comp, format.voiceMap);
       const voiceMap = typeof mapFn === "function" ? mapFn.call(comp) : null;
@@ -271,6 +274,7 @@ export async function characterVoiceOp(
     comp: CharacterFormComponent | null;
     voices: NormalizedVoiceItem[];
   }> {
+    if (!format) return { comp: null, voices: [] };
     await waitForVoiceHost(40);
     let lastComp: CharacterFormComponent | null = null;
     for (let i = 0; i < maxTicks; i++) {
@@ -484,15 +488,21 @@ export async function characterVoiceOp(
       });
     const matchedComp =
       findVoice(compVoices, true) || findVoice(compVoices, false);
-    const recordSetter = readOwn(comp, format.selectedRecord) as
-      | { set?: (raw: RawVoiceEntry) => void }
-      | undefined;
-    const idSetter = readOwn(comp, format.selectedVoice) as
-      | { set?: (id: string) => void }
-      | undefined;
-    const changeEmitter = readOwn(comp, format.changeEmitter) as
-      | { emit?: (id: string) => void }
-      | undefined;
+    const recordSetter = format
+      ? (readOwn(comp, format.selectedRecord) as
+          | { set?: (raw: RawVoiceEntry) => void }
+          | undefined)
+      : undefined;
+    const idSetter = format
+      ? (readOwn(comp, format.selectedVoice) as
+          | { set?: (id: string) => void }
+          | undefined)
+      : undefined;
+    const changeEmitter = format
+      ? (readOwn(comp, format.changeEmitter) as
+          | { emit?: (id: string) => void }
+          | undefined)
+      : undefined;
     if (
       comp &&
       matchedComp?._raw &&
