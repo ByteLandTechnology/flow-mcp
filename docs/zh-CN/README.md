@@ -17,7 +17,7 @@
 在宿主机上安装 Node.js `18` 或更高版本，以及 Google Chrome 或 Chromium：
 
 ```sh
-npx -y @flow-mcp/cli --help
+npx -y @flow-mcp/cli@latest --help
 ```
 
 或者全局安装 CLI：
@@ -58,7 +58,7 @@ cargo build --release
   "mcpServers": {
     "flow-mcp": {
       "command": "npx",
-      "args": ["-y", "@flow-mcp/cli", "serve", "--home", "/path/to/.flow-mcp"],
+      "args": ["-y", "@flow-mcp/cli@latest", "serve", "--home", "/path/to/.flow-mcp"],
       "env": {
         "FLOW_MCP_PAUSE": "25,70"
       }
@@ -67,29 +67,33 @@ cargo build --release
 }
 ```
 
-## Claude Code 插件
+## Agent 插件
 
-安装插件后，agent 无需手动配置即可使用 `flow-mcp`。插件会注册 MCP 服务器，并附带 skill，涵盖工作前检查、一次性的 Google 登录、任务等待和点数安全：
+安装 agent 插件后，agent 无需手动配置即可使用 `flow-mcp`。插件会注册 MCP 服务器，并附带 skill，涵盖工作前检查、一次性的 Google 登录、任务等待和点数安全。
+
+Claude Code：
 
 ```sh
 claude plugin marketplace add ByteLandTechnology/flow-mcp
 claude plugin install flow-mcp
 ```
 
-在 Codex 中，把同一个仓库添加为 marketplace：
+Codex（把同一个仓库添加为 marketplace）：
 
 ```sh
 codex plugin marketplace add ByteLandTechnology/flow-mcp
 codex plugin add flow-mcp --marketplace flow-mcp
 ```
 
-在 Antigravity（`agy`）中，克隆本仓库后从目录安装插件：
+Antigravity（`agy`）：使用完整的 GitHub URL 安装插件。`ByteLandTechnology/flow-mcp` 这样的简写会失败。也可以传入本地克隆的路径：
 
 ```sh
-agy plugin install /path/to/flow-mcp
+agy plugin install https://github.com/ByteLandTechnology/flow-mcp
 ```
 
 Google 登录需要真人在可见的 Chrome 窗口中操作一次，之后 agent 即可无需人工介入。
+
+关于批准、并发会话和版本的注意事项，请阅读[快速入门](quickstart.md)。
 
 ## 文档目录
 
@@ -98,7 +102,7 @@ Google 登录需要真人在可见的 Chrome 窗口中操作一次，之后 agen
 | 指南 | 类型 | 主要内容 |
 | :--- | :--- | :--- |
 | [快速开始](quickstart.md) | 教程 | 安装 `flow-mcp`、配置客户端、首次登录以及生成视频 |
-| [架构设计](architecture.md) | 原理解析 | 双模式 `ChromeEngine`、DBSC 交接、`JobQueue`、45 秒等待上限与 `<home>` 安全边界 |
+| [架构设计](architecture.md) | 原理解析 | 双模式 `ChromeEngine`、DBSC 交接、`JobQueue`、45 秒等待上限、`<home>` 安全边界与 agent 插件 |
 | [工作流指南](workflows.md) | 操作步骤 | 视频与图像任务、角色设置、编辑、场景、`read_chunk` 与 Cookie 同步 |
 | [工具参考](tools-reference.md) | 参考手册 | CLI 选项、环境变量、MCP 资源与全部 MCP 工具 |
 

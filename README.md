@@ -17,7 +17,7 @@ A single-worker `JobQueue` runs generation, edit, video extend, and character jo
 Install Node.js `18` or newer and Google Chrome or Chromium on your host computer:
 
 ```sh
-npx -y @flow-mcp/cli --help
+npx -y @flow-mcp/cli@latest --help
 ```
 
 Or install the CLI globally:
@@ -58,7 +58,7 @@ Add `@flow-mcp/cli` to your MCP stdio client configuration (`mcpServers`):
   "mcpServers": {
     "flow-mcp": {
       "command": "npx",
-      "args": ["-y", "@flow-mcp/cli", "serve", "--home", "/path/to/.flow-mcp"],
+      "args": ["-y", "@flow-mcp/cli@latest", "serve", "--home", "/path/to/.flow-mcp"],
       "env": {
         "FLOW_MCP_PAUSE": "25,70"
       }
@@ -67,29 +67,33 @@ Add `@flow-mcp/cli` to your MCP stdio client configuration (`mcpServers`):
 }
 ```
 
-## Claude Code plugin
+## Agent plugins
 
-Install the plugin to let an agent use `flow-mcp` without manual setup. The plugin registers the MCP server and adds a skill for the check before work, the one-time Google sign-in, job waiting, and credit safety:
+Install an agent plugin to let an agent use `flow-mcp` without manual setup. The plugin registers the MCP server and adds a skill for the check before work, the one-time Google sign-in, job waiting, and credit safety.
+
+Claude Code:
 
 ```sh
 claude plugin marketplace add ByteLandTechnology/flow-mcp
 claude plugin install flow-mcp
 ```
 
-For Codex, add the same repository as a marketplace:
+Codex (add the same repository as a marketplace):
 
 ```sh
 codex plugin marketplace add ByteLandTechnology/flow-mcp
 codex plugin add flow-mcp --marketplace flow-mcp
 ```
 
-For Antigravity (`agy`), clone this repository and install the plugin from the directory:
+Antigravity (`agy`): install the plugin from the full GitHub URL. A short form such as `ByteLandTechnology/flow-mcp` fails. You can also give the path of a local clone:
 
 ```sh
-agy plugin install /path/to/flow-mcp
+agy plugin install https://github.com/ByteLandTechnology/flow-mcp
 ```
 
 Google Sign-In needs a person in a visible Chrome window one time. After that, the agent works without a person.
+
+Read [Quickstart](docs/en/quickstart.md) for notes on approvals, concurrent sessions, and versions.
 
 ## Documentation map
 
@@ -98,7 +102,7 @@ Read the guide sections for each task:
 | Guide | Focus | Key topics |
 | :--- | :--- | :--- |
 | [Quickstart](docs/en/quickstart.md) | Tutorial | Install `flow-mcp`, configure a client, sign in, and generate a video |
-| [Architecture](docs/en/architecture.md) | Explanation | Dual-mode `ChromeEngine`, DBSC handoff, `JobQueue`, 45s wait limit, and `<home>` security |
+| [Architecture](docs/en/architecture.md) | Explanation | Dual-mode `ChromeEngine`, DBSC handoff, `JobQueue`, 45s wait limit, `<home>` security, and agent plugins |
 | [Workflows](docs/en/workflows.md) | Procedures | Video and image jobs, characters, edits, scenes, `read_chunk`, and cookie sync |
 | [Tools Reference](docs/en/tools-reference.md) | Reference | CLI options, environment variables, MCP resources, and MCP tools |
 

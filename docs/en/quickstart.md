@@ -17,7 +17,7 @@ Choose one of these three methods:
 - **Method A — Run with `npx` or `npm` (recommended)**:
 
 ```sh
-npx -y @flow-mcp/cli --help
+npx -y @flow-mcp/cli@latest --help
 ```
 
 Or install globally to add `flow-mcp` to `PATH`:
@@ -51,7 +51,7 @@ Add `flow-mcp` to your MCP stdio client configuration (`mcpServers`):
     "flow-mcp": {
       "command": "npx",
       "args": [
-        "-y", "@flow-mcp/cli", "serve",
+        "-y", "@flow-mcp/cli@latest", "serve",
         "--home", "/path/to/.flow-mcp"
       ],
       "env": {
@@ -73,29 +73,48 @@ claude mcp add --transport http flow-mcp http://<server-ip>:8765/mcp --header "A
 
 Refer to [Tools Reference](tools-reference.md#http-transport) for the HTTP options and the security rules.
 
-### Option: install the Claude Code plugin
+### Option: install an agent plugin
 
-The plugin registers the MCP server and adds a skill that tells the agent how to use the tools. The skill checks the session, asks for the Google sign-in one time, waits for jobs, and warns before it uses many credits.
+Install an agent plugin to let an agent use `flow-mcp` without manual setup. The plugin registers the MCP server and adds a skill for the check before work, the one-time Google sign-in, job waiting, and credit safety.
+
+Claude Code:
 
 ```sh
 claude plugin marketplace add ByteLandTechnology/flow-mcp
 claude plugin install flow-mcp
 ```
 
-For Codex, use the same repository as a marketplace:
+Codex (add the same repository as a marketplace):
 
 ```sh
 codex plugin marketplace add ByteLandTechnology/flow-mcp
 codex plugin add flow-mcp --marketplace flow-mcp
 ```
 
-For Antigravity (`agy`), clone the repository and install the plugin from the directory:
+Antigravity (`agy`): install the plugin from the full GitHub URL. A short form such as `ByteLandTechnology/flow-mcp` fails. You can also give the path of a local clone:
 
 ```sh
-agy plugin install /path/to/flow-mcp
+agy plugin install https://github.com/ByteLandTechnology/flow-mcp
 ```
 
 After you sign in once (step 3), the agent works without a person.
+
+#### Notes for agents
+
+- **One session at a time.** Only one `flow-mcp` process can use a Chrome profile. Do not run two agent sessions with the same `--home` at the same time.
+- **First sign-in.** If you are not signed in, the agent calls `flow_login`. Sign in to Google in the Chrome window one time. Later sessions do not ask again.
+- **Codex approvals.** In a non-interactive run (`codex exec`), Codex rejects MCP tool calls that need approval. To approve all calls of this server, add this to `~/.codex/config.toml`. This also approves tools that use credits:
+
+```toml
+[mcp_servers.flow-mcp]
+command = "npx"
+args = ["-y", "@flow-mcp/cli@latest", "serve"]
+default_tools_approval_mode = "approve"
+```
+
+- **Antigravity.** `agy` installs from the full GitHub URL and keeps a full copy of the repository. It reads `mcp_config.json`. This repository keeps that file equal to `.mcp.json`, and `cargo xtask check` compares them.
+- **Version.** The plugins start the server with `@flow-mcp/cli@latest`. Without `@latest`, `npx` can run an old cached version.
+- **Subagents.** A Claude Code subagent can call the tools and the skill. Other clients are not tested.
 
 ## 3. Sign in for the first time
 

@@ -72,3 +72,29 @@ Google 认证会在交互登录期间检查设备绑定会话凭据（DBSC）与
 3. **页面内认证抓取与实时 CDP Cookie 回退**：对于未签名的 Google 与 Flow URL，`ChromeEngine` 优先在 Flow 页面内执行 `fetchMedia`，失败时回退到带 `Referer: https://flow.google.com/` 与实时 Chrome CDP Cookie 的 `reqwest` 下载。
 4. **校验与自然命名**：`flow-mcp` 拒绝空字节文件并校验 `Content-Type` 与文件魔数。它按 `Content-Disposition`、URL 路径或 `<asset_id>.<ext>` 选择文件名，处理重名冲突并更新 SQLite（`downloads`）。
 5. **MCP 资源服务**：`flow-mcp` 将每个下载项注册为 `flow://downloads/{id}` 与 `flow://downloads/asset/{asset_id}`。`resources/list` 每页返回 `100` 条项目。`resources/read` 以 Base64 提供不超过 `64 MiB` 的文件，而 `flow_downloads`（`action="read_chunk"`）按分片读取更大的文件。
+
+## 5. Agent 插件
+
+本仓库同时是三个 agent 客户端的插件。插件不增加任何 Rust 或 TypeScript 代码，只告诉各客户端如何启动 `flow-mcp`，并给 agent 一个 skill。
+
+| 客户端 | 清单 | MCP 配置 |
+| :--- | :--- | :--- |
+| Claude Code | `.claude-plugin/plugin.json` 与 `marketplace.json` | `.mcp.json` |
+| Codex | `.codex-plugin/plugin.json` 与 `.agents/plugins/marketplace.json` | `.mcp.json` |
+| Antigravity（`agy`） | `plugin.json` | `mcp_config.json`（`.mcp.json` 的副本） |
+
+三个客户端加载同一个 skill：`skills/flow-mcp/SKILL.md` 与 `skills/flow-mcp/references/`。
+
+**谁启动 MCP 服务器。** 每个会话开始时，客户端以标准输入输出的子进程方式启动 `npx -y @flow-mcp/cli@latest serve`。`flow-mcp` 随后启动 Chrome 并获取 `flow-mcp.lock`。会话结束时，客户端停止 `flow-mcp`。同一个 `<home>` 上的第二个会话会因为锁而失败。
+
+**skill 让 agent 做什么。**
+
+1. 调用 `flow_status`。如果工具不存在，告诉用户如何注册服务器。
+2. 如果会话尚未登录，请用户通过 `flow_login` 登录一次。这是唯一需要真人的步骤。
+3. 检查前端 build，然后开始工作。`flow_generate` 默认生成视频，所以图片需要 `mode: "image"`。
+4. 反复调用 `flow_wait` 直到任务结束，因为一次调用约等待 45 秒。
+5. 大批量任务前提醒用户；遇到「异常活动」拦截时，重试不超过一次。
+
+**一致性检查。** `cargo xtask check` 确保三个 `plugin.json` 的 `version` 等于发布版本，并确保 `mcp_config.json` 与 `.mcp.json` 相同。`release-please` 会连同 `Cargo.toml` 一起更新这三个版本。
+
+**为什么插件不使用 Agent Plugins 规范。** 规范（`agent-plugins.org`，版本 1.0.0）定义了带 `$schema` 的 `plugin.json`、`skills/` 与 `mcp.json`。我们在 2026-11-28 测试了 Codex 0.172.0 与 Antigravity 1.5.18：两者都会加载 skill，但不会加载 `mcp.json`，agent 会找不到任何 `flow_*` 工具。Antigravity 只有在 `enable-agent-plugins-spec` 开关打开时才读取 `mcp.json`，而用户无法设置该开关。在这一点改变之前，请使用各客户端的原生格式。

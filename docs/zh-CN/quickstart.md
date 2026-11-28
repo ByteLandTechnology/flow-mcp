@@ -17,7 +17,7 @@
 - **方式 A — 使用 `npx` 或 `npm` 运行（推荐）**：
 
 ```sh
-npx -y @flow-mcp/cli --help
+npx -y @flow-mcp/cli@latest --help
 ```
 
 或者全局安装以将 `flow-mcp` 加入 `PATH`：
@@ -51,7 +51,7 @@ cargo build --release
     "flow-mcp": {
       "command": "npx",
       "args": [
-        "-y", "@flow-mcp/cli", "serve",
+        "-y", "@flow-mcp/cli@latest", "serve",
         "--home", "/path/to/.flow-mcp"
       ],
       "env": {
@@ -73,29 +73,48 @@ claude mcp add --transport http flow-mcp http://<服务器IP>:8765/mcp --header 
 
 HTTP 选项与安全规则请参阅[工具参考](tools-reference.md#http-传输)。
 
-### 可选：安装 Claude Code 插件
+### 可选：安装 agent 插件
 
-插件会注册 MCP 服务器，并附带一个 skill，教 agent 如何使用这些工具。skill 会检查会话状态，只在首次请求你登录 Google，循环等待任务完成，并在大量消耗点数前提醒。
+安装 agent 插件后，agent 无需手动配置即可使用 `flow-mcp`。插件会注册 MCP 服务器，并附带 skill，涵盖工作前检查、一次性的 Google 登录、任务等待和点数安全。
+
+Claude Code：
 
 ```sh
 claude plugin marketplace add ByteLandTechnology/flow-mcp
 claude plugin install flow-mcp
 ```
 
-在 Codex 中，把同一个仓库用作 marketplace：
+Codex（把同一个仓库添加为 marketplace）：
 
 ```sh
 codex plugin marketplace add ByteLandTechnology/flow-mcp
 codex plugin add flow-mcp --marketplace flow-mcp
 ```
 
-在 Antigravity（`agy`）中，克隆仓库后从目录安装插件：
+Antigravity（`agy`）：使用完整的 GitHub URL 安装插件。`ByteLandTechnology/flow-mcp` 这样的简写会失败。也可以传入本地克隆的路径：
 
 ```sh
-agy plugin install /path/to/flow-mcp
+agy plugin install https://github.com/ByteLandTechnology/flow-mcp
 ```
 
 完成一次登录（第 3 步）后，agent 即可无需人工介入地工作。
+
+#### 给 agent 的注意事项
+
+- **同一时间只能一个会话。** 一个 Chrome profile 只能被一个 `flow-mcp` 进程使用。不要用相同的 `--home` 同时运行两个 agent 会话。
+- **首次登录。** 如果尚未登录，agent 会调用 `flow_login`。你在弹出的 Chrome 窗口里登录一次 Google 即可，之后的会话不会再询问。
+- **Codex 的批准。** 在非交互运行（`codex exec`）中，Codex 会拒绝需要批准的 MCP 工具调用；若要批准此服务器的所有调用，请在 `~/.codex/config.toml` 加入下面的设置。这也会批准会消耗点数的工具：
+
+```toml
+[mcp_servers.flow-mcp]
+command = "npx"
+args = ["-y", "@flow-mcp/cli@latest", "serve"]
+default_tools_approval_mode = "approve"
+```
+
+- **Antigravity。** `agy` 从完整的 GitHub URL 安装，并保留整个仓库的副本。它读取 `mcp_config.json`。本仓库让它与 `.mcp.json` 保持一致，并由 `cargo xtask check` 比对。
+- **版本。** 插件用 `@flow-mcp/cli@latest` 启动服务器。不加 `@latest` 时，`npx` 可能运行旧的缓存版本。
+- **子 agent。** Claude Code 的子 agent 可以调用这些工具和 skill。其他客户端尚未测试。
 
 ## 3. 完成首次登录
 

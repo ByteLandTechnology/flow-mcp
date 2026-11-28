@@ -17,7 +17,7 @@
 - **方法 A — `npx` または `npm` で実行する（推奨）**：
 
 ```sh
-npx -y @flow-mcp/cli --help
+npx -y @flow-mcp/cli@latest --help
 ```
 
 またはグローバルインストールして `PATH` へ `flow-mcp` を追加します：
@@ -51,7 +51,7 @@ MCP stdio クライアント設定（`mcpServers`）へ `flow-mcp` を追加し�
     "flow-mcp": {
       "command": "npx",
       "args": [
-        "-y", "@flow-mcp/cli", "serve",
+        "-y", "@flow-mcp/cli@latest", "serve",
         "--home", "/path/to/.flow-mcp"
       ],
       "env": {
@@ -73,29 +73,48 @@ claude mcp add --transport http flow-mcp http://<サーバーのIP>:8765/mcp --h
 
 HTTP オプションとセキュリティ規則は[ツールリファレンス](tools-reference.md#http-トランスポート)を参照してください。
 
-### オプション: Claude Code プラグインのインストール
+### オプション: agent プラグインのインストール
 
-プラグインは MCP サーバーを登録し、ツールの使い方を agent に伝える skill を追加します。skill はセッションを確認し、Google サインインを初回の一度だけ依頼し、ジョブの完了を待ち、多くのクレジットを使う前に警告します。
+agent プラグインをインストールすると、agent は手動設定なしで `flow-mcp` を使えます。プラグインは MCP サーバーを登録し、作業前の確認、初回のみの Google サインイン、ジョブの待機、クレジットの安全管理をまとめた skill を追加します。
+
+Claude Code：
 
 ```sh
 claude plugin marketplace add ByteLandTechnology/flow-mcp
 claude plugin install flow-mcp
 ```
 
-Codex では、同じリポジトリを marketplace として使います：
+Codex（同じリポジトリを marketplace として追加します）：
 
 ```sh
 codex plugin marketplace add ByteLandTechnology/flow-mcp
 codex plugin add flow-mcp --marketplace flow-mcp
 ```
 
-Antigravity（`agy`）では、リポジトリをクローンし、ディレクトリからプラグインをインストールします：
+Antigravity（`agy`）：完全な GitHub URL からプラグインをインストールします。`ByteLandTechnology/flow-mcp` のような短縮形は失敗します。ローカルのクローンのパスも指定できます：
 
 ```sh
-agy plugin install /path/to/flow-mcp
+agy plugin install https://github.com/ByteLandTechnology/flow-mcp
 ```
 
 一度サインインすれば（手順 3）、agent は人手なしで作業できます。
+
+#### agent 向けの注意事項
+
+- **同時に使えるセッションは 1 つです。** 1 つの Chrome プロファイルを使える `flow-mcp` プロセスは 1 つだけです。同じ `--home` で 2 つの agent セッションを同時に動かさないでください。
+- **初回サインイン。** 未サインインの場合、agent は `flow_login` を呼び出します。表示された Chrome ウィンドウで Google に一度サインインすれば、以降のセッションでは尋ねられません。
+- **Codex の承認。** 非対話実行（`codex exec`）では、承認が必要な MCP ツール呼び出しを Codex が拒否します。このサーバーの呼び出しをすべて承認するには、`~/.codex/config.toml` に次を追加します。クレジットを使うツールも承認される点に注意してください：
+
+```toml
+[mcp_servers.flow-mcp]
+command = "npx"
+args = ["-y", "@flow-mcp/cli@latest", "serve"]
+default_tools_approval_mode = "approve"
+```
+
+- **Antigravity。** `agy` は完全な GitHub URL からインストールし、リポジトリ全体のコピーを保持します。`mcp_config.json` を読みます。このリポジトリでは `.mcp.json` と同じ内容に保ち、`cargo xtask check` で比較します。
+- **バージョン。** プラグインは `@flow-mcp/cli@latest` でサーバーを起動します。`@latest` がないと、`npx` が古いキャッシュ版を実行することがあります。
+- **サブ agent。** Claude Code のサブ agent は、これらのツールと skill を呼び出せます。他のクライアントは未テストです。
 
 ## 3. 初回サインインの完了
 

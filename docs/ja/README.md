@@ -17,7 +17,7 @@
 ホストマシンに Node.js `18` 以上および Google Chrome または Chromium をインストールします：
 
 ```sh
-npx -y @flow-mcp/cli --help
+npx -y @flow-mcp/cli@latest --help
 ```
 
 または CLI をグローバルにインストールします：
@@ -58,7 +58,7 @@ MCP stdio クライアント設定（`mcpServers`）へ `@flow-mcp/cli` を追�
   "mcpServers": {
     "flow-mcp": {
       "command": "npx",
-      "args": ["-y", "@flow-mcp/cli", "serve", "--home", "/path/to/.flow-mcp"],
+      "args": ["-y", "@flow-mcp/cli@latest", "serve", "--home", "/path/to/.flow-mcp"],
       "env": {
         "FLOW_MCP_PAUSE": "25,70"
       }
@@ -67,29 +67,33 @@ MCP stdio クライアント設定（`mcpServers`）へ `@flow-mcp/cli` を追�
 }
 ```
 
-## Claude Code プラグイン
+## Agent プラグイン
 
-プラグインをインストールすると、agent は手動設定なしで `flow-mcp` を使えます。プラグインは MCP サーバーを登録し、作業前の確認、初回のみの Google サインイン、ジョブの待機、クレジットの安全管理をまとめた skill を追加します：
+agent プラグインをインストールすると、agent は手動設定なしで `flow-mcp` を使えます。プラグインは MCP サーバーを登録し、作業前の確認、初回のみの Google サインイン、ジョブの待機、クレジットの安全管理をまとめた skill を追加します。
+
+Claude Code：
 
 ```sh
 claude plugin marketplace add ByteLandTechnology/flow-mcp
 claude plugin install flow-mcp
 ```
 
-Codex では、同じリポジトリを marketplace として追加します：
+Codex（同じリポジトリを marketplace として追加します）：
 
 ```sh
 codex plugin marketplace add ByteLandTechnology/flow-mcp
 codex plugin add flow-mcp --marketplace flow-mcp
 ```
 
-Antigravity（`agy`）では、このリポジトリをクローンし、ディレクトリからプラグインをインストールします：
+Antigravity（`agy`）：完全な GitHub URL からプラグインをインストールします。`ByteLandTechnology/flow-mcp` のような短縮形は失敗します。ローカルのクローンのパスも指定できます：
 
 ```sh
-agy plugin install /path/to/flow-mcp
+agy plugin install https://github.com/ByteLandTechnology/flow-mcp
 ```
 
 Google サインインは、表示された Chrome ウィンドウで人が一度だけ行います。その後、agent は人手なしで作業できます。
+
+承認、同時セッション、バージョンの注意事項は[クイックスタート](quickstart.md)を参照してください。
 
 ## ドキュメント構成
 
@@ -98,7 +102,7 @@ Google サインインは、表示された Chrome ウィンドウで人が一�
 | ガイド | 区分 | 主なトピック |
 | :--- | :--- | :--- |
 | [クイックスタート](quickstart.md) | チュートリアル | `flow-mcp` の導入、クライアント設定、サインイン、動画生成 |
-| [アーキテクチャ](architecture.md) | 解説 | デュアルモード `ChromeEngine`、DBSC 引き継ぎ、`JobQueue`、45 秒待機上限、`<home>` セキュリティ |
+| [アーキテクチャ](architecture.md) | 解説 | デュアルモード `ChromeEngine`、DBSC 引き継ぎ、`JobQueue`、45 秒待機上限、`<home>` セキュリティ、agent プラグイン |
 | [ワークフロー](workflows.md) | 手順 | 動画・画像ジョブ、キャラクター、編集、シーン、`read_chunk`、Cookie 同期 |
 | [ツールリファレンス](tools-reference.md) | リファレンス | CLI オプション、環境変数、MCP リソース、全 MCP ツール |
 

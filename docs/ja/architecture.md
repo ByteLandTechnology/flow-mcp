@@ -72,3 +72,29 @@ Google 認証は、対話型サインイン中に Device Bound Session Credentia
 3. **認証済みブラウザ取得とライブ CDP Cookie フォールバック**：未署名の Google / Flow URL では、`ChromeEngine` が先に Flow ページ内で `fetchMedia` を実行し、失敗時は `Referer: https://flow.google.com/` とライブ Chrome CDP Cookie を使う `reqwest` へフォールバックします。
 4. **検証と自然な命名**：`flow-mcp` は 0 バイトファイルを拒否し、`Content-Type` とマジックバイトを確認します。`Content-Disposition`、URL パス、または `<asset_id>.<ext>` からファイル名を選択し、重複名を解決して SQLite（`downloads`）を更新します。
 5. **MCP リソース配信**：`flow-mcp` は各ダウンロードを `flow://downloads/{id}` と `flow://downloads/asset/{asset_id}` として登録します。`resources/list` は 1 ページ `100` 件を返します。`resources/read` は `64 MiB` までのファイルを Base64 として返し、より大きなファイルは `flow_downloads`（`action="read_chunk"`）がスライス単位で読み取ります。
+
+## 5. Agent プラグイン
+
+このリポジトリは、3 つの agent クライアント向けのプラグインでもあります。プラグインに Rust や TypeScript のコードは追加されません。各クライアントに `flow-mcp` の起動方法を伝え、agent に 1 つの skill を与えるだけです。
+
+| クライアント | マニフェスト | MCP 設定 |
+| :--- | :--- | :--- |
+| Claude Code | `.claude-plugin/plugin.json` と `marketplace.json` | `.mcp.json` |
+| Codex | `.codex-plugin/plugin.json` と `.agents/plugins/marketplace.json` | `.mcp.json` |
+| Antigravity（`agy`） | `plugin.json` | `mcp_config.json`（`.mcp.json` のコピー） |
+
+3 つのクライアントは同じ skill（`skills/flow-mcp/SKILL.md` と `skills/flow-mcp/references/`）を読み込みます。
+
+**MCP サーバーを起動するのは誰か。** クライアントは、セッションごとに `npx -y @flow-mcp/cli@latest serve` を標準入出力の子プロセスとして起動します。続いて `flow-mcp` が Chrome を起動し、`flow-mcp.lock` を取得します。セッションが終了すると、クライアントが `flow-mcp` を停止します。同じ `<home>` での 2 つ目のセッションは、ロックのため失敗します。
+
+**skill が agent にさせること。**
+
+1. `flow_status` を呼び出します。ツールがなければ、サーバーの登録方法をユーザーに伝えます。
+2. 未サインインの場合は、`flow_login` で一度だけサインインするようユーザーに依頼します。人が必要なのはこの手順だけです。
+3. フロントエンドのビルドを確認してから作業します。`flow_generate` は既定で動画を作るため、画像には `mode: "image"` が必要です。
+4. ジョブが終わるまで `flow_wait` を繰り返し呼び出します。1 回の呼び出しは約 45 秒待つためです。
+5. 大量のバッチの前にユーザーへ警告し、異常なアクティビティによるブロックは 1 回を超えて再試行しません。
+
+**整合性チェック。** `cargo xtask check` は、3 つの `plugin.json` の `version` がリリースバージョンと一致すること、および `mcp_config.json` が `.mcp.json` と同じであることを確認します。`release-please` は `Cargo.toml` と一緒にこの 3 つのバージョンを更新します。
+
+**プラグインが Agent Plugins 仕様を使わない理由。** 仕様（`agent-plugins.org`、バージョン 1.0.0）は、`$schema` 付きの `plugin.json`、`skills/`、`mcp.json` を定義しています。2026-11-28 に Codex 0.172.0 と Antigravity 1.5.18 でテストしたところ、どちらも skill は読み込みますが `mcp.json` は読み込まず、agent は `flow_*` ツールを見つけられません。Antigravity は `enable-agent-plugins-spec` フラグがオンのときだけ `mcp.json` を読み、ユーザーはこのフラグを設定できません。この状況が変わるまでは、各クライアントのネイティブ形式を使ってください。

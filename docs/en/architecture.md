@@ -72,3 +72,29 @@ Running parallel edits on one Google Flow Angular tab causes UI race conditions,
 3. **Authenticated browser fetch and live CDP cookie fallback**: For unsigned Google and Flow URLs, `ChromeEngine` runs `fetchMedia` inside the Flow page first and falls back to `reqwest` with `Referer: https://flow.google.com/` and live Chrome CDP cookies.
 4. **Validation and natural naming**: `flow-mcp` rejects zero-byte files and checks `Content-Type` plus magic bytes. It selects the file name from `Content-Disposition`, the URL path, or `<asset_id>.<ext>`, resolves duplicate names, and updates SQLite (`downloads`).
 5. **MCP resource serving**: `flow-mcp` registers each download as `flow://downloads/{id}` and `flow://downloads/asset/{asset_id}`. `resources/list` returns `100` items per page. `resources/read` serves files up to `64 MiB` as Base64, while `flow_downloads` (`action="read_chunk"`) reads larger files in slices.
+
+## 5. Agent plugins
+
+The repository is also a plugin for three agent clients. The plugins add no Rust or TypeScript code. They only tell each client how to start `flow-mcp` and give the agent one skill.
+
+| Client | Manifest | MCP config |
+| :--- | :--- | :--- |
+| Claude Code | `.claude-plugin/plugin.json` and `marketplace.json` | `.mcp.json` |
+| Codex | `.codex-plugin/plugin.json` and `.agents/plugins/marketplace.json` | `.mcp.json` |
+| Antigravity (`agy`) | `plugin.json` | `mcp_config.json` (a copy of `.mcp.json`) |
+
+All three clients load the same skill: `skills/flow-mcp/SKILL.md` and `skills/flow-mcp/references/`.
+
+**Who starts the MCP server.** The client starts `npx -y @flow-mcp/cli@latest serve` as a child process with standard input and output for each session. `flow-mcp` then starts Chrome and takes `flow-mcp.lock`. When the session ends, the client stops `flow-mcp`. A second session on the same `<home>` fails on the lock.
+
+**What the skill makes the agent do.**
+
+1. Call `flow_status`. If the tool is missing, tell the user how to register the server.
+2. If the session is not signed in, ask the user to sign in one time with `flow_login`. This is the only step that needs a person.
+3. Check the front-end build, then do the work. `flow_generate` makes video by default, so images need `mode: "image"`.
+4. Call `flow_wait` again and again until the job ends, because one call waits about 45 seconds.
+5. Warn the user before a large batch and do not retry a block for unusual activity more than one time.
+
+**Consistency checks.** `cargo xtask check` makes sure that the `version` in the three `plugin.json` files equals the release version, and that `mcp_config.json` equals `.mcp.json`. `release-please` updates the three versions together with `Cargo.toml`.
+
+**Why the plugins do not use the Agent Plugins specification.** The specification (`agent-plugins.org`, version 1.0.0) defines `plugin.json` with `$schema`, `skills/`, and `mcp.json`. We tested Codex 0.172.0 and Antigravity 1.5.18 on 2026-11-28. Both load the skill but not `mcp.json`, so the agent would find no `flow_*` tools. Antigravity reads `mcp.json` only when its `enable-agent-plugins-spec` flag is on, and a user cannot set that flag. Use the native format of each client until this changes.
