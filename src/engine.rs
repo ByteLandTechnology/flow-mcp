@@ -44,7 +44,7 @@ pub(crate) struct NetworkResponseEvent {
     pub(crate) method: String,
     /// HTTP response status code.
     pub(crate) status: u16,
-    /// Optional truncated response body returned on HTTP error responses.
+    /// Optional truncated error text from an HTTP error or failed `batchexecute` response.
     pub(crate) error_excerpt: Option<String>,
 }
 

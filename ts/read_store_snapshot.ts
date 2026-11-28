@@ -11,6 +11,7 @@ import { sceneContents } from "./scene_tiles";
 import {
   asHttpOrDataUrl,
   characterLookMedia,
+  cleanMediaId,
   collectionIdOf,
   fifeEnv as getFifeEnv,
   isNonAssetTileType,
@@ -264,6 +265,71 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     }
   };
 
+  const markerKey = (marker: string): string => {
+    const sep = marker.indexOf("|");
+    return sep >= 0 ? marker.slice(0, sep) : marker;
+  };
+
+  const markerHasError = (marker: string): boolean => {
+    const first = marker.indexOf("|");
+    if (first < 0) return false;
+    const second = marker.indexOf("|", first + 1);
+    return second >= 0 && second + 1 < marker.length;
+  };
+
+  const mergeFailedHistory = (base: string[], next: string[]): string[] => {
+    if (next.length === 0) return base;
+    if (base.length === 0) return [...next];
+    const merged = [...base];
+    const keyIndex = new Map<string, number>();
+    for (let i = 0; i < merged.length; i++) {
+      keyIndex.set(markerKey(merged[i]), i);
+    }
+    for (const item of next) {
+      const key = markerKey(item);
+      const existingIdx = keyIndex.get(key);
+      if (existingIdx === undefined) {
+        keyIndex.set(key, merged.length);
+        merged.push(item);
+      } else if (!markerHasError(merged[existingIdx]) && markerHasError(item)) {
+        merged[existingIdx] = item;
+      }
+    }
+    return merged;
+  };
+
+  const summarizeHistoryFailures = (
+    items: readonly (FlowMediaPayload | null | undefined)[] | undefined,
+  ): string[] => {
+    if (!Array.isArray(items) || items.length === 0) {
+      return [];
+    }
+    const failedHistory: string[] = [];
+    const idCounts = new Map<string, number>();
+    let anonIndex = 0;
+    for (const rawItem of items) {
+      if (!rawItem || typeof rawItem !== "object") continue;
+      const item = legacyMedia(rawItem);
+      const status = String(item?.Zc ?? "").toLowerCase();
+      const error = formatMediaError(item?.nf);
+      if (status === "failed" || status === "canceled" || error) {
+        const normStatus = status === "canceled" ? "canceled" : "failed";
+        const itemId = cleanMediaId(String(item?.id ?? item?.mediaId ?? ""));
+        let key: string;
+        if (itemId) {
+          const occ = idCounts.get(itemId) ?? 0;
+          idCounts.set(itemId, occ + 1);
+          key = occ === 0 ? `id:${itemId}` : `id:${itemId}#${occ}`;
+        } else {
+          key = `anon:${anonIndex}`;
+          anonIndex += 1;
+        }
+        failedHistory.push(`${key}|${normStatus}|${error ?? ""}`);
+      }
+    }
+    return failedHistory;
+  };
+
   const collectionIds = new Set<string>();
   for (const [id, rawTile] of tileMap.entries()) {
     if (String(rawTile?.type ?? "").toUpperCase() === collectionType) {
@@ -324,13 +390,16 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
           readMediaUrl(t.fb, true)
         : null;
 
-    const mediaStatus = String(t.Fb?.Zc ?? t.fb?.Zc ?? t.Zc ?? "").toLowerCase();
-    const mediaError = formatMediaError(t.Fb?.nf ?? t.fb?.nf ?? t.nf);
+    const primaryStatus = String(t.Fb?.Zc ?? t.fb?.Zc ?? t.Zc ?? "").toLowerCase();
+    const primaryError = formatMediaError(t.Fb?.nf ?? t.fb?.nf ?? t.nf);
+    const primaryFailed =
+      primaryStatus === "failed" ||
+      primaryStatus === "canceled" ||
+      Boolean(primaryError);
     const mediaNotReady =
-      mediaStatus === "pending" ||
-      mediaStatus === "scheduled" ||
-      mediaStatus === "failed" ||
-      mediaStatus === "canceled" ||
+      primaryStatus === "pending" ||
+      primaryStatus === "scheduled" ||
+      primaryFailed ||
       Boolean(t.Fb?.nf || t.fb?.nf || t.nf);
 
     const primaryMediaId =
@@ -351,10 +420,23 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         : baseKind;
     const cachedMediaUrl = asHttpOrDataUrl(cachedEntry?.url);
 
+    const primaryHistItem =
+      primaryMediaId && Array.isArray(t.history)
+        ? legacyMedia(
+            t.history.find(
+              (item) =>
+                item &&
+                cleanMediaId(String(item.id ?? item.mediaId ?? "")) ===
+                  cleanMediaId(String(primaryMediaId)),
+            ),
+          )
+        : undefined;
     const tileMediaUrl = baseKind === "character" && charLookPrimaryMediaId
       ? charFallbackUrl
       : videoMediaUrl ||
+      (baseKind === "video" ? readMediaUrl(primaryHistItem, true) : null) ||
       readMediaUrl(t.Fb) ||
+      readMediaUrl(primaryHistItem) ||
       readMediaUrl(t) ||
       readMediaUrl(t.fb) ||
       charFallbackUrl ||
@@ -365,6 +447,10 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         ? cachedMediaUrl
         : tileMediaUrl || cachedMediaUrl || null;
     const mediaUrl = mediaNotReady ? null : rawMediaUrl;
+    const primaryReady = !mediaNotReady && Boolean(primaryMediaId || rawMediaUrl);
+    const failedHistory = summarizeHistoryFailures(t.history);
+    const mediaStatus = primaryStatus || null;
+    const mediaError = primaryError;
 
     const bio =
       (ttype === "CHARACTER" ? characterPersonalityNotes(t) : null) ??
@@ -408,8 +494,10 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       voice: voiceRaw != null ? voiceRaw : null,
       trim_start_seconds: trimStart,
       trim_end_seconds: trimEnd,
-      media_status: mediaStatus || null,
+      media_status: mediaStatus,
       media_error: mediaError,
+      primary_ready: primaryReady,
+      failed_history: failedHistory,
       width:
         typeof t.width === "number"
           ? t.width
@@ -463,22 +551,42 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
     const candidates: Array<
       [string, SceneClipItem | null, FlowMediaPayload | null]
     > = [];
+    const seenWorkflows = new Set<string>();
     for (const clip of clips) {
       const wfId = clip?.workflowId ? String(clip.workflowId) : null;
-      if (!wfId) continue;
+      if (!wfId || seenWorkflows.has(wfId)) continue;
+      seenWorkflows.add(wfId);
       const hist = history.get(wfId);
       const primaryId = clip?.primaryMediaId
-        ? String(clip.primaryMediaId)
+        ? cleanMediaId(String(clip.primaryMediaId))
         : null;
       const mObj = Array.isArray(hist)
-        ? hist.find((x) => x && String(x.id || "") === primaryId) ||
+        ? hist.find(
+            (x) =>
+              x &&
+              primaryId !== null &&
+              cleanMediaId(String(x.id ?? x.mediaId ?? "")) === primaryId,
+          ) ||
+          hist.find(
+            (x) =>
+              x && String(legacyMedia(x)?.Zc ?? "").toLowerCase() === "success",
+          ) ||
           hist[0] ||
           null
         : null;
       candidates.push([wfId, clip, mObj]);
     }
     for (const [wfId, hist] of history) {
-      const mObj = Array.isArray(hist) ? hist[0] || null : null;
+      if (!wfId || seenWorkflows.has(wfId)) continue;
+      seenWorkflows.add(wfId);
+      const mObj = Array.isArray(hist)
+        ? hist.find(
+            (x) =>
+              x && String(legacyMedia(x)?.Zc ?? "").toLowerCase() === "success",
+          ) ||
+          hist[0] ||
+          null
+        : null;
       candidates.push([wfId, null, mObj]);
     }
 
@@ -486,19 +594,32 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
       if (!wfId) continue;
       const mObj = legacyMedia(rawMedia);
       const cObj = legacyMedia(clip as FlowMediaPayload | null);
-      const mStatus = String(
+      const mPrimaryStatus = String(
         mObj?.Zc ?? cObj?.Zc ?? clip?.Zc ?? "",
       ).toLowerCase();
-      const mError = formatMediaError(mObj?.nf ?? cObj?.nf ?? clip?.nf);
+      const mPrimaryError = formatMediaError(mObj?.nf ?? cObj?.nf ?? clip?.nf);
+      const mPrimaryFailed =
+        mPrimaryStatus === "failed" ||
+        mPrimaryStatus === "canceled" ||
+        Boolean(mPrimaryError);
+      const candFailedHistory = summarizeHistoryFailures(history.get(wfId));
+      const clipPrimaryMediaId = clip?.primaryMediaId
+        ? String(clip.primaryMediaId)
+        : mObj?.id
+          ? String(mObj.id)
+          : mObj?.mediaId
+            ? String(mObj.mediaId)
+            : null;
+      const mStatus = mPrimaryStatus || null;
+      const mError = mPrimaryError;
       const existing = byId.get(wfId);
       if (existing) {
-        if (mStatus === "failed" || mStatus === "canceled" || mError) {
-          if (
-            existing.media_status !== "failed" &&
-            existing.media_status !== "canceled"
-          ) {
-            existing.media_status = mStatus || existing.media_status;
-          }
+        existing.failed_history = mergeFailedHistory(
+          existing.failed_history ?? [],
+          candFailedHistory,
+        );
+        if (mPrimaryFailed && !existing.primary_ready && !existing.media_status) {
+          existing.media_status = mStatus;
           if (!existing.media_error && mError) {
             existing.media_error = mError;
           }
@@ -506,16 +627,10 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         continue;
       }
       const mNotReady =
-        mStatus === "pending" ||
-        mStatus === "scheduled" ||
-        mStatus === "failed" ||
-        mStatus === "canceled" ||
+        mPrimaryStatus === "pending" ||
+        mPrimaryStatus === "scheduled" ||
+        mPrimaryFailed ||
         Boolean(mObj?.nf || cObj?.nf || clip?.nf);
-      const clipPrimaryMediaId = clip?.primaryMediaId
-        ? String(clip.primaryMediaId)
-        : mObj?.id
-          ? String(mObj.id)
-          : null;
       const cachedClipVideoUrl = clipPrimaryMediaId
         ? asHttpOrDataUrl(
             runtimeState.mediaInfoCache.get(clipPrimaryMediaId)?.url,
@@ -533,6 +648,8 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
           ? cachedClipVideoUrl
           : tileClipUrl || cachedClipVideoUrl || null;
       const clipUrl = mNotReady ? null : rawClipUrl;
+      const clipPrimaryReady =
+        !mNotReady && Boolean(clipPrimaryMediaId || rawClipUrl);
       const trimStartVal =
         typeof clip?.Ji === "number" ? clip.Ji :
         typeof mObj?.Jc === "number" ? mObj.Jc :
@@ -591,8 +708,10 @@ export function readStoreTiles(tileMap: Map<string, FlowTile>): {
         voice: null,
         trim_start_seconds: trimStartVal,
         trim_end_seconds: trimEndVal,
-        media_status: mStatus || null,
+        media_status: mStatus,
         media_error: mError,
+        primary_ready: clipPrimaryReady,
+        failed_history: candFailedHistory,
         width:
           typeof mObj?.width === "number"
             ? mObj.width

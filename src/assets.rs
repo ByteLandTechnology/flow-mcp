@@ -28,7 +28,7 @@ const MEDIA_URL_LOOKUPS: usize = 4;
 const ASSET_LIST_URL_BUDGET: Duration = Duration::from_secs(10);
 
 /// Media asset or scene item inside a Google Flow project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct FlowAsset {
     /// Flow asset or tile ID.
     pub(crate) id: String,
@@ -78,9 +78,72 @@ pub(crate) struct FlowAsset {
     /// Internal media error payload used for generation failure detection.
     #[serde(default, skip_serializing)]
     pub(crate) media_error: Option<String>,
+    /// True when the primary media item succeeded and can resolve a direct media URL.
+    #[serde(default, skip_serializing)]
+    pub(crate) primary_ready: Option<bool>,
+    /// Ordered markers of failed or canceled workflow history items.
+    #[serde(default, skip_serializing)]
+    pub(crate) failed_history: Vec<String>,
     /// Creation timestamp (`createTime`) string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) created_at: Option<String>,
+}
+
+/// Splits one `<key>|<status>|<error>` history failure marker into key, payload, and display text.
+fn parse_failure_marker(entry: &str) -> (&str, &str, &str) {
+    let (key, payload) = entry.split_once('|').unwrap_or((entry, ""));
+    let (status, error) = payload.split_once('|').unwrap_or((payload, ""));
+    let detail = if !error.is_empty() {
+        error
+    } else if !status.is_empty() {
+        status
+    } else {
+        "failed"
+    };
+    (key, payload, detail)
+}
+
+impl FlowAsset {
+    /// Returns the error or status text of a history failure added after `baseline`.
+    pub(crate) fn new_failure<'a>(&'a self, baseline: &[String]) -> Option<&'a str> {
+        let has_new_key = self.failed_history.iter().any(|entry| {
+            let (key, _, _) = parse_failure_marker(entry);
+            !baseline.iter().any(|b| parse_failure_marker(b).0 == key)
+        });
+        if !has_new_key && self.failed_history.len() <= baseline.len() {
+            return None;
+        }
+        self.failed_history
+            .iter()
+            .rev()
+            .find(|entry| {
+                let (_, payload, _) = parse_failure_marker(entry);
+                let cur_count = self
+                    .failed_history
+                    .iter()
+                    .filter(|x| parse_failure_marker(x).1 == payload)
+                    .count();
+                let base_count = baseline
+                    .iter()
+                    .filter(|x| parse_failure_marker(x).1 == payload)
+                    .count();
+                cur_count > base_count
+            })
+            .or_else(|| {
+                self.failed_history.iter().rev().find(|entry| {
+                    let (key, _, _) = parse_failure_marker(entry);
+                    !baseline.iter().any(|b| parse_failure_marker(b).0 == key)
+                })
+            })
+            .map(|entry| parse_failure_marker(entry).2)
+    }
+
+    /// Returns the display text of the last recorded entry in `failed_history`.
+    pub(crate) fn latest_failure_detail(&self) -> Option<&str> {
+        self.failed_history
+            .last()
+            .map(|entry| parse_failure_marker(entry).2)
+    }
 }
 
 /// Snapshot of active project metadata and asset tiles.
@@ -166,15 +229,17 @@ async fn populate_missing_media_urls(
 ) {
     let mut missing: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, asset) in assets.iter().enumerate() {
+        let primary_not_ready = asset.primary_ready != Some(true)
+            && (asset.media_error.is_some()
+                || matches!(
+                    asset.media_status.as_deref(),
+                    Some("pending" | "scheduled" | "failed" | "canceled")
+                ));
         if !matches!(
             asset.kind.as_str(),
             "video" | "image" | "character" | "audio"
         ) || asset.url.is_some()
-            || asset.media_error.is_some()
-            || matches!(
-                asset.media_status.as_deref(),
-                Some("pending" | "scheduled" | "failed" | "canceled")
-            )
+            || primary_not_ready
         {
             continue;
         }

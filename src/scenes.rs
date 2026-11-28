@@ -33,6 +33,10 @@ struct ClipBaseline {
     media_status: Option<String>,
     /// Media error recorded before extension submission, cleared if a failed clip restarts.
     media_error: Option<String>,
+    /// True when the primary media item was ready before extension submission.
+    primary_ready: Option<bool>,
+    /// Ordered markers of failed or canceled history items recorded before extension submission.
+    failed_history: Vec<String>,
 }
 
 impl ClipBaseline {
@@ -43,6 +47,8 @@ impl ClipBaseline {
             url: asset.url.clone(),
             media_status: asset.media_status.clone(),
             media_error: asset.media_error.clone(),
+            primary_ready: asset.primary_ready,
+            failed_history: asset.failed_history.clone(),
         }
     }
 
@@ -116,10 +122,11 @@ async fn confirm_trimmed_video(
     )
 }
 
-/// Returns `true` when `asset` currently holds a failed or canceled media state.
+/// Returns `true` when `asset` currently holds a failed or canceled media or history state.
 fn clip_is_failed(asset: &FlowAsset) -> bool {
     matches!(asset.media_status.as_deref(), Some("failed" | "canceled"))
         || asset.media_error.is_some()
+        || !asset.failed_history.is_empty()
 }
 
 /// Returns `true` when `asset` is a video tile or clip that entered an error state since `before`.
@@ -128,9 +135,28 @@ fn clip_entered_error(asset: &FlowAsset, before: &HashMap<String, ClipBaseline>)
         return false;
     }
     match before.get(&asset.id) {
-        None => true,
+        None => {
+            matches!(asset.media_status.as_deref(), Some("failed" | "canceled"))
+                || asset.media_error.is_some()
+                || (asset.primary_ready != Some(true)
+                    && asset.media_status.is_none()
+                    && !asset.failed_history.is_empty())
+        }
         Some(prior) => {
+            if asset.new_failure(&prior.failed_history).is_some() {
+                return true;
+            }
+            if asset.primary_ready == Some(true) {
+                return false;
+            }
+            let primary_failed =
+                matches!(asset.media_status.as_deref(), Some("failed" | "canceled"))
+                    || asset.media_error.is_some();
+            if !primary_failed {
+                return false;
+            }
             !prior.was_failed()
+                || prior.primary_ready == Some(true)
                 || asset.primary_media_id != prior.primary_media_id
                 || asset.media_error != prior.media_error
         }
@@ -382,12 +408,16 @@ pub(crate) async fn run_video_extend(
         if let Ok(cur_snap) = list_assets_with_project(engine).await {
             for asset in &cur_snap.assets {
                 if asset.kind == "video"
-                    && !clip_is_failed(asset)
                     && let Some(prior) = before.get_mut(&asset.id)
-                    && prior.was_failed()
                 {
-                    prior.media_status = asset.media_status.clone();
-                    prior.media_error = None;
+                    if !clip_is_failed(asset) && prior.was_failed() {
+                        prior.media_status = asset.media_status.clone();
+                        prior.media_error = None;
+                        prior.primary_ready = asset.primary_ready;
+                        prior.failed_history.clear();
+                    } else if asset.failed_history.len() < prior.failed_history.len() {
+                        prior.failed_history = asset.failed_history.clone();
+                    }
                 }
             }
             if let Some(failed_tile) = cur_snap
@@ -395,14 +425,17 @@ pub(crate) async fn run_video_extend(
                 .iter()
                 .find(|a| clip_entered_error(a, &before))
             {
+                let detail = before
+                    .get(&failed_tile.id)
+                    .and_then(|prior| failed_tile.new_failure(&prior.failed_history))
+                    .or(failed_tile.media_error.as_deref())
+                    .or_else(|| failed_tile.latest_failure_detail())
+                    .or(failed_tile.media_status.as_deref())
+                    .unwrap_or("failed");
                 extend_err = Some(anyhow::anyhow!(
                     "Flow video extend failed on tile {}: {}",
                     failed_tile.id,
-                    failed_tile
-                        .media_error
-                        .as_deref()
-                        .or(failed_tile.media_status.as_deref())
-                        .unwrap_or("failed")
+                    detail
                 ));
                 break;
             }
