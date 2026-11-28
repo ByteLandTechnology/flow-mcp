@@ -4,10 +4,15 @@
 // Locate the enabled Flow generation submit button and compute its viewport click point.
 
 import { readAngularTooltip, readOwn, resolveLView } from "./angular";
-import { findComposerWarning } from "./composer";
+import {
+  AGENT_COMPOSER_SELECTOR,
+  findComposerWarning,
+  inspectPromptAttachments,
+} from "./composer";
 import { delay, elText, isVisibleEnabled } from "./dom";
+import { verifyComposerGenerationState } from "./generation_state";
 import { runtimeState } from "./state";
-import type { NgLView } from "./types";
+import type { GenerationConfig, NgLView } from "./types";
 
 /** Extracts a disabled submit validator message from a component or controller candidate. */
 function readCandidateValidatorReason(cand: unknown): string {
@@ -24,17 +29,23 @@ function readCandidateValidatorReason(cand: unknown): string {
       if (msg) return msg;
     }
     const qa = readOwn(cand, "Qa");
-    const qaFf = readOwn(qa, "Ff") as { N7a?: () => string } | undefined;
+    const qaFf = readOwn(qa, "Ff") as
+      | { N7a?: () => string; S7a?: () => string }
+      | undefined;
     const qaLf = readOwn(qa, "lf") as { jYa?: () => string } | undefined;
-    const qaMsg = String(qaFf?.N7a?.() || qaLf?.jYa?.() || "").trim();
+    const qaMsg = String(
+      qaFf?.N7a?.() || qaFf?.S7a?.() || qaLf?.jYa?.() || "",
+    ).trim();
     if (qaMsg) return qaMsg;
 
     const applyFn = readOwn(cand, "Gp") ?? readOwn(cand, "Wn");
     if (typeof applyFn === "function") {
-      const directFf = readOwn(cand, "Ff") as { N7a?: () => string } | undefined;
+      const directFf = readOwn(cand, "Ff") as
+        | { N7a?: () => string; S7a?: () => string }
+        | undefined;
       const directLf = readOwn(cand, "lf") as { jYa?: () => string } | undefined;
       const directMsg = String(
-        directFf?.N7a?.() || directLf?.jYa?.() || "",
+        directFf?.N7a?.() || directFf?.S7a?.() || directLf?.jYa?.() || "",
       ).trim();
       if (directMsg) return directMsg;
     }
@@ -45,7 +56,7 @@ function readCandidateValidatorReason(cand: unknown): string {
 }
 
 /** Finds the enabled Start generation button, uncovers it if needed, and returns its viewport point. */
-export async function submitGeneration(): Promise<unknown> {
+export async function submitGeneration(cfg?: GenerationConfig): Promise<unknown> {
   const isVisible = (b: Element | null | undefined): b is HTMLElement =>
     Boolean(b instanceof HTMLElement && b.getClientRects().length > 0);
 
@@ -103,8 +114,7 @@ export async function submitGeneration(): Promise<unknown> {
   }
 
   const onEditPage = /\/edit\//.test(location.pathname || "");
-  const agentSelector =
-    "flow-agent-panel, .agent-panel-wrapper, flow-creative-agent-prompt-box";
+  const skipAttachmentCheck = onEditPage || Boolean(cfg?.inline_edit);
   const scopedSelectors = onEditPage
     ? [
         'flow-edit-video-prompt-box button[aria-label="Start generation"]',
@@ -146,7 +156,7 @@ export async function submitGeneration(): Promise<unknown> {
       const match = Array.from(document.querySelectorAll(sel)).find(
         (b): b is HTMLElement => {
           if (!isVisible(b)) return false;
-          if (!onEditPage && b.closest(agentSelector)) {
+          if (!onEditPage && b.closest(AGENT_COMPOSER_SELECTOR)) {
             return false;
           }
           return true;
@@ -158,7 +168,7 @@ export async function submitGeneration(): Promise<unknown> {
       document.querySelectorAll('button[aria-label="Start generation"]'),
     ).find((b): b is HTMLElement => {
       if (!isVisible(b)) return false;
-      if (!onEditPage && b.closest(agentSelector)) {
+      if (!onEditPage && b.closest(AGENT_COMPOSER_SELECTOR)) {
         return false;
       }
       return true;
@@ -167,17 +177,47 @@ export async function submitGeneration(): Promise<unknown> {
   };
 
   for (let i = 0; i < 120; i += 1) {
+    const attachmentState = inspectPromptAttachments(skipAttachmentCheck);
+    if (attachmentState.disabledReason) {
+      return {
+        ok: false,
+        error: attachmentState.disabledReason,
+        detail: "ingredient_disabled",
+      };
+    }
     const exact = findStartButton();
     if (isVisibleEnabled(exact)) {
+      if (attachmentState.loading) {
+        await delay(100);
+        continue;
+      }
+      if (!onEditPage) {
+        const stateCheck = verifyComposerGenerationState(cfg);
+        if (!stateCheck.ok) {
+          return stateCheck;
+        }
+      }
       return await prepareTarget(exact, "aria_start_generation");
     }
     const warning = checkWarning();
     if (warning) return warning;
-    if (exact && isVisible(exact)) {
+    if ((exact && isVisible(exact)) || attachmentState.loading) {
       await delay(100);
     } else {
       break;
     }
+  }
+
+  const attachmentAfter = inspectPromptAttachments(skipAttachmentCheck);
+  if (attachmentAfter.disabledReason) {
+    return {
+      ok: false,
+      error: attachmentAfter.disabledReason,
+      detail: "ingredient_disabled",
+    };
+  }
+  if (attachmentAfter.loading) {
+    return { ok: false, error: "ingredient_loading_timeout" };
   }
 
   const warningAfter = checkWarning();
@@ -187,6 +227,7 @@ export async function submitGeneration(): Promise<unknown> {
   if (exactAfter && isVisible(exactAfter) && !isVisibleEnabled(exactAfter)) {
     let reason =
       runtimeState.promptState?.Ff?.N7a?.() ||
+      runtimeState.promptState?.Ff?.S7a?.() ||
       runtimeState.promptState?.lf?.jYa?.() ||
       "";
     if (!reason) {
@@ -213,7 +254,7 @@ export async function submitGeneration(): Promise<unknown> {
         if (
           !onEditPage &&
           lv[0] instanceof Element &&
-          lv[0].closest(agentSelector)
+          lv[0].closest(AGENT_COMPOSER_SELECTOR)
         ) {
           continue;
         }
@@ -231,7 +272,9 @@ export async function submitGeneration(): Promise<unknown> {
       reason = readAngularTooltip(exactAfter);
     }
     const visiblePm = Array.from(document.querySelectorAll(".ProseMirror")).find(
-      (el) => el.getClientRects().length > 0 && (!onEditPage ? !el.closest(agentSelector) : true),
+      (el) =>
+        el.getClientRects().length > 0 &&
+        (!onEditPage ? !el.closest(AGENT_COMPOSER_SELECTOR) : true),
     );
     const detail = [
       reason,
@@ -248,7 +291,7 @@ export async function submitGeneration(): Promise<unknown> {
   const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
   const createBtn = btns.find((b): b is HTMLElement => {
     if (b.tagName === "A" || !isVisibleEnabled(b)) return false;
-    if (!onEditPage && b.closest(agentSelector)) {
+    if (!onEditPage && b.closest(AGENT_COMPOSER_SELECTOR)) {
       return false;
     }
     if (
@@ -277,5 +320,11 @@ export async function submitGeneration(): Promise<unknown> {
     return b.tagName === "BUTTON" && /\barrow_forward\b/i.test(label);
   });
   if (!createBtn) return { ok: false, error: "submit_button_not_found" };
+  if (!onEditPage) {
+    const stateCheck = verifyComposerGenerationState(cfg);
+    if (!stateCheck.ok) {
+      return stateCheck;
+    }
+  }
   return await prepareTarget(createBtn, "fallback_button");
 }

@@ -34,9 +34,9 @@ pub(crate) struct GenerateParams {
     pub(crate) prompt: String,
     /// Generation mode: "video" (default) or "image".
     pub(crate) mode: Option<String>,
-    /// Model name override (defaults to "veo-3.1-fast" for video or "nano-banana-2" for image).
+    /// Model family override (defaults to "Veo 3.1 Lite", or "Veo 3.1 Fast" on legacy builds, for video and "Nano Banana 2" for image).
     pub(crate) model: Option<String>,
-    /// Output aspect ratio: "16:9" (default), "9:16", or "1:1".
+    /// Output aspect ratio: "16:9" (default), "9:16", or "1:1" (image mode only).
     pub(crate) aspect: Option<String>,
     /// Output count from 1 to 4 (default 2).
     #[schemars(range(min = 1, max = 4))]
@@ -55,7 +55,7 @@ pub(crate) struct GenerateParams {
     pub(crate) asset_ids: Option<Vec<String>>,
     /// Existing character IDs or names to attach to video or image generation.
     pub(crate) characters: Option<Vec<String>>,
-    /// Video generation mode (`"frames"` or `"ingredients"`).
+    /// Video generation mode ("ingredients" default or "frames").
     pub(crate) video_type: Option<String>,
     /// Video duration setting (for example `"5s"` or `"8s"`).
     pub(crate) duration: Option<String>,
@@ -87,35 +87,170 @@ struct AssetWaitSpec<'a> {
     submit_summary: &'a str,
 }
 
+/// Context for `apply_generation_controls` distinguishing standard generation from edit flows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmissionKind {
+    /// Standard `flow_generate` request.
+    Generate,
+    /// Image edit fallback on the project workspace when no edit view opens.
+    EditFallback,
+    /// Edit session already opened via `/edit/` or an inline tile edit button.
+    InlineEdit,
+}
+
+/// Validated and normalized control parameters sent to the browser generation runtime.
+struct NormalizedControls {
+    /// Canonical mode string (`"video"` or `"image"`).
+    mode: &'static str,
+    /// Canonical aspect ratio label when explicitly provided or defaulted for generation.
+    aspect: Option<String>,
+    /// Trimmed explicit model family override when specified by the caller.
+    model: Option<String>,
+    /// Explicit video sub-mode (`Some("ingredients")` or `Some("frames")`) when supplied by the caller.
+    explicit_video_type: Option<&'static str>,
+    /// Non-empty trimmed project asset IDs to attach.
+    asset_ids: Option<Vec<String>>,
+    /// Non-empty trimmed character IDs or names to attach.
+    characters: Option<Vec<String>>,
+    /// Clamped batch output count in `1..=4`.
+    count: u32,
+}
+
+/// Trims items in `raw` and drops empty strings, returning `None` when none remain.
+fn clean_string_list(raw: Option<&[String]>) -> Option<Vec<String>> {
+    let items: Vec<String> = raw
+        .unwrap_or(&[])
+        .iter()
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect();
+    (!items.is_empty()).then_some(items)
+}
+
+/// Normalizes generation parameters and rejects invalid video aspect, character, and frame combinations.
+fn resolve_generation_controls(
+    scene: &SceneParams,
+    kind: SubmissionKind,
+) -> Result<NormalizedControls> {
+    let is_edit = kind != SubmissionKind::Generate;
+    let raw_mode = scene
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("video");
+    let mode = if raw_mode.eq_ignore_ascii_case("image")
+        || raw_mode.eq_ignore_ascii_case("character")
+        || raw_mode.eq_ignore_ascii_case("scene")
+    {
+        "image"
+    } else {
+        "video"
+    };
+    let explicit_aspect = scene
+        .aspect
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let aspect = if is_edit {
+        explicit_aspect.map(str::to_string)
+    } else {
+        Some(explicit_aspect.unwrap_or("16:9").to_string())
+    };
+    if let Some(a) = aspect.as_deref()
+        && mode == "video"
+        && (a == "1:1" || a.eq_ignore_ascii_case("square"))
+    {
+        anyhow::bail!("Video mode does not support aspect ratio '{a}'; use '16:9' or '9:16'");
+    }
+    let explicit_video_type = if mode == "video" && !is_edit {
+        match scene
+            .video_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            None => None,
+            Some(vt)
+                if vt.eq_ignore_ascii_case("ingredients")
+                    || vt.eq_ignore_ascii_case("ingredient")
+                    || vt.eq_ignore_ascii_case("video_ingredients")
+                    || vt.eq_ignore_ascii_case("video_references") =>
+            {
+                Some("ingredients")
+            }
+            Some(vt)
+                if vt.eq_ignore_ascii_case("frames")
+                    || vt.eq_ignore_ascii_case("frame")
+                    || vt.eq_ignore_ascii_case("video_frames") =>
+            {
+                Some("frames")
+            }
+            Some(vt) => anyhow::bail!(
+                "Unsupported video_type '{vt}' for video mode; use 'ingredients' or 'frames'"
+            ),
+        }
+    } else {
+        None
+    };
+    let effective_video_type = if mode == "video" && !is_edit {
+        Some(explicit_video_type.unwrap_or("ingredients"))
+    } else {
+        None
+    };
+    let asset_ids = clean_string_list(scene.asset_ids.as_deref());
+    let characters = clean_string_list(scene.characters.as_deref());
+    if effective_video_type == Some("frames") {
+        if characters.is_some() {
+            anyhow::bail!(
+                "Video frames mode does not support character references; use video_type 'ingredients'"
+            );
+        }
+        let ref_count =
+            scene.frames.as_ref().map_or(0, Vec::len) + asset_ids.as_ref().map_or(0, Vec::len);
+        anyhow::ensure!(
+            ref_count <= 2,
+            "Frame mode accepts at most two references, got {ref_count}"
+        );
+    }
+    let model = scene
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Ok(NormalizedControls {
+        mode,
+        aspect,
+        model,
+        explicit_video_type,
+        asset_ids,
+        characters,
+        count: scene.count.unwrap_or(2).clamp(1, 4),
+    })
+}
+
 /// Configures generation controls, uploads reference frames, writes prompt text, and submits.
 async fn apply_generation_controls(
     engine: &ChromeEngine,
     scene: &SceneParams,
+    kind: SubmissionKind,
 ) -> Result<serde_json::Value> {
+    let controls = resolve_generation_controls(scene, kind)?;
     validate_local_files(scene.frames.as_deref(), "Reference image").await?;
 
-    let raw_mode = scene.mode.as_deref().unwrap_or("video");
-    let mode = match raw_mode {
-        "image" | "character" | "scene" => "image",
-        _ => "video",
-    };
-    let aspect = scene.aspect.as_deref().unwrap_or("16:9");
-    let model = scene.model.as_deref().unwrap_or(if mode == "image" {
-        "nano-banana-2"
-    } else {
-        "veo-3.1-fast"
-    });
-    let count = scene.count.unwrap_or(2).clamp(1, 4);
-
     let cfg = json!({
-        "mode": mode,
-        "aspect": aspect,
-        "model": model,
-        "count": count,
+        "mode": controls.mode,
+        "aspect": controls.aspect,
+        "model": controls.model,
+        "edit": kind != SubmissionKind::Generate,
+        "inline_edit": kind == SubmissionKind::InlineEdit,
+        "count": controls.count,
         "prompt": scene.prompt,
-        "asset_ids": scene.asset_ids,
-        "characters": scene.characters,
-        "video_type": scene.video_type,
+        "asset_ids": controls.asset_ids,
+        "characters": controls.characters,
+        "video_type": controls.explicit_video_type,
         "duration": scene.duration,
         "resolution": scene.resolution,
     });
@@ -134,7 +269,7 @@ async fn apply_generation_controls(
     }
 
     let res = engine
-        .call_flow_async("attachIngredients", json!([cfg]))
+        .call_flow_async("attachIngredients", json!([cfg.clone()]))
         .await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
@@ -195,13 +330,16 @@ async fn apply_generation_controls(
     }
 
     let mut submit_res = engine
-        .call_flow_async("submitGeneration", json!([]))
+        .call_flow_async("submitGeneration", json!([cfg]))
         .await?;
     if submit_res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let err = submit_res
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
+        if matches!(err, "unsupported_model" | "unsupported_aspect_ratio") {
+            anyhow::bail!("Failed to configure Flow generation UI: {err}");
+        }
         let detail = submit_res
             .get("detail")
             .and_then(|v| v.as_str())
@@ -525,17 +663,14 @@ pub(crate) async fn run_generation(
     scene: &SceneParams,
     on_progress: ProgressCallback,
 ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+    let controls = resolve_generation_controls(scene, SubmissionKind::Generate)?;
     ensure_project_workspace_root(engine).await?;
     ensure_flow_store(engine).await?;
-    if scene.video_type.as_deref() == Some("frames") {
-        let count = scene.frames.as_ref().map_or(0, Vec::len)
-            + scene.asset_ids.as_ref().map_or(0, Vec::len)
-            + scene.characters.as_ref().map_or(0, Vec::len);
-        anyhow::ensure!(
-            count <= 2,
-            "Frame mode accepts at most two references, got {count}"
-        );
-    }
+    let mut normalized_scene = scene.clone();
+    normalized_scene.video_type = controls.explicit_video_type.map(str::to_string);
+    normalized_scene.asset_ids = controls.asset_ids;
+    normalized_scene.characters = controls.characters;
+    let scene = &normalized_scene;
     // Upload local frames into the library first and attach them as assets, so that the
     // uploaded tiles are not counted as generated outputs.
     let uploaded_scene;
@@ -565,7 +700,7 @@ pub(crate) async fn run_generation(
     let expected_count = scene.count.unwrap_or(2).clamp(1, 4) as usize;
 
     let mut net_rx = engine.subscribe_network().await?;
-    let submit_res = apply_generation_controls(engine, scene).await?;
+    let submit_res = apply_generation_controls(engine, scene, SubmissionKind::Generate).await?;
     let submit_summary = format_submit_progress("submitted generation", &submit_res);
     on_progress(submit_summary.clone());
 
@@ -691,8 +826,13 @@ pub(crate) async fn run_edit(
         count: Some(1),
         ..Default::default()
     };
+    let edit_kind = if opened_in_ui || in_edit_route {
+        SubmissionKind::InlineEdit
+    } else {
+        SubmissionKind::EditFallback
+    };
     let mut net_rx = engine.subscribe_network().await?;
-    let submit_res = apply_generation_controls(engine, &scene).await?;
+    let submit_res = apply_generation_controls(engine, &scene, edit_kind).await?;
     let submit_summary = format_submit_progress("submitted edit", &submit_res);
     on_progress(submit_summary.clone());
 

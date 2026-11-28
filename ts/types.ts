@@ -322,12 +322,42 @@ export interface PromptStateController {
   /** Validator status object in earlier builds. */
   lf?: { isValid?: () => boolean; jYa?: () => string };
   /** Validator status object in build 20261120.00. */
-  Ff?: { isValid?: () => boolean; N7a?: () => string };
-  /** Mode, output count, and model config signals. */
-  config?: {
-    mode?: () => string;
-    outputCount?: () => number;
+  Ff?: { isValid?: () => boolean; N7a?: () => string; S7a?: () => string };
+  /** Mode, output count, and aspect ratio config signals. */
+  readonly config?: {
+    readonly mode?: () => string;
+    readonly outputCount?: () => number;
+    readonly aspectRatio?: () => string;
   };
+  /** Active model family and picker option signals. */
+  readonly model?: {
+    /** Active model family ID signal in build 20261120.00. */
+    readonly ala?: () => string | undefined;
+    /** Active model family ID signal in refreshed build 20261120.00 chunks. */
+    readonly cla?: () => string | undefined;
+    /** Active video model family ID signal across Flow builds. */
+    readonly videoModelFamilyId?: () => string | undefined;
+    /** Active image model family ID signal across Flow builds. */
+    readonly imageModelFamilyId?: () => string | undefined;
+    /** Active model family descriptor signal. */
+    readonly family?: () =>
+      | { readonly id?: string; readonly hg?: string; readonly displayName?: string }
+      | undefined;
+    /** Model picker options signal in build 20261120.00. */
+    readonly Wqa?: () => ReadonlyArray<{
+      readonly hg?: string;
+      readonly displayName?: string;
+      readonly isDisabled?: boolean;
+    }>;
+    /** Model picker options signal in refreshed build 20261120.00 chunks. */
+    readonly Yqa?: () => ReadonlyArray<{
+      readonly hg?: string;
+      readonly displayName?: string;
+      readonly isDisabled?: boolean;
+    }>;
+  };
+  /** Clears prompt segments and attached composer ingredients. */
+  readonly clear?: () => void;
   /** Attached item signal container in legacy builds. */
   kc?: { all?: () => Array<Record<string, unknown>> };
   /** Attached item signal container in build 20261120.00 and later. */
@@ -617,14 +647,20 @@ export type ResolvedMediaResult =
       media_kind?: "video" | "image" | "audio";
     };
 
-/** Configuration payload shared by `setupGeneration` and `attachIngredients`. */
+/** Configuration payload shared by `setupGeneration`, `attachIngredients`, and `submitGeneration`. */
 export interface GenerationConfig {
   /** Generation mode (`video`, `image`, `character`, or `scene`). */
   mode?: string | null;
   /** Aspect ratio label. */
   aspect?: string | null;
-  /** Model label. */
+  /** Explicit model family override when specified by the caller. */
   model?: string | null;
+  /** Ordered default model family candidates used when `model` is omitted. */
+  default_models?: string[] | null;
+  /** True when `flow_edit` reuses the composer without forcing default model or aspect ratio. */
+  edit?: boolean | null;
+  /** True when `openEditAsset` already opened an inline edit session in the workspace UI. */
+  inline_edit?: boolean | null;
   /** Requested output count. */
   count?: number | null;
   /** Prompt text. */
@@ -848,7 +884,7 @@ export interface FlowMcpRuntime {
   /** Opens the asset editor via Angular Router or grid tile UI controls. */
   openEditAsset: (assetId: string, mediaUrl: string | null, primaryMediaId: string | null) => Promise<unknown>;
   /** Locates the enabled generation submit button and returns its viewport click point. */
-  submitGeneration: () => Promise<unknown>;
+  submitGeneration: (cfg?: GenerationConfig) => Promise<unknown>;
   /** Creates Flow scenes and adds clips. */
   sceneOp: (req: SceneOpRequest) => Promise<unknown>;
   /** Applies video trim timestamps or drives the scene builder extend workflow. */

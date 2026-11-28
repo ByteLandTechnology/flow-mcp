@@ -200,13 +200,13 @@ Queue a Veo video or Imagen image generation job on `JobQueue`. Returns a `JobVi
 | :--- | :--- | :--- | :--- |
 | `prompt` | `string` | Yes | Text prompt that `flow-mcp` sends to Google Flow. |
 | `mode` | `string` | No | `"video"` (default) or `"image"`. |
-| `model` | `string` | No | Model override. Defaults to `"veo-3.1-fast"` (`video`) or `"nano-banana-2"` (`image`). |
-| `aspect` | `string` | No | Aspect ratio: `"16:9"` (default), `"9:16"`, or `"1:1"`. |
+| `model` | `string` | No | Model override. Defaults to `"Veo 3.1 Lite"` (`"Veo 3.1 Fast"` on legacy builds) for `video` or `"Nano Banana 2"` for `image`. |
+| `aspect` | `string` | No | Aspect ratio: `"16:9"` (default), `"9:16"`, or `"1:1"` (`image` mode only). |
 | `count` | `integer` | No | Output batch count in `1..=4`. Default `2`. |
 | `frames` | `string[]` | No | Local reference or keyframe image paths to upload before submission. |
 | `asset_ids` | `string[]` | No | Existing project image asset IDs to attach as ingredients or frames. |
-| `characters` | `string[]` | No | Character IDs or names to attach to the prompt controls. |
-| `video_type` | `string` | No | Video generation mode: `"frames"` or `"ingredients"`. |
+| `characters` | `string[]` | No | Character IDs or names to attach in `"ingredients"` or `"image"` mode. |
+| `video_type` | `string` | No | Video generation mode: `"ingredients"` (default) or `"frames"`. |
 | `duration` | `string` | No | Video duration setting (for example `"5s"` or `"8s"`). |
 | `resolution` | `string` | No | Video resolution setting (for example `"720p"`, `"1080p"`, or `"4K"`). |
 | `name` | `string` | No | Optional scene or asset label for the job. |

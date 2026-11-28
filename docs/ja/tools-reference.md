@@ -200,13 +200,13 @@ Google Flow でキャラクターボイスピッカーを開き、リスト全�
 | :--- | :--- | :--- | :--- |
 | `prompt` | `string` | はい | `flow-mcp` が Google Flow へ送信するテキストプロンプト。 |
 | `mode` | `string` | いいえ | `"video"`（既定）または `"image"`。 |
-| `model` | `string` | いいえ | モデル上書き。既定は `"veo-3.1-fast"`（`video`）または `"nano-banana-2"`（`image`）。 |
-| `aspect` | `string` | いいえ | アスペクト比：`"16:9"`（既定）、`"9:16"`、または `"1:1"`。 |
+| `model` | `string` | いいえ | モデル上書き。既定は `video` で `"Veo 3.1 Lite"`（旧ビルドでは `"Veo 3.1 Fast"`）、`image` で `"Nano Banana 2"` です。 |
+| `aspect` | `string` | いいえ | アスペクト比：`"16:9"`（既定）、`"9:16"`、または `"1:1"`（`image` モードのみ）。 |
 | `count` | `integer` | いいえ | 出力バッチ数（`1..=4`）。既定は `2`。 |
 | `frames` | `string[]` | いいえ | 送信前にアップロードするローカル参照またはキーフレーム画像パス。 |
 | `asset_ids` | `string[]` | いいえ | 素材またはフレームとして添付する既存プロジェクト画像アセット ID。 |
-| `characters` | `string[]` | いいえ | プロンプトコントロールへ添付するキャラクター ID または名前。 |
-| `video_type` | `string` | いいえ | 動画生成モード：`"frames"` または `"ingredients"`。 |
+| `characters` | `string[]` | いいえ | `"ingredients"` または `"image"` モードで添付するキャラクター ID または名前。 |
+| `video_type` | `string` | いいえ | 動画生成モード：`"ingredients"`（既定）または `"frames"`。 |
 | `duration` | `string` | いいえ | 動画尺設定（たとえば `"5s"` または `"8s"`）。 |
 | `resolution` | `string` | いいえ | 動画解像度設定（たとえば `"720p"`、`"1080p"`、または `"4K"`）。 |
 | `name` | `string` | いいえ | ジョブ用の任意のシーンまたはアセットラベル。 |
