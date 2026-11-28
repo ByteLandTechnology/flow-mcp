@@ -7,9 +7,19 @@ use url::Url;
 
 use crate::config::FLOW_URL;
 
+/// Extracts the URL path without query or fragment parameters.
+fn url_route_path(url: &str) -> String {
+    if url.contains("://")
+        && let Ok(parsed) = Url::parse(url)
+    {
+        return parsed.path().to_string();
+    }
+    url.split(['?', '#']).next().unwrap_or_default().to_string()
+}
+
 /// Extracts the `/project/<id>` segment from a Flow project URL.
 pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
-    let path = url.split(['?', '#']).next()?;
+    let path = url_route_path(url);
     let (_, project) = path.split_once("/project/")?;
     let id = project.split('/').next()?.trim();
     (!id.is_empty()).then(|| id.to_string())
@@ -20,7 +30,7 @@ pub(crate) fn project_id_from_url(url: &str) -> Option<String> {
 /// When `allow_collection` is `true`, `/project/<id>/collection/<cid>` counts as a grid view
 /// while deeper paths such as `/project/<id>/collection/<cid>/character` remain subroutes.
 pub(crate) fn is_project_subroute_url(url: &str, allow_collection: bool) -> bool {
-    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let path = url_route_path(url);
     let Some((_, project)) = path.split_once("/project/") else {
         return false;
     };
@@ -34,6 +44,37 @@ pub(crate) fn is_project_subroute_url(url: &str, allow_collection: bool) -> bool
             false
         }
         (Some(seg), _, _) => !seg.trim().is_empty(),
+    }
+}
+
+/// Extracts the `<cid>` segment when `url` starts with `/project/<id>/collection/<cid>`.
+pub(crate) fn collection_id_from_url(url: &str) -> Option<String> {
+    let path = url_route_path(url);
+    let (_, project) = path.split_once("/project/")?;
+    let mut segs = project.trim_end_matches('/').split('/');
+    if segs.next().is_none_or(|id| id.trim().is_empty()) || segs.next() != Some("collection") {
+        return None;
+    }
+    segs.next()
+        .map(str::trim)
+        .filter(|cid| !cid.is_empty())
+        .map(str::to_string)
+}
+
+/// Returns `true` when `url` points to a `/character` or `/character/<id>` route under `/project/<id>`.
+pub(crate) fn is_character_route_url(url: &str) -> bool {
+    let path = url_route_path(url);
+    let Some((_, project)) = path.split_once("/project/") else {
+        return false;
+    };
+    let mut segs = project.trim_end_matches('/').split('/');
+    if segs.next().is_none_or(|id| id.trim().is_empty()) {
+        return false;
+    }
+    match (segs.next(), segs.next(), segs.next()) {
+        (Some("character"), _, _) => true,
+        (Some("collection"), Some(cid), Some("character")) => !cid.trim().is_empty(),
+        _ => false,
     }
 }
 
@@ -55,27 +96,23 @@ fn strip_ascii_suffix_ci<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
 }
 
 /// Removes one leading `"Google Flow - "` or trailing `"- Google Flow"` affix from `text`.
-fn strip_flow_affix_once(text: &str) -> Option<&str> {
-    for brand in ["google flow", "flow"] {
-        if let Some(rest) = strip_ascii_prefix_ci(text, brand)
-            && rest
-                .starts_with(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '–' | '—' | '|'))
-            && let Some(stripped) = rest.trim_start().strip_prefix(['-', '–', '—', '|'])
-        {
-            return Some(stripped.trim());
-        }
-        if let Some(before) = strip_ascii_suffix_ci(text, brand)
-            && before
-                .ends_with(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '–' | '—' | '|'))
-            && let Some(stripped) = before.trim_end().strip_suffix(['-', '–', '—', '|'])
-        {
-            return Some(stripped.trim());
-        }
+fn strip_google_flow_affix_once(text: &str) -> Option<&str> {
+    if let Some(rest) = strip_ascii_prefix_ci(text, "google flow")
+        && rest.starts_with(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '–' | '—' | '|'))
+        && let Some(stripped) = rest.trim_start().strip_prefix(['-', '–', '—', '|'])
+    {
+        return Some(stripped.trim());
+    }
+    if let Some(before) = strip_ascii_suffix_ci(text, "google flow")
+        && before.ends_with(|ch: char| ch.is_whitespace() || matches!(ch, '-' | '–' | '—' | '|'))
+        && let Some(stripped) = before.trim_end().strip_suffix(['-', '–', '—', '|'])
+    {
+        return Some(stripped.trim());
     }
     None
 }
 
-/// Returns a trimmed project title from the verified store or cleans a fallback document title.
+/// Returns a trimmed project title from the store or cleans one `"Google Flow"` wrapper from `document.title`.
 pub(crate) fn clean_project_title(raw: Option<&str>, verified: bool) -> Option<String> {
     let text = raw?.trim();
     if text.is_empty() {
@@ -84,14 +121,18 @@ pub(crate) fn clean_project_title(raw: Option<&str>, verified: bool) -> Option<S
     if verified {
         return Some(text.to_string());
     }
-    let mut cleaned = text;
-    while let Some(next) = strip_flow_affix_once(cleaned) {
-        cleaned = next;
+    if text.eq_ignore_ascii_case("google flow")
+        || text.eq_ignore_ascii_case("untitled")
+        || strip_ascii_prefix_ci(text, "google flow - ai creative studio").is_some()
+        || strip_ascii_prefix_ci(text, "ai creative studio").is_some()
+    {
+        return None;
     }
-    let lower = cleaned.to_ascii_lowercase();
+    let cleaned = strip_google_flow_affix_once(text).unwrap_or(text);
     if cleaned.is_empty()
-        || matches!(lower.as_str(), "google flow" | "flow" | "untitled")
-        || lower.starts_with("ai creative studio")
+        || cleaned.eq_ignore_ascii_case("google flow")
+        || cleaned.eq_ignore_ascii_case("untitled")
+        || strip_ascii_prefix_ci(cleaned, "ai creative studio").is_some()
     {
         return None;
     }

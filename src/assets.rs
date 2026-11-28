@@ -250,9 +250,7 @@ async fn read_project_assets(engine: &ChromeEngine) -> Result<ProjectAssetsSnaps
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let verified = snap.get("projectTitleVerified").and_then(Value::as_bool) != Some(false);
-    let project_title =
-        clean_project_title(snap.get("projectTitle").and_then(Value::as_str), verified);
+    let project_title = clean_project_title(snap.get("projectTitle").and_then(Value::as_str), true);
     let assets = serde_json::from_value(
         snap.get("assets")
             .cloned()

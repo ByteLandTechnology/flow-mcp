@@ -224,21 +224,32 @@ export function readStoreSnapshot(): StoreSnapshotResult {
     storeTitle !== null || Boolean(helper.isTitleVerified?.());
   let projectTitle: string | null = storeTitle;
   if (!titleVerified) {
-    let cleaned = (document.title || "").trim();
-    for (let i = 0; i < 3; i++) {
-      const next = cleaned
-        .replace(/^(?:Google\s+)?Flow\s*[-–—|]\s*/i, "")
-        .replace(/\s*[-–—|]\s*(?:Google\s+)?Flow\s*$/i, "")
-        .trim();
-      if (next === cleaned) break;
-      cleaned = next;
+    const rawDocTitle = (document.title || "").trim();
+    if (
+      !rawDocTitle ||
+      /^(?:google\s+flow|untitled)$/i.test(rawDocTitle) ||
+      /^(?:google\s+flow\s*[-–—|]\s*)?ai\s+creative\s+studio\b/i.test(
+        rawDocTitle,
+      )
+    ) {
+      projectTitle = null;
+    } else {
+      const prefixStripped = rawDocTitle.replace(
+        /^google\s+flow\s*[-–—|]\s*/i,
+        "",
+      );
+      const cleaned = (
+        prefixStripped !== rawDocTitle
+          ? prefixStripped
+          : rawDocTitle.replace(/\s*[-–—|]\s*google\s+flow\s*$/i, "")
+      ).trim();
+      projectTitle =
+        cleaned &&
+        !/^(?:google\s+flow|untitled)$/i.test(cleaned) &&
+        !/^ai\s+creative\s+studio\b/i.test(cleaned)
+          ? cleaned
+          : null;
     }
-    projectTitle =
-      cleaned &&
-      !/^(?:google\s+flow|flow|untitled)$/i.test(cleaned) &&
-      !/^ai\s+creative\s+studio\b/i.test(cleaned)
-        ? cleaned
-        : null;
   }
 
   const credits = readMappedCredits() ?? readDomAccountCredits();

@@ -24,11 +24,10 @@ const UUID_RE =
 
 /** Selector for icon, button, badge, and hidden elements excluded from card titles. */
 const CARD_ICON_OR_META_SELECTOR =
-  'mat-icon, [class*="mat-icon"], .google-symbols, .material-icons, [class*="material-symbols"], button, [role="button"], flow-project-owner-badge, .comment-count-badge, [aria-hidden="true"]';
+  'mat-icon, [class*="mat-icon"], .google-symbols, .material-icons, [class*="material-symbols"], .shared-project-icon, .footer-actions, button, [role="button"], flow-project-owner-badge, .comment-count-badge, [aria-hidden="true"]';
 
-/** Material icon ligature names excluded when scanning card title lines. */
-const ICON_LIGATURE_RE =
-  /^(?:more_vert|delete|edit|group|groups|person|people|share|lock|public|chat_bubble|add|check|close)$/i;
+/** Multi-token Material icon ligatures excluded from unstyled anchor fallbacks. */
+const LINK_ICON_LIGATURE_RE = /^(?:more_vert|chat_bubble)$/i;
 
 /** Card descriptor captured on the Flow projects grid. */
 export interface ScannedProjectCard {
@@ -109,7 +108,10 @@ function extractIdFromObject(
 }
 
 /** Extracts text from `el` while skipping icon ligatures, buttons, and metadata badges. */
-function cleanTitleElementText(el: Element | null): string | null {
+function cleanTitleElementText(
+  el: Element | null,
+  stripLinkLigatures = false,
+): string | null {
   if (!el) return null;
   if (el instanceof HTMLInputElement) {
     const val = el.value.trim();
@@ -121,7 +123,7 @@ function cleanTitleElementText(el: Element | null): string | null {
       if (!parent) return NodeFilter.FILTER_REJECT;
       if (
         parent.matches(
-          'mat-icon, [class*="mat-icon"], .google-symbols, .material-icons, [class*="material-symbols"]',
+          'mat-icon, [class*="mat-icon"], .google-symbols, .material-icons, [class*="material-symbols"], .shared-project-icon',
         )
       ) {
         return NodeFilter.FILTER_REJECT;
@@ -145,7 +147,10 @@ function cleanTitleElementText(el: Element | null): string | null {
     .join(" ")
     .split(/\r?\n/)
     .map((s) => s.trim())
-    .find((s) => s.length > 0 && !ICON_LIGATURE_RE.test(s));
+    .find(
+      (s) =>
+        s.length > 0 && (!stripLinkLigatures || !LINK_ICON_LIGATURE_RE.test(s)),
+    );
   return line || null;
 }
 
@@ -170,7 +175,7 @@ function readLinkTitle(link: HTMLElement): string | null {
   const explicit = link.querySelector(
     ".project-title-text, .project-title-label, h2, h3, h4",
   );
-  return cleanTitleElementText(explicit ?? link);
+  return cleanTitleElementText(explicit ?? link, !explicit);
 }
 
 /** Collects scrollable ancestor elements of `target` plus `document.scrollingElement`. */
@@ -199,52 +204,111 @@ function findScrollContainers(target: HTMLElement): HTMLElement[] {
 /** Inspects the Angular infinite-query state on `grid` and optionally triggers `fetchNextPage`. */
 function probeInfiniteGridQuery(
   grid: Element | null,
+  seenMaps: ReadonlySet<Map<unknown, unknown>>,
   shouldNudge: boolean,
 ): { hasNext: boolean | null; fetching: boolean } {
   if (!grid) return { hasNext: null, fetching: false };
-  const lv = resolveLView(grid);
+  let lv: unknown[] | null = resolveLView(grid);
+  if (!Array.isArray(lv)) {
+    const ng = (grid as NgContextCarrier).__ngContext__;
+    if (typeof ng === "number") {
+      for (const sm of seenMaps) {
+        try {
+          const candLv = sm.get(ng);
+          if (Array.isArray(candLv)) {
+            lv = candLv;
+            break;
+          }
+        } catch {
+          // Ignore map read error.
+        }
+      }
+    }
+  }
   if (!Array.isArray(lv)) return { hasNext: null, fetching: false };
   const seen = new Set<unknown>();
-  const inspect = (
-    cand: unknown,
-    depth: number,
-  ): { hasNext: boolean | null; fetching: boolean } | null => {
+  const state: {
+    componentHasNext: boolean | null;
+    componentFetching: boolean;
+    queryFound: boolean;
+    queryHasNext: boolean;
+    queryFetching: boolean;
+  } = {
+    componentHasNext: null,
+    componentFetching: false,
+    queryFound: false,
+    queryHasNext: false,
+    queryFetching: false,
+  };
+  const queriesToNudge: Array<{ fetchNext: () => unknown; target: object }> =
+    [];
+
+  const inspect = (cand: unknown, depth: number): void => {
     if (!cand || typeof cand !== "object" || depth > 2 || seen.has(cand)) {
-      return null;
+      return;
     }
     seen.add(cand);
     const hasNext = readOwn(cand, "hasNextPage");
     const fetchNext = readOwn(cand, "fetchNextPage");
+    const isFetchingNext = readOwn(cand, "isFetchingNextPage");
     if (typeof hasNext === "function" && typeof fetchNext === "function") {
-      if (!hasNext.call(cand)) {
-        return { hasNext: false, fetching: false };
+      state.queryFound = true;
+      const nextAvailable = Boolean(hasNext.call(cand));
+      if (nextAvailable) {
+        state.queryHasNext = true;
       }
-      const isFetchingNext = readOwn(cand, "isFetchingNextPage");
       const isFetchingAny = readOwn(cand, "isFetching");
       const fetching =
         (typeof isFetchingNext === "function" &&
           Boolean(isFetchingNext.call(cand))) ||
         (typeof isFetchingAny === "function" &&
           Boolean(isFetchingAny.call(cand)));
-      if (shouldNudge && !fetching) {
-        void Promise.resolve(fetchNext.call(cand)).catch(() => null);
-        return { hasNext: true, fetching: true };
+      if (fetching) {
+        state.queryFetching = true;
+      } else if (nextAvailable && shouldNudge) {
+        const dataFn = readOwn(cand, "data");
+        const isActive =
+          typeof dataFn !== "function" || dataFn.call(cand) !== undefined;
+        if (isActive) {
+          queriesToNudge.push({
+            fetchNext: fetchNext as () => unknown,
+            target: cand,
+          });
+        }
       }
-      return { hasNext: true, fetching };
+      return;
+    }
+    if (
+      typeof hasNext === "function" &&
+      typeof isFetchingNext === "function" &&
+      state.componentHasNext === null
+    ) {
+      state.componentHasNext = Boolean(hasNext.call(cand));
+      state.componentFetching = Boolean(isFetchingNext.call(cand));
     }
     if (!Array.isArray(cand) && !(cand instanceof Node)) {
-      for (const k of Object.keys(cand).slice(0, 20)) {
-        const res = inspect(readOwn(cand, k), depth + 1);
-        if (res !== null) return res;
+      for (const k of Object.keys(cand).slice(0, 25)) {
+        inspect(readOwn(cand, k), depth + 1);
       }
     }
-    return null;
   };
   for (const slot of lv) {
-    const res = inspect(slot, 0);
-    if (res !== null) return res;
+    inspect(slot, 0);
   }
-  return { hasNext: null, fetching: false };
+  const hasNext =
+    state.componentHasNext !== null
+      ? state.componentHasNext
+      : state.queryFound
+        ? state.queryHasNext
+        : null;
+  let fetching = state.componentFetching || state.queryFetching;
+  if (hasNext === true && shouldNudge && !fetching && queriesToNudge.length > 0) {
+    for (const q of queriesToNudge) {
+      void Promise.resolve(q.fetchNext.call(q.target)).catch(() => null);
+    }
+    fetching = true;
+  }
+  return { hasNext, fetching };
 }
 
 /** Observes non-telemetry `fetch` and `XMLHttpRequest` promises while `fn` runs. */
@@ -461,7 +525,8 @@ export function createProjectsGridContext(
       async () => {
         let lastCount = -1;
         let stableTicks = 0;
-        for (let i = 0; i < 60 && !deadlineExpired(); i++) {
+        let unmountedTicks = 0;
+        while (!deadlineExpired()) {
           const loading = Boolean(
             document.querySelector(
               "flow-loading-page, .projects-loading-container",
@@ -472,18 +537,38 @@ export function createProjectsGridContext(
               "button.projects-grid-new-project-button, button.new-project-button",
             ),
           );
+          const hasGridShell = Boolean(
+            document.querySelector("flow-projects-grid"),
+          );
           const cnt = document.querySelectorAll(
             'flow-project-card, a[href*="/project/"]',
           ).length;
-          if (cnt > 0 && cnt === lastCount) {
+          if (cnt > 0 && cnt === lastCount && !loading) {
             stableTicks++;
             if (stableTicks >= 3) break;
-          } else if (!loading && hasCreateBtn && cnt === 0) {
+          } else if (
+            !loading &&
+            hasCreateBtn &&
+            cnt === 0 &&
+            activeRequests === 0
+          ) {
             stableTicks++;
             if (stableTicks >= 3) break;
           } else {
             lastCount = cnt;
             stableTicks = 0;
+            if (
+              !loading &&
+              !hasGridShell &&
+              !hasCreateBtn &&
+              cnt === 0 &&
+              activeRequests === 0
+            ) {
+              unmountedTicks++;
+              if (unmountedTicks >= 20) break;
+            } else {
+              unmountedTicks = 0;
+            }
           }
           if (!(await waitBeforeDeadline(150))) break;
         }
@@ -492,33 +577,53 @@ export function createProjectsGridContext(
         if (stopWhen?.(items)) {
           return { items, truncated: false };
         }
-        if (deadlineExpired()) {
-          const hasSentinel = Boolean(
-            document.querySelector("flow-projects-grid .load-more-sentinel"),
-          );
+        const isGridIncomplete = (): boolean => {
+          const grid = document.querySelector("flow-projects-grid");
+          const sentinel =
+            grid?.querySelector(".load-more-sentinel") ??
+            document.querySelector("flow-projects-grid .load-more-sentinel");
+          if (sentinel instanceof HTMLElement) {
+            return (
+              probeInfiniteGridQuery(grid, seenMaps, false).hasNext !== false
+            );
+          }
           const loading = Boolean(
             document.querySelector(
               "flow-loading-page, .projects-loading-container",
             ),
           );
+          const hasReadyShell = Boolean(
+            grid ||
+              document.querySelector(
+                "button.projects-grid-new-project-button, button.new-project-button",
+              ),
+          );
+          return loading || activeRequests > 0 || (!hasReadyShell && items.length === 0);
+        };
+        if (deadlineExpired()) {
           return {
             items,
-            truncated: hasSentinel || loading || activeRequests > 0,
+            truncated: isGridIncomplete(),
           };
         }
 
         const countEntries = (): number =>
           document.querySelectorAll('flow-project-card, a[href*="/project/"]')
             .length;
-        let settledAttempts = 0;
+        let pagesLoaded = 0;
+        let retryAttempt = 0;
         let truncated = false;
 
-        for (let page = 0; page < MAX_GRID_PAGES; page++) {
+        while (pagesLoaded < MAX_GRID_PAGES) {
           const grid = document.querySelector("flow-projects-grid");
           const sentinel =
             grid?.querySelector(".load-more-sentinel") ??
             document.querySelector("flow-projects-grid .load-more-sentinel");
           if (!(sentinel instanceof HTMLElement)) {
+            truncated = false;
+            break;
+          }
+          if (probeInfiniteGridQuery(grid, seenMaps, false).hasNext === false) {
             truncated = false;
             break;
           }
@@ -529,7 +634,7 @@ export function createProjectsGridContext(
 
           const beforeCount = countEntries();
           const scrollers = findScrollContainers(sentinel);
-          if (settledAttempts > 0) {
+          if (retryAttempt > 0) {
             for (const scroller of scrollers) {
               scroller.scrollTop = Math.max(
                 0,
@@ -552,8 +657,8 @@ export function createProjectsGridContext(
           let advanced = false;
           let nudgedQuery = false;
           let reachedEnd = false;
-          const idleTickLimit = settledAttempts === 0 ? 15 : 25;
-          for (let tick = 0; tick < 80; tick++) {
+          const idleTickLimit = retryAttempt === 0 ? 15 : 25;
+          for (let tick = 0; !deadlineExpired(); tick++) {
             if (!(await waitBeforeDeadline(100))) {
               truncated = true;
               break;
@@ -571,7 +676,11 @@ export function createProjectsGridContext(
             }
             const shouldNudge = !nudgedQuery && tick >= 3;
             if (shouldNudge) nudgedQuery = true;
-            const queryState = probeInfiniteGridQuery(grid, shouldNudge);
+            const queryState = probeInfiniteGridQuery(
+              grid,
+              seenMaps,
+              shouldNudge,
+            );
             if (queryState.hasNext === false) {
               reachedEnd = true;
               break;
@@ -603,8 +712,9 @@ export function createProjectsGridContext(
             break;
           }
           if (advanced && countEntries() > beforeCount) {
-            settledAttempts = 0;
-            if (page + 1 === MAX_GRID_PAGES) {
+            pagesLoaded++;
+            retryAttempt = 0;
+            if (pagesLoaded >= MAX_GRID_PAGES) {
               const stillHasSentinel = Boolean(
                 document.querySelector(
                   "flow-projects-grid .load-more-sentinel",
@@ -612,14 +722,19 @@ export function createProjectsGridContext(
               );
               if (
                 stillHasSentinel &&
-                probeInfiniteGridQuery(grid, false).hasNext !== false
+                probeInfiniteGridQuery(grid, seenMaps, false).hasNext !== false
               ) {
                 truncated = true;
               }
             }
           } else {
-            settledAttempts++;
-            if (settledAttempts >= 2) break;
+            retryAttempt++;
+            if (
+              !(await waitBeforeDeadline(Math.min(400, 150 * retryAttempt)))
+            ) {
+              truncated = true;
+              break;
+            }
           }
         }
 

@@ -46,9 +46,7 @@ pub(crate) async fn local_upload_paths(files: &[String], label: &str) -> Result<
 
 /// Uploads files to the pinned project and returns the saved assets.
 pub(crate) async fn upload_project_files(engine: &ChromeEngine, files: &[String]) -> Result<Value> {
-    if crate::project_route::is_project_subroute_url(&engine.current_url().await?, true) {
-        crate::project::ensure_project_workspace_root(engine).await?;
-    }
+    crate::project::ensure_project_workspace_root(engine).await?;
     let project = ProjectStoreSession::open(engine).await?;
     let has_video = files.iter().any(|file| {
         mime_guess::from_path(file)

@@ -17,8 +17,8 @@ use crate::auth::{check_page_auth, check_page_signed_in, is_flow_host_url, redir
 use crate::config::{FLOW_URL, has_persisted_session};
 use crate::engine::{ChromeEngine, ENGINE_NAME, checked_runtime_result};
 pub(crate) use crate::project_route::{
-    clean_project_title, is_project_subroute_url, project_id_from_url, project_subroute_url,
-    project_workspace_url,
+    clean_project_title, collection_id_from_url, is_project_subroute_url, project_id_from_url,
+    project_subroute_url, project_workspace_url,
 };
 use crate::project_store::{bind_current_store, prepare_project_store_status};
 
@@ -90,26 +90,35 @@ pub(crate) struct FlowStatus {
     pub(crate) error: Option<String>,
 }
 
-/// Navigates back to `/project/<id>` when Chrome is on any project subroute.
-pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
+/// Exits child routes under `/project/<id>`, keeping `/collection/<cid>` when `allow_collection` is `true`.
+async fn ensure_project_route(engine: &ChromeEngine, allow_collection: bool) -> Result<()> {
     let current = engine.current_url().await?;
-    if !is_project_subroute_url(&current, false) {
+    if !is_project_subroute_url(&current, allow_collection) {
         return Ok(());
     }
     let project_id = project_id_from_url(&current)
         .ok_or_else(|| anyhow::anyhow!("Cannot identify the active Flow project"))?;
     let workspace = project_workspace_url(&current, &project_id);
+    let target_url = match collection_id_from_url(&current).filter(|_| allow_collection) {
+        Some(cid) => project_subroute_url(&current, &project_id, &format!("collection/{cid}")),
+        None => workspace.clone(),
+    };
     let returned = |url: &str| {
         is_flow_host_url(url)
-            && !is_project_subroute_url(url, false)
+            && !is_project_subroute_url(url, allow_collection)
             && project_id_from_url(url).as_deref() == Some(project_id.as_str())
             && project_workspace_url(url, &project_id) == workspace
     };
-    let _ = eval_project_nav(engine, "exit_subroute").await;
+    let nav_action = if allow_collection {
+        "exit_subroute"
+    } else {
+        "exit_to_root"
+    };
+    let _ = eval_project_nav(engine, nav_action).await;
     if returned(&engine.current_url().await.unwrap_or_default()) {
         return Ok(());
     }
-    engine.navigate(&workspace).await?;
+    engine.navigate(&target_url).await?;
     for _ in 0..10 {
         if returned(&engine.current_url().await.unwrap_or_default()) {
             return Ok(());
@@ -117,6 +126,11 @@ pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Resu
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     anyhow::bail!("Cannot return to the active Flow project workspace")
+}
+
+/// Navigates back to `/project/<id>` or `/project/<id>/collection/<cid>` from non-grid subroutes.
+pub(crate) async fn ensure_project_workspace_root(engine: &ChromeEngine) -> Result<()> {
+    ensure_project_route(engine, true).await
 }
 
 /// Opens a Flow page and verifies access with the active Chrome profile.
@@ -250,9 +264,7 @@ pub(crate) async fn get_flow_state(engine: &ChromeEngine, probe: bool) -> FlowSt
             }
         }
         if snap.get("ok").and_then(Value::as_bool) == Some(true) {
-            let verified = snap.get("projectTitleVerified").and_then(Value::as_bool) != Some(false);
-            project =
-                clean_project_title(snap.get("projectTitle").and_then(Value::as_str), verified);
+            project = clean_project_title(snap.get("projectTitle").and_then(Value::as_str), true);
             credits = snap.get("credits").and_then(Value::as_i64);
             assets_count = snap.get("assets").and_then(Value::as_array).map(Vec::len);
             collections_count = snap
@@ -598,22 +610,21 @@ fn remaining_budget_ms(deadline: Instant) -> Option<u64> {
     (ms > 0).then_some(ms)
 }
 
-/// Navigates to the signed-in Google Flow home page.
-async fn open_signed_in_home_page(engine: &ChromeEngine) -> Result<()> {
+/// Navigates to the signed-in Google Flow home page and returns the remaining grid budget in milliseconds.
+async fn open_signed_in_home_page(engine: &ChromeEngine) -> Result<u64> {
+    let deadline = Instant::now() + PROJECTS_OP_BUDGET;
     engine.ensure_page().await?;
     engine.navigate(FLOW_URL).await?;
     tokio::time::sleep(Duration::from_millis(900)).await;
     let _ = ensure_signed_in_flow_page(engine).await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    Ok(())
+    remaining_budget_ms(deadline)
+        .ok_or_else(|| anyhow::anyhow!("Timed out opening the Google Flow home page"))
 }
 
 /// Lists all existing Flow projects from the Flow home page.
 async fn list_projects(engine: &ChromeEngine) -> Result<Value> {
-    let deadline = Instant::now() + PROJECTS_OP_BUDGET;
-    open_signed_in_home_page(engine).await?;
-    let timeout_ms = remaining_budget_ms(deadline)
-        .ok_or_else(|| anyhow::anyhow!("Timed out opening the Google Flow home page"))?;
+    let timeout_ms = open_signed_in_home_page(engine).await?;
     let res = run_projects_op(
         engine,
         json!({ "action": "list", "timeout_ms": timeout_ms }),
@@ -644,10 +655,7 @@ async fn open_project(
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Provide `id` or `title` to open a project"))?;
-        let deadline = Instant::now() + PROJECTS_OP_BUDGET;
-        open_signed_in_home_page(engine).await?;
-        let timeout_ms = remaining_budget_ms(deadline)
-            .ok_or_else(|| anyhow::anyhow!("Timed out opening the Google Flow home page"))?;
+        let timeout_ms = open_signed_in_home_page(engine).await?;
         let listed = run_projects_op(
             engine,
             json!({ "action": "list", "title": want, "timeout_ms": timeout_ms }),
@@ -706,9 +714,8 @@ async fn open_project(
     tokio::time::sleep(Duration::from_millis(800)).await;
     ensure_flow_store(engine).await?;
     let snap = read_snapshot(engine).await?;
-    let verified = snap.get("projectTitleVerified").and_then(Value::as_bool) != Some(false);
     let resolved_title =
-        clean_project_title(snap.get("projectTitle").and_then(Value::as_str), verified)
+        clean_project_title(snap.get("projectTitle").and_then(Value::as_str), true)
             .or(matched_title);
     Ok(json!({
         "opened": true,
@@ -762,14 +769,14 @@ async fn rename_project(engine: &ChromeEngine, id: Option<&str>, title: &str) ->
         if project_id_from_url(&cur).as_deref() != Some(pid) {
             let _ = open_project(engine, Some(pid), None).await?;
         } else {
-            ensure_project_workspace_root(engine).await?;
+            ensure_project_route(engine, false).await?;
             ensure_flow_store(engine).await?;
         }
     } else {
-        ensure_project_workspace_root(engine).await?;
+        ensure_project_route(engine, false).await?;
         ensure_flow_store(engine).await?;
     }
-    ensure_project_workspace_root(engine).await?;
+    ensure_project_route(engine, false).await?;
     let res = run_projects_op(engine, json!({ "action": "set_title", "title": trimmed })).await?;
     if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         anyhow::bail!(
@@ -799,10 +806,7 @@ async fn delete_project(
     if clean_id.is_none() && clean_title.is_none() {
         anyhow::bail!("Provide `id` or `title` to delete a project");
     }
-    let deadline = Instant::now() + PROJECTS_OP_BUDGET;
-    open_signed_in_home_page(engine).await?;
-    let timeout_ms = remaining_budget_ms(deadline)
-        .ok_or_else(|| anyhow::anyhow!("Timed out opening the Google Flow home page"))?;
+    let timeout_ms = open_signed_in_home_page(engine).await?;
 
     let response = run_projects_op(
         engine,

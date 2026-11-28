@@ -20,7 +20,9 @@ use crate::project::{
     ensure_flow_store, ensure_project_workspace_root, project_id_from_url, project_subroute_url,
     project_workspace_url,
 };
-use crate::project_route::character_id_from_url;
+use crate::project_route::{
+    character_id_from_url, is_character_route_url, is_project_subroute_url,
+};
 use crate::project_store::ProjectStoreSession;
 use crate::queue::{ProgressCallback, SceneParams};
 use crate::voices::{
@@ -125,10 +127,10 @@ pub(crate) async fn open_character_editor(
     Ok(())
 }
 
-/// Exits the character editor back to `/project/<id>` and clears stale Angular store handles.
+/// Exits the character editor back to `/project/<id>` or `/project/<id>/collection/<cid>` and clears stale Angular store handles.
 pub(crate) async fn exit_character_editor(engine: &ChromeEngine, project_id: Option<&str>) {
     let before_finish = engine.current_url().await.unwrap_or_default();
-    let in_character = before_finish.contains("/character");
+    let in_character = is_character_route_url(&before_finish);
     let finish_res = engine
         .call_flow_async("characterOp", json!([{ "action": "finish" }]))
         .await;
@@ -144,8 +146,7 @@ pub(crate) async fn exit_character_editor(engine: &ChromeEngine, project_id: Opt
         .ok()
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if (crate::project_route::is_project_subroute_url(&cur, false)
-        || (in_character && !in_workspace && !has_workspace))
+    if (is_project_subroute_url(&cur, true) || (in_character && !in_workspace && !has_workspace))
         && let Some(pid) = project_id
             .map(str::to_string)
             .or_else(|| project_id_from_url(&cur))
