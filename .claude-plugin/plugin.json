@@ -1,0 +1,12 @@
+{
+  "name": "flow-mcp",
+  "version": "2.2.2",
+  "description": "Drive Google Flow (Veo and Imagen) from an agent: images, videos, characters, voices, edits, scenes, and Flow Agent chat.",
+  "author": {
+    "name": "ByteLand Technology Limited"
+  },
+  "homepage": "https://github.com/ByteLandTechnology/flow-mcp#readme",
+  "repository": "https://github.com/ByteLandTechnology/flow-mcp",
+  "license": "MIT",
+  "keywords": ["google-flow", "veo", "imagen", "mcp", "chrome-cdp"]
+}

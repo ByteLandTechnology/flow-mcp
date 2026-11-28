@@ -1,0 +1,17 @@
+{
+  "name": "flow-mcp",
+  "interface": {
+    "displayName": "flow-mcp"
+  },
+  "plugins": [
+    {
+      "name": "flow-mcp",
+      "source": "./",
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Creative"
+    }
+  ]
+}

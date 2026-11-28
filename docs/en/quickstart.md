@@ -73,6 +73,30 @@ claude mcp add --transport http flow-mcp http://<server-ip>:8765/mcp --header "A
 
 Refer to [Tools Reference](tools-reference.md#http-transport) for the HTTP options and the security rules.
 
+### Option: install the Claude Code plugin
+
+The plugin registers the MCP server and adds a skill that tells the agent how to use the tools. The skill checks the session, asks for the Google sign-in one time, waits for jobs, and warns before it uses many credits.
+
+```sh
+claude plugin marketplace add ByteLandTechnology/flow-mcp
+claude plugin install flow-mcp
+```
+
+For Codex, use the same repository as a marketplace:
+
+```sh
+codex plugin marketplace add ByteLandTechnology/flow-mcp
+codex plugin add flow-mcp --marketplace flow-mcp
+```
+
+For Antigravity (`agy`), clone the repository and install the plugin from the directory:
+
+```sh
+agy plugin install /path/to/flow-mcp
+```
+
+After you sign in once (step 3), the agent works without a person.
+
 ## 3. Sign in for the first time
 
 `flow-mcp` runs CDP Chrome with a visible window by default. Do not close or use that window while jobs run. When you need to sign in to Google, it opens a standard visible Chrome window without CDP flags.

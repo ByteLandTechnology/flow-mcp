@@ -73,6 +73,30 @@ claude mcp add --transport http flow-mcp http://<服务器IP>:8765/mcp --header 
 
 HTTP 选项与安全规则请参阅[工具参考](tools-reference.md#http-传输)。
 
+### 可选：安装 Claude Code 插件
+
+插件会注册 MCP 服务器，并附带一个 skill，教 agent 如何使用这些工具。skill 会检查会话状态，只在首次请求你登录 Google，循环等待任务完成，并在大量消耗点数前提醒。
+
+```sh
+claude plugin marketplace add ByteLandTechnology/flow-mcp
+claude plugin install flow-mcp
+```
+
+在 Codex 中，把同一个仓库用作 marketplace：
+
+```sh
+codex plugin marketplace add ByteLandTechnology/flow-mcp
+codex plugin add flow-mcp --marketplace flow-mcp
+```
+
+在 Antigravity（`agy`）中，克隆仓库后从目录安装插件：
+
+```sh
+agy plugin install /path/to/flow-mcp
+```
+
+完成一次登录（第 3 步）后，agent 即可无需人工介入地工作。
+
 ## 3. 完成首次登录
 
 `flow-mcp` 默认运行带可见窗口的 CDP Chrome。任务运行期间不要关闭或操作该窗口。当你需要登录 Google 时，它会打开不带 CDP 标志的标准可见 Chrome 窗口。

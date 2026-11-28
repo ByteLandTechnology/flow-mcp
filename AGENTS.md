@@ -32,6 +32,8 @@ The command `cargo xtask ci` checks most of these rules.
 - Keep all Rust modules flat in `src/` and `xtask/src/` with no subdirectories.
 - Keep all browser TypeScript modules flat in `ts/` with no subdirectories.
 - Keep the `@flow-mcp/cli` launcher package in `npm/cli/` (`package.json`, `.npmrc`, and `bin/flow-mcp.js`).
+- Keep the Claude Code plugin in `.claude-plugin/` (`plugin.json` and `marketplace.json`), the Codex plugin in `.codex-plugin/plugin.json` and `.agents/plugins/marketplace.json`, the Antigravity plugin in `plugin.json` and `mcp_config.json`, and the files that the plugins share: `.mcp.json` and `skills/flow-mcp/` (`SKILL.md` and `references/`). Keep `mcp_config.json` equal to `.mcp.json`; `cargo xtask check` compares them.
+- Write plugin and skill text in ASD-STE100 English. Do not add scripts to the plugins. Keep the `version` in all three `plugin.json` files equal to the release version.
 - Bundle `ts/index.ts` with `esbuild` in `build.rs` to `$OUT_DIR/flow_runtime.js`, and embed that bundle once in `src/engine.rs` with `include_str!`.
 - Use `src/main.rs` as the single binary entry point. Do not add `src/lib.rs`.
 - Keep multilingual user guides in `docs/en/`, `docs/zh-CN/`, and `docs/ja/`, and keep localized SVG diagrams in `docs/assets/`.

@@ -1,0 +1,13 @@
+{
+  "name": "flow-mcp",
+  "owner": {
+    "name": "ByteLand Technology Limited"
+  },
+  "plugins": [
+    {
+      "name": "flow-mcp",
+      "source": "./",
+      "description": "Google Flow MCP server and agent skill. Sign in once, then the agent works without a person."
+    }
+  ]
+}

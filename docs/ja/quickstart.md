@@ -73,6 +73,30 @@ claude mcp add --transport http flow-mcp http://<サーバーのIP>:8765/mcp --h
 
 HTTP オプションとセキュリティ規則は[ツールリファレンス](tools-reference.md#http-トランスポート)を参照してください。
 
+### オプション: Claude Code プラグインのインストール
+
+プラグインは MCP サーバーを登録し、ツールの使い方を agent に伝える skill を追加します。skill はセッションを確認し、Google サインインを初回の一度だけ依頼し、ジョブの完了を待ち、多くのクレジットを使う前に警告します。
+
+```sh
+claude plugin marketplace add ByteLandTechnology/flow-mcp
+claude plugin install flow-mcp
+```
+
+Codex では、同じリポジトリを marketplace として使います：
+
+```sh
+codex plugin marketplace add ByteLandTechnology/flow-mcp
+codex plugin add flow-mcp --marketplace flow-mcp
+```
+
+Antigravity（`agy`）では、リポジトリをクローンし、ディレクトリからプラグインをインストールします：
+
+```sh
+agy plugin install /path/to/flow-mcp
+```
+
+一度サインインすれば（手順 3）、agent は人手なしで作業できます。
+
 ## 3. 初回サインインの完了
 
 `flow-mcp` は既定でウィンドウ表示の CDP Chrome を実行します。ジョブ実行中はそのウィンドウを閉じたり操作したりしないでください。Google へサインインする必要がある場合、CDP フラグなしの標準的な可視 Chrome ウィンドウを開きます。

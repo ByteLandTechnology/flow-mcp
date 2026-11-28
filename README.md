@@ -67,6 +67,30 @@ Add `@flow-mcp/cli` to your MCP stdio client configuration (`mcpServers`):
 }
 ```
 
+## Claude Code plugin
+
+Install the plugin to let an agent use `flow-mcp` without manual setup. The plugin registers the MCP server and adds a skill for the check before work, the one-time Google sign-in, job waiting, and credit safety:
+
+```sh
+claude plugin marketplace add ByteLandTechnology/flow-mcp
+claude plugin install flow-mcp
+```
+
+For Codex, add the same repository as a marketplace:
+
+```sh
+codex plugin marketplace add ByteLandTechnology/flow-mcp
+codex plugin add flow-mcp --marketplace flow-mcp
+```
+
+For Antigravity (`agy`), clone this repository and install the plugin from the directory:
+
+```sh
+agy plugin install /path/to/flow-mcp
+```
+
+Google Sign-In needs a person in a visible Chrome window one time. After that, the agent works without a person.
+
 ## Documentation map
 
 Read the guide sections for each task:

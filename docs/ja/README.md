@@ -67,6 +67,30 @@ MCP stdio クライアント設定（`mcpServers`）へ `@flow-mcp/cli` を追�
 }
 ```
 
+## Claude Code プラグイン
+
+プラグインをインストールすると、agent は手動設定なしで `flow-mcp` を使えます。プラグインは MCP サーバーを登録し、作業前の確認、初回のみの Google サインイン、ジョブの待機、クレジットの安全管理をまとめた skill を追加します：
+
+```sh
+claude plugin marketplace add ByteLandTechnology/flow-mcp
+claude plugin install flow-mcp
+```
+
+Codex では、同じリポジトリを marketplace として追加します：
+
+```sh
+codex plugin marketplace add ByteLandTechnology/flow-mcp
+codex plugin add flow-mcp --marketplace flow-mcp
+```
+
+Antigravity（`agy`）では、このリポジトリをクローンし、ディレクトリからプラグインをインストールします：
+
+```sh
+agy plugin install /path/to/flow-mcp
+```
+
+Google サインインは、表示された Chrome ウィンドウで人が一度だけ行います。その後、agent は人手なしで作業できます。
+
 ## ドキュメント構成
 
 タスクごとに各ガイドセクションを参照してください：

@@ -517,6 +517,13 @@ fn read_json_string(chars: &[char], start_idx: usize) -> Option<(String, usize)>
     None
 }
 
+/// Plugin manifests whose `version` must equal the release version.
+const PLUGIN_MANIFESTS: &[&str] = &[
+    ".claude-plugin/plugin.json",
+    ".codex-plugin/plugin.json",
+    "plugin.json",
+];
+
 /// Verifies matching release versions across Cargo manifests, release-please, and `npm/cli`.
 fn check_release_version_sync(root: &Path, errors: &mut Vec<String>) {
     let cli_pkg_path = root.join("npm/cli/package.json");
@@ -589,5 +596,49 @@ fn check_release_version_sync(root: &Path, errors: &mut Vec<String>) {
             }
         }
         Err(err) => errors.push(format!("npm/cli/package.json: {err}")),
+    }
+
+    for manifest in PLUGIN_MANIFESTS {
+        check_plugin_version(root, manifest, &root_cargo, errors);
+    }
+    check_mcp_copies(root, errors);
+}
+
+/// Verifies that `mcp_config.json` (read by Antigravity) is a copy of `.mcp.json`.
+fn check_mcp_copies(root: &Path, errors: &mut Vec<String>) {
+    let source = root.join(".mcp.json");
+    let copy = root.join("mcp_config.json");
+    if !source.is_file() && !copy.is_file() {
+        return;
+    }
+    match (fs::read_to_string(&source), fs::read_to_string(&copy)) {
+        (Ok(a), Ok(b)) if a == b => {}
+        (Ok(_), Ok(_)) => errors.push("mcp_config.json: differs from .mcp.json".to_string()),
+        (Err(err), _) => errors.push(format!(".mcp.json: {err}")),
+        (_, Err(err)) => errors.push(format!("mcp_config.json: {err}")),
+    }
+}
+
+/// Verifies that a plugin manifest has the same version as `Cargo.toml`.
+fn check_plugin_version(root: &Path, manifest: &str, root_cargo: &str, errors: &mut Vec<String>) {
+    let path = root.join(manifest);
+    if !path.is_file() {
+        return;
+    }
+    match fs::read_to_string(&path) {
+        Ok(raw) => {
+            let pairs = extract_json_kv_pairs(&raw);
+            let version = pairs
+                .iter()
+                .find(|(k, _)| k == "version")
+                .map(|(_, v)| v.as_str());
+            if version != Some(root_cargo) {
+                errors.push(format!(
+                    "{manifest}: version `{}` does not match `{root_cargo}`",
+                    version.unwrap_or("missing")
+                ));
+            }
+        }
+        Err(err) => errors.push(format!("{manifest}: {err}")),
     }
 }

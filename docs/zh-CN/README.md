@@ -67,6 +67,30 @@ cargo build --release
 }
 ```
 
+## Claude Code 插件
+
+安装插件后，agent 无需手动配置即可使用 `flow-mcp`。插件会注册 MCP 服务器，并附带 skill，涵盖工作前检查、一次性的 Google 登录、任务等待和点数安全：
+
+```sh
+claude plugin marketplace add ByteLandTechnology/flow-mcp
+claude plugin install flow-mcp
+```
+
+在 Codex 中，把同一个仓库添加为 marketplace：
+
+```sh
+codex plugin marketplace add ByteLandTechnology/flow-mcp
+codex plugin add flow-mcp --marketplace flow-mcp
+```
+
+在 Antigravity（`agy`）中，克隆本仓库后从目录安装插件：
+
+```sh
+agy plugin install /path/to/flow-mcp
+```
+
+Google 登录需要真人在可见的 Chrome 窗口中操作一次，之后 agent 即可无需人工介入。
+
 ## 文档目录
 
 按任务类型阅读各章指南：
