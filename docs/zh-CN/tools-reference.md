@@ -277,11 +277,13 @@ flow-mcp [OPTIONS] <COMMAND>
 | 参数 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `action` | `string` | 是 | `"trim"`（即时 RPC 更新）或 `"extend"`（在 `JobQueue` 入队任务并返回 `JobView`）。 |
-| `match` | `string` | 是 | 视频资产 ID、精确名称或忽略大小写子串。 |
+| `match` | `string` | 是 | 独立视频 ID、`<sceneId>:<wfId>` 场景片段 ID、精确名称或忽略大小写子串。 |
 | `start_seconds` | `number` | 否 | `"trim"` 的起始时间戳（秒；`null` 清除起点边界）。 |
 | `end_seconds` | `number` | 否 | `"trim"` 的结束时间戳（秒；`null` 清除终点边界）。 |
 | `prompt` | `string` | 否 | `"extend"` 的续写提示词。 |
 | `scene_id` | `string` | 否 | 要在其中进行续写的可选既有场景 ID。 |
+
+`"trim"` 会更新独立视频 tile，或在所属场景中更新匹配的 `<sceneId>:<wfId>` 片段。对于 `"extend"`，指定 `scene_id` 或传入 `<sceneId>:<wfId>` 时，`flow-mcp` 会打开对应场景；对独立视频省略 `scene_id` 时，`flow_video` 会先回到项目主页并为该片段创建新场景。若调用 `prepare_extend` 时已打开某个场景（或指定了既有 `scene_id`），`prepare_extend` 会在该场景中查找目标片段，找不到时返回 `scene_clip_not_found`，而不会将当前打开的场景复用于无关的独立视频。
 
 ### `flow_scenes`
 
@@ -352,7 +354,7 @@ flow-mcp [OPTIONS] <COMMAND>
 }
 ```
 
-返回 `project_id`、`count` 和 `assets`。每项包含 `id`、`name`、`kind`，并在可用时返回 `primary_media_id`。
+返回 `project_id`、`count` 和 `assets`。每项包含 `id`、`name`、`kind`，并在可用时返回 `primary_media_id`。独立 tile 使用其自身 `id`，场景条目为 `kind: "scene"`（ID 为 `<sceneId>`），场景时间线中的活动片段也会以 `kind: "video"`、ID `<sceneId>:<wfId>` 列出。
 
 批次中途失败时，错误包含 Flow 已确认的资源。若能确定处理到哪个文件，也会返回 `file`。收到 `outcome_unknown` 时，请检查项目后再重试。
 
@@ -364,7 +366,7 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `items` | `object[]` | 是 | 非空的 `{"id": "...", "name": "..."}` 对象数组。 |
 
-对于页面上显示的图像或视频 tile，`flow-mcp` 先使用 tile 菜单的 **Rename** 项，并在页面的重命名控件中输入新名称。其他情况下发送 store mutation。结果中 `items` 的每一项都带有 `method`：`menu:rename` 或 `mutation`。 集合重命名通过重新读取项目 store 来核验。
+对于页面上显示的图像或视频 tile，`flow-mcp` 先使用 tile 菜单的 **Rename** 项，并在页面的重命名控件中输入新名称。其他情况下发送 store mutation。对于 `<sceneId>:<wfId>` 场景片段 ID，若存在对应的独立视频 tile 则重命名该视频 tile；若片段仅存在于场景内则返回 `scene_clip_has_no_tile_to_rename`。结果中 `items` 的每一项都带有 `method`：`menu:rename` 或 `mutation`。 集合重命名通过重新读取项目 store 来核验。
 
 ### `flow_collections`
 
@@ -419,4 +421,4 @@ flow-mcp [OPTIONS] <COMMAND>
 | :--- | :--- | :--- | :--- |
 | `match` | `string` | 是 | 匹配资产或集合 ID、名称或提示词的忽略大小写子串。 |
 
-`flow-mcp` 先尝试使用素材菜单的 **Move to trash**。无法通过菜单确认结果时，工具使用项目存储。直接写入需要已验证的请求格式，并通过重新读取项目确认结果。成功结果包含 `method` 和 `confirmed`。收藏夹使用与 `flow_collections` 相同的删除流程。
+`flow-mcp` 先尝试使用素材菜单的 **Move to trash**。无法通过菜单确认结果时，工具使用项目存储。直接写入需要已验证的请求格式，并通过重新读取项目确认结果。传入 `<sceneId>:<wfId>` 场景片段 ID 时，项目存储仅从 `<sceneId>` 移除该片段，保留独立视频 tile。成功结果包含 `method` 和 `confirmed`。收藏夹使用与 `flow_collections` 相同的删除流程。

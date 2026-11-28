@@ -6,7 +6,7 @@
 import { isTrashedTile } from "./dom";
 import { assetTrashCompatibility } from "./frontend_compatibility";
 import { mutateAndVerify, projectMutationPending, projectsToRefresh, projectStore, readProjectStore, refreshAfterUnknown } from "./project_store";
-import { sceneContents } from "./scene_tiles";
+import { sceneContents, splitSceneClipId } from "./scene_tiles";
 import type { FlowTile } from "./types";
 
 /** Returns true when a scene still refers to the clip workflow. */
@@ -17,6 +17,26 @@ function isSceneClip(tiles: Iterable<FlowTile>, id: string): boolean {
     if (clips.some((clip) => String(clip.workflowId) === id) || history.has(id)) return true;
   }
   return false;
+}
+
+/** Counts active clip entries in `scene` that match `workflowId`, and returns the last index. */
+function activeSceneClipState(
+  scene: FlowTile | undefined,
+  workflowId: string,
+): { count: number; lastIndex: number } {
+  if (!scene || isTrashedTile(scene) || scene.isPending || scene.type !== "SCENE") {
+    return { count: 0, lastIndex: -1 };
+  }
+  const { clips } = sceneContents(scene);
+  let count = 0;
+  let lastIndex = -1;
+  for (let i = 0; i < clips.length; i += 1) {
+    if (String(clips[i]?.workflowId ?? "") === workflowId) {
+      count += 1;
+      lastIndex = i;
+    }
+  }
+  return { count, lastIndex };
 }
 
 /** Asset types that Flow can move to trash through the tile store. */
@@ -30,12 +50,49 @@ export async function trashAssetOp(projectId: string, session: string, id: strin
   const support = assetTrashCompatibility();
   if (!support.ok) return support;
   if (projectMutationPending) return { ok: false, error: "project_mutation_pending" };
-  if (projectsToRefresh.has(projectId) || !tiles.has(id)) {
+  const clipRef = splitSceneClipId(id);
+  const lookupId = clipRef ? clipRef.sceneId : id;
+  if (projectsToRefresh.has(projectId) || !tiles.has(lookupId)) {
     tiles = await refreshAfterUnknown(store);
     if (!tiles) return { ok: false, error: "project_refresh_failed", project_id: projectId };
   }
 
   const { format } = support;
+  if (clipRef) {
+    let state = activeSceneClipState(tiles.get(clipRef.sceneId), clipRef.workflowId);
+    if (state.count === 0) return { ok: false, error: "asset_not_found", id };
+    if (store.format.mutations?.clipIndex) {
+      const method = "scene_delete_clip_mutation";
+      while (state.count > 0 && state.lastIndex >= 0) {
+        const expectedMax = state.count - 1;
+        const after = await mutateAndVerify(
+          store,
+          {
+            type: "single_tile",
+            Xc: clipRef.sceneId,
+            Ve: { type: "scene_delete_clip_mutation", ik: state.lastIndex },
+          },
+          (fresh) =>
+            activeSceneClipState(fresh.get(clipRef.sceneId), clipRef.workflowId).count <= expectedMax,
+        );
+        if (!after) {
+          return { ok: false, error: "outcome_unknown", stage: method, project_id: projectId, id };
+        }
+        state = activeSceneClipState(after.get(clipRef.sceneId), clipRef.workflowId);
+      }
+      return { ok: true, method, confirmed: true };
+    }
+    const method = "batch_delete_tiles:scene_clip";
+    const after = await mutateAndVerify(
+      store,
+      { type: "batch_delete_tiles", [format.sceneWorkflows]: [clipRef.workflowId] },
+      (fresh) => activeSceneClipState(fresh.get(clipRef.sceneId), clipRef.workflowId).count === 0,
+    );
+    return after
+      ? { ok: true, method, confirmed: true }
+      : { ok: false, error: "outcome_unknown", stage: method, project_id: projectId, id };
+  }
+
   const tile = tiles.get(id);
   if (tile?.type === "COLLECTION") return { ok: false, error: "collection_path_required" };
   if (tile && isTrashedTile(tile)) return { ok: true, method: "already_trashed", confirmed: true };

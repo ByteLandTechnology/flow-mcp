@@ -94,6 +94,11 @@ export function currentProjectStore(projectId: string): ProjectStore | null {
   return active?.projectId === projectId ? active : null;
 }
 
+/** Returns the live bound store for the active session when present. */
+export function activeProjectStore(): ProjectStore | null {
+  return activeBoundStore();
+}
+
 /** Finds the query by its full project key. */
 function projectQuery({ projectId, service, format }: ProjectStore): ProjectTileQuery | undefined {
   const tiles = readOwn(service, format.tilesService);
@@ -435,12 +440,13 @@ function storeDispatcher({ service, format }: ProjectStore): unknown {
 /** Sends one mutation to the server with the bound project ID. */
 async function submitProjectMutation(
   store: ProjectStore,
-  payload: Record<string, unknown>,
+  rawPayload: Record<string, unknown>,
 ): Promise<void> {
   const dispatch = storeDispatcher(store);
   if (!isCurrent(store) || activeBoundStore() !== store || typeof dispatch !== "function") {
     throw new Error("project_store_changed");
   }
+  const payload = withMutationAliases(rawPayload);
   await dispatch.call(readOwn(store.service, store.format.tilesService), store.projectId, payload);
 }
 
@@ -469,6 +475,7 @@ export async function mutateAndVerify(
   store: ProjectStore,
   payload: Record<string, unknown>,
   verified: (tiles: Map<string, FlowTile>) => boolean,
+  onSubmitError?: (error: unknown) => void,
 ): Promise<Map<string, FlowTile> | null> {
   projectMutationPending = true;
   projectsToRefresh.add(store.projectId);
@@ -482,8 +489,12 @@ export async function mutateAndVerify(
   });
   const work = (async () => {
     try {
+      let submitFailed = false;
       // A request can reach Flow even if the response does not reach this page.
-      await submitProjectMutation(store, payload).catch(() => {});
+      await submitProjectMutation(store, payload).catch((err: unknown) => {
+        submitFailed = true;
+        onSubmitError?.(err);
+      });
       while (!timedOut && activeBoundStore() === store && isCurrent(store)) {
         const tiles = await refreshProjectStore(store).catch(() => null);
         if (timedOut) return null;
@@ -491,6 +502,7 @@ export async function mutateAndVerify(
           projectsToRefresh.delete(store.projectId);
           return tiles;
         }
+        if (submitFailed && tiles) return null;
         await Promise.race([delay(MUTATION_CHECK_INTERVAL_MS), timeout]);
       }
       return null;
