@@ -37,6 +37,7 @@ import { projectUpload, stageMediaFiles } from "./project_upload";
 import { projectsOp } from "./projects_ops";
 import { readStoreSnapshot } from "./read_store_snapshot";
 import { resolveVideoUrl } from "./resolve_video_url";
+import { sceneExport } from "./scene_export";
 import { sceneOp } from "./scene_ops";
 import { setupGeneration } from "./setup_generation";
 import { submitGeneration } from "./submit_generation";
@@ -70,6 +71,7 @@ if (!window.__flowMcp) {
     bindProjectStore,
     projectStoreStatus,
     fetchMedia,
+    sceneExport,
     resolveVideoUrl,
     setupGeneration,
     attachIngredients,

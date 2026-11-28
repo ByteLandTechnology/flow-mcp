@@ -4,11 +4,17 @@
 // Bind, validate, read, and mutate the active project store from verified build formats.
 
 import { isNgLViewMap, readOwn } from "./angular";
+import { readCustomVoicesFromQueryData } from "./custom_voices";
 import { delay } from "./dom";
 import { activeProjectStoreFormat, readBuildLabel, withMutationAliases } from "./frontend_builds";
 import type { ProjectStoreFormat } from "./frontend_builds";
 import { clearStore, runtimeState } from "./state";
-import type { FlowStoreHandle, FlowTile, NgLView, StoreProbeCheck } from "./types";
+import type {
+  FlowStoreHandle,
+  FlowTile,
+  NgLView,
+  StoreProbeCheck,
+} from "./types";
 
 /** A Flow query for the tiles of one project. */
 interface ProjectTileQuery {
@@ -142,6 +148,19 @@ function indexTileRows(rows: unknown): Map<string, FlowTile> | null {
 /** Indexes a complete query result by tile ID. */
 function tileMap(data: unknown, field: string): Map<string, FlowTile> | null {
   return indexTileRows(readOwn(data, field));
+}
+
+/** Reads the raw settled query payload for `store` when available. */
+function readStoreQueryData(store: ProjectStore): unknown {
+  if (!isCurrent(store) || isProjectStorePending(store)) return null;
+  const query = projectQuery(store);
+  if (query && query.state.data != null) {
+    return query.state.data;
+  }
+  const signalQuery = readOwn(store.service, store.format.tileQuery);
+  if (!signalQuery || typeof signalQuery !== "object" || !("data" in signalQuery)) return null;
+  const readData = readOwn(signalQuery, "data");
+  return typeof readData === "function" ? readData.call(signalQuery) : readData;
 }
 
 /** Reads the cached rows for the active project when the query settles. */
@@ -294,6 +313,8 @@ export function installProjectStore(store: ProjectStore, views?: Map<number, NgL
     projectId: store.projectId,
     isCurrent: () => isCurrent(store),
     getTileMap: () => readProjectStore(store),
+    getCustomVoices: () =>
+      readCustomVoicesFromQueryData(readStoreQueryData(store), store.format.rows),
     isReady: () => isCurrent(store) && !isProjectStorePending(store),
     mutate: (payload) => mutateStore(store, payload),
     rename: (id, displayName) =>

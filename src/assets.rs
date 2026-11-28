@@ -13,9 +13,13 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
+pub(crate) use crate::asset_matching::match_asset;
+use crate::asset_matching::{
+    pin_matched_variant_id, resolve_scene_clip_selector, strip_media_prefix, strip_resource_prefix,
+};
 use crate::collections::{FlowCollection, find_collection};
 use crate::db::FlowDb;
-use crate::download::eval_resolve_media_url;
+use crate::download_urls::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
 use crate::project::{ensure_flow_store, read_snapshot};
 use crate::project_store::ProjectStoreSession;
@@ -26,6 +30,41 @@ const MEDIA_URL_LOOKUPS: usize = 4;
 
 /// Time to resolve missing URLs in one asset list response.
 const ASSET_LIST_URL_BUDGET: Duration = Duration::from_secs(10);
+
+/// Ready video variant entry recorded on a project video or single-clip scene tile.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct VideoVariantAsset {
+    /// Media ID of the variant without a `media/` prefix.
+    pub(crate) media_id: String,
+    /// Verified quality label (`"360p"`, `"720p"`, `"1080p"`, or `"4k"`).
+    #[serde(default)]
+    pub(crate) quality: Option<String>,
+    /// Direct media URL on the variant when available.
+    #[serde(default)]
+    pub(crate) url: Option<String>,
+    /// Variant width in pixels when available.
+    #[serde(default)]
+    pub(crate) width: Option<u32>,
+    /// Variant height in pixels when available.
+    #[serde(default)]
+    pub(crate) height: Option<u32>,
+    /// Variant duration in seconds when available.
+    #[serde(default)]
+    pub(crate) duration: Option<f64>,
+}
+
+/// Clip workflow entry inside a project scene tile.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SceneClipAsset {
+    /// Clip workflow ID inside the scene.
+    pub(crate) workflow_id: String,
+    /// Primary media ID of the clip when available.
+    #[serde(default)]
+    pub(crate) primary_media_id: Option<String>,
+    /// Direct media URL of the clip when available.
+    #[serde(default)]
+    pub(crate) url: Option<String>,
+}
 
 /// Media asset or scene item inside a Google Flow project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,9 +117,70 @@ pub(crate) struct FlowAsset {
     /// Internal media error payload used for generation failure detection.
     #[serde(default, skip_serializing)]
     pub(crate) media_error: Option<String>,
+    /// Known primary, history, and upscaled variant media IDs on the tile.
+    #[serde(default, skip_serializing)]
+    pub(crate) media_ids: Vec<String>,
+    /// Optional workflow ID associated with a custom voice entry.
+    #[serde(default, skip_serializing)]
+    pub(crate) workflow_id: Option<String>,
+    /// True when a multi-clip or trimmed scene requires Angular scene export.
+    #[serde(default, skip_serializing)]
+    pub(crate) requires_scene_export: bool,
+    /// True when `as29s` case `11` flagged raw 24 kHz PCM audio.
+    #[serde(default, skip_serializing)]
+    pub(crate) pcm_audio: bool,
+    /// Underlying media family override when a tile downloads audio.
+    #[serde(default, skip_serializing)]
+    pub(crate) media_kind: Option<String>,
+    /// Ready video variants (original and upscaled resolutions) on the tile.
+    #[serde(default, skip_serializing)]
+    pub(crate) variants: Vec<VideoVariantAsset>,
+    /// Ordered clip workflow entries on a scene tile.
+    #[serde(default, skip_serializing)]
+    pub(crate) scene_clips: Vec<SceneClipAsset>,
     /// Creation timestamp (`createTime`) string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) created_at: Option<String>,
+}
+
+impl FlowAsset {
+    /// Creates an image asset descriptor for a generated character look.
+    pub(crate) fn character_look(
+        fallback_id: &str,
+        name: String,
+        url: Option<String>,
+        primary_media_id: Option<String>,
+    ) -> Self {
+        Self {
+            id: primary_media_id
+                .clone()
+                .unwrap_or_else(|| fallback_id.to_string()),
+            name,
+            kind: "image".to_string(),
+            prompt: None,
+            url,
+            collection_id: None,
+            collection_name: None,
+            width: None,
+            height: None,
+            duration: None,
+            primary_media_id,
+            personality_notes: None,
+            voice: None,
+            trim_start_seconds: None,
+            trim_end_seconds: None,
+            media_status: None,
+            media_error: None,
+            media_ids: Vec::new(),
+            workflow_id: None,
+            requires_scene_export: false,
+            pcm_audio: false,
+            media_kind: None,
+            variants: Vec::new(),
+            scene_clips: Vec::new(),
+            created_at: None,
+        }
+    }
 }
 
 /// Snapshot of active project metadata and asset tiles.
@@ -145,9 +245,12 @@ pub(crate) struct RenameParams {
 /// Parameters for `flow_download`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub(crate) struct DownloadParams {
-    /// Exact asset ID, exact name, or case-insensitive asset substring to download.
+    /// Exact asset ID, `<sceneId>:<wfId>` scene clip ID, media or variant ID, exact name, or case-insensitive asset substring to download.
     #[serde(rename = "match")]
     pub(crate) r#match: String,
+    /// Optional video quality selector: `"original"` (default), `"360p"`, `"720p"`, `"1080p"`, `"4k"`, or `"best"`.
+    #[serde(default, alias = "resolution")]
+    pub(crate) quality: Option<String>,
 }
 
 /// Parameters for `flow_trash`.
@@ -158,7 +261,7 @@ pub(crate) struct TrashParams {
     pub(crate) r#match: String,
 }
 
-/// Resolves missing direct media URLs on finished media and character tiles through `as29s` RPCs.
+/// Resolves missing direct media URLs on finished media, character, and 1-clip scene tiles through `as29s` RPCs.
 async fn populate_missing_media_urls(
     engine: &ChromeEngine,
     assets: &mut [FlowAsset],
@@ -168,8 +271,9 @@ async fn populate_missing_media_urls(
     for (index, asset) in assets.iter().enumerate() {
         if !matches!(
             asset.kind.as_str(),
-            "video" | "image" | "character" | "audio"
-        ) || asset.url.is_some()
+            "video" | "image" | "character" | "audio" | "scene"
+        ) || asset.requires_scene_export
+            || asset.url.is_some()
             || asset.media_error.is_some()
             || matches!(
                 asset.media_status.as_deref(),
@@ -195,33 +299,44 @@ async fn populate_missing_media_urls(
             let timeout_ms = deadline.and_then(|at| {
                 u64::try_from(at.saturating_duration_since(Instant::now()).as_millis()).ok()
             });
-            let (resolved, media_kind) = eval_resolve_media_url(engine, &media_id, timeout_ms)
-                .await
-                .map(|val| {
-                    let url = val
-                        .get("url")
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|u| u.starts_with("http"))
-                        .map(str::to_string);
-                    let kind = val
-                        .get("media_kind")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    (url, kind)
-                })
-                .unwrap_or((None, None));
-            (indices, resolved, media_kind)
+            let (resolved, media_kind, pcm_audio) =
+                eval_resolve_media_url(engine, &media_id, timeout_ms)
+                    .await
+                    .map(|val| {
+                        let url = val
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|u| u.starts_with("http"))
+                            .map(str::to_string);
+                        let kind = val
+                            .get("media_kind")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        let pcm = val
+                            .get("pcm_audio")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        (url, kind, pcm)
+                    })
+                    .unwrap_or((None, None, false));
+            (indices, resolved, media_kind, pcm_audio)
         })
         .buffer_unordered(MEDIA_URL_LOOKUPS);
     futures_util::pin_mut!(lookups);
-    while let Some((indices, url, media_kind)) = lookups.next().await {
+    while let Some((indices, url, media_kind, pcm_audio)) = lookups.next().await {
         for index in indices {
             if let Some(ref resolved_url) = url {
                 assets[index].url = Some(resolved_url.clone());
             }
-            if assets[index].kind == "image" && media_kind.as_deref() == Some("audio") {
-                assets[index].kind = "audio".to_string();
+            if pcm_audio {
+                assets[index].pcm_audio = true;
+            }
+            if let Some(ref mk) = media_kind {
+                if assets[index].kind == "image" && mk == "audio" {
+                    assets[index].kind = "audio".to_string();
+                }
+                assets[index].media_kind = Some(mk.clone());
             }
         }
     }
@@ -268,44 +383,6 @@ async fn read_project_assets(engine: &ChromeEngine) -> Result<ProjectAssetsSnaps
     })
 }
 
-/// Selects the best-matching asset by exact ID, exact name, name substring, ID substring,
-/// or optional prompt substring.
-pub(crate) fn match_asset<'a>(
-    assets: &'a [FlowAsset],
-    match_str: &str,
-    include_prompt: bool,
-) -> Option<&'a FlowAsset> {
-    let raw = match_str.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let lower = raw.to_lowercase();
-
-    assets
-        .iter()
-        .find(|a| a.id == raw)
-        .or_else(|| assets.iter().find(|a| a.name.eq_ignore_ascii_case(raw)))
-        .or_else(|| {
-            assets
-                .iter()
-                .find(|a| a.name.to_lowercase().contains(&lower))
-        })
-        .or_else(|| assets.iter().find(|a| a.id.to_lowercase().contains(&lower)))
-        .or_else(|| {
-            if include_prompt {
-                assets.iter().find(|a| {
-                    a.prompt
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&lower)
-                })
-            } else {
-                None
-            }
-        })
-}
-
 /// Resolves the single best-matching asset and active project metadata across all project assets.
 pub(crate) async fn resolve_asset(
     engine: &ChromeEngine,
@@ -314,7 +391,10 @@ pub(crate) async fn resolve_asset(
     context_label: &str,
 ) -> Result<(FlowAsset, Option<String>, Option<String>)> {
     let snap = read_project_assets(engine).await?;
-    let target = match_asset(&snap.assets, match_str, include_prompt)
+    if let Some(clip_asset) = resolve_scene_clip_selector(&snap.assets, match_str, context_label)? {
+        return Ok((clip_asset, snap.project_id, snap.project_title));
+    }
+    let mut target = match_asset(&snap.assets, match_str, include_prompt)
         .cloned()
         .with_context(|| {
             format!(
@@ -322,6 +402,7 @@ pub(crate) async fn resolve_asset(
                 match_str, context_label
             )
         })?;
+    pin_matched_variant_id(&mut target, match_str);
     Ok((target, snap.project_id, snap.project_title))
 }
 
@@ -355,8 +436,19 @@ pub(crate) async fn list_assets(
                 return false;
             }
             if let Some(q) = &q_lower {
+                let clean_q = strip_media_prefix(q);
+                let clean_wf_q = strip_resource_prefix(q);
                 let name_hit = a.name.to_lowercase().contains(q);
-                let id_hit = a.id.to_lowercase().contains(q);
+                let id_hit = a.id.to_lowercase().contains(q)
+                    || a.workflow_id
+                        .as_deref()
+                        .is_some_and(|wf| wf.to_lowercase().contains(clean_wf_q))
+                    || a.primary_media_id
+                        .as_deref()
+                        .is_some_and(|id| id.to_lowercase().contains(clean_q))
+                    || a.media_ids
+                        .iter()
+                        .any(|id| id.to_lowercase().contains(clean_q));
                 let prompt_hit = a.prompt.as_deref().unwrap_or("").to_lowercase().contains(q);
                 if !name_hit && !id_hit && !prompt_hit {
                     return false;

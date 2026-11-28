@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::agent::{AgentChat, AgentParams};
 use crate::assets::{self, AssetAction, AssetsParams, DownloadParams, RenameEntry};
 use crate::auth::{self, LoginParams};
-use crate::characters::{self, CharacterEditParams, CharacterParams, VoicesParams};
+use crate::characters::{self, CharacterEditParams, CharacterParams};
 use crate::collections::{self, CollectionsParams};
 use crate::config;
 use crate::db::{
@@ -28,7 +28,7 @@ use crate::queue::{JobQueue, JobResult, JobRunner, JobView, SceneParams, WaitPar
 use crate::scenes::{self, ScenesParams, VideoParams};
 use crate::tile_menu::PageHold;
 use crate::upload::{local_upload_paths, upload_project_files};
-use crate::voices::{self, VoicePreviewParams};
+use crate::voices::{self, VoicePreviewParams, VoicesParams};
 
 /// Maximum downloaded file size served directly through MCP `resources/read` (`64 MiB`).
 const MAX_RESOURCE_READ_BYTES: u64 = 64 * 1024 * 1024;
@@ -255,7 +255,7 @@ impl FlowService {
 
     /// Lists available Google Flow character voices.
     pub(crate) async fn voices(&self, req: VoicesParams) -> Result<Value> {
-        characters::list_voices(&self.engine, &self.db, req.character.as_deref()).await
+        voices::list_voices(&self.engine, &self.db, req.character.as_deref()).await
     }
 
     /// Plays a character voice preview and downloads the audio.
@@ -406,7 +406,7 @@ impl FlowService {
 
     /// Downloads the asset matching `req.match` into `<home>/downloads` and records it in SQLite.
     pub(crate) async fn download(&self, req: DownloadParams) -> Result<DownloadRecord> {
-        download::download_asset(&self.engine, &self.db, &req.r#match).await
+        download::download_asset(&self.engine, &self.db, &req.r#match, req.quality.as_deref()).await
     }
 
     /// Resolves one download record by row `id` or latest `asset_id` for inspection or chunk reads.

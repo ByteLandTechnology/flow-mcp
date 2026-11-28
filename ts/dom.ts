@@ -21,6 +21,79 @@ export function asHttpOrDataUrl(v: unknown): string | null {
   return typeof v === "string" && /^(?:https?:|blob:|data:)/i.test(v) ? v : null;
 }
 
+/** Parses an `X-Goog-Date` value (`YYYYMMDDTHHMMSSZ` or ISO-8601) into epoch milliseconds. */
+function parseGoogDateMs(raw: string): number | null {
+  const trimmed = raw.trim();
+  const compact = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/i.exec(trimmed);
+  if (compact) {
+    const year = Number(compact[1]);
+    const month = Number(compact[2]);
+    const day = Number(compact[3]);
+    const hour = Number(compact[4]);
+    const minute = Number(compact[5]);
+    const second = Number(compact[6]);
+    if (
+      month < 1 ||
+      month > 12 ||
+      day < 1 ||
+      day > 31 ||
+      hour > 23 ||
+      minute > 59 ||
+      second > 60
+    ) {
+      return null;
+    }
+    const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const isoMs = Date.parse(trimmed);
+  return Number.isFinite(isoMs) ? isoMs : null;
+}
+
+/** Returns true when `rawUrl` carries a V4 or V2 GCS signature whose validity window has elapsed. */
+export function isExpiredSignedUrl(
+  rawUrl: string | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (typeof rawUrl !== "string" || !/^https?:\/\//i.test(rawUrl.trim())) {
+    return false;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    return false;
+  }
+  let googDate: string | null = null;
+  let googExpires: string | null = null;
+  let v2Expires: string | null = null;
+  let hasV2Sig = false;
+  for (const [k, v] of parsed.searchParams.entries()) {
+    const lower = k.toLowerCase();
+    if (lower === "x-goog-date") googDate = v;
+    else if (lower === "x-goog-expires") googExpires = v;
+    else if (lower === "expires") v2Expires = v;
+    else if (lower === "signature" || lower === "googleaccessid") hasV2Sig = true;
+  }
+  if (googDate !== null && googExpires !== null) {
+    const issuedMs = parseGoogDateMs(googDate);
+    const trimmedExp = googExpires.trim();
+    if (issuedMs === null || !/^\d+$/.test(trimmedExp)) {
+      return true;
+    }
+    const expiresSec = Number(trimmedExp);
+    if (!Number.isFinite(expiresSec)) return true;
+    return nowMs >= issuedMs + expiresSec * 1000;
+  }
+  if (hasV2Sig && v2Expires !== null) {
+    const trimmedV2 = v2Expires.trim();
+    if (!/^\d+$/.test(trimmedV2)) return true;
+    const expSec = Number(trimmedV2);
+    return !Number.isFinite(expSec) || nowMs >= expSec * 1000;
+  }
+  return false;
+}
+
 /** Reads the first direct media URL from a tile, media payload, clip, or picker item. */
 export function readMediaUrl(source: unknown, videoOnly = false): string | null {
   if (!source || typeof source !== "object") return null;
@@ -554,15 +627,21 @@ export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
   const t = legacyTile(tile);
   if (!t) return null;
   const kind = String(t.type ?? "").toUpperCase() === "VIDEO" ? "video" : "image";
-  const videoUrl = kind === "video"
-    ? readMediaUrl(t.Fb, true) || readMediaUrl(t, true) || readMediaUrl(t.fb, true)
-    : null;
+  const nonExpired = (cand: string | null): string | null =>
+    cand && !isExpiredSignedUrl(cand) ? cand : null;
+  const videoUrl =
+    kind === "video"
+      ? nonExpired(readMediaUrl(t.Fb, true)) ||
+        nonExpired(readMediaUrl(t, true)) ||
+        nonExpired(readMediaUrl(t.fb, true))
+      : null;
   const raw =
-    videoUrl || readMediaUrl(t.Fb) ||
-    readMediaUrl(t) ||
-    readMediaUrl(t.fb) ||
-    characterLookMedia(t).url ||
-    asHttpOrDataUrl(t.ue) ||
+    videoUrl ||
+    nonExpired(readMediaUrl(t.Fb)) ||
+    nonExpired(readMediaUrl(t)) ||
+    nonExpired(readMediaUrl(t.fb)) ||
+    nonExpired(characterLookMedia(t).url) ||
+    nonExpired(asHttpOrDataUrl(t.ue)) ||
     null;
   return raw ? normalizeFlowMediaUrl(raw, kind) : null;
 }

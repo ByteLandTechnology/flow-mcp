@@ -1,7 +1,7 @@
 // Copyright 2026 ByteLand Technology Limited
 // SPDX-License-Identifier: MIT
 
-//! Google Flow character entity workflows, voice discovery, and SQLite persistence.
+//! Google Flow character entity workflows and SQLite persistence.
 
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
-use crate::assets::{FlowAsset, list_assets_with_project, match_asset, trash_asset};
+use crate::assets::{FlowAsset, list_assets_with_project, match_asset};
 use crate::character_bio::{edit_character_bio, set_character_bio};
 use crate::db::FlowDb;
 use crate::download::download_resolved_asset;
@@ -23,9 +23,7 @@ use crate::project::{
 use crate::project_route::character_id_from_url;
 use crate::project_store::ProjectStoreSession;
 use crate::queue::{ProgressCallback, SceneParams};
-use crate::voices::{
-    VoiceRequest, apply_voice_with_fallback, delete_portrait, list_all_voices, scene_voice,
-};
+use crate::voices::{VoiceRequest, apply_voice_with_fallback, delete_portrait, scene_voice};
 
 /// Parameters for `flow_character`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -77,13 +75,6 @@ pub(crate) struct CharacterEditParams {
     pub(crate) refs: Option<Vec<String>>,
     /// Optional edit or look generation prompt for the character.
     pub(crate) prompt: Option<String>,
-}
-
-/// Parameters for `flow_voices`.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub(crate) struct VoicesParams {
-    /// Optional character ID or name whose editor opens the voice picker.
-    pub(crate) character: Option<String>,
 }
 
 /// Saves `scene.character_look` under `scene.character_role` or reads the saved
@@ -167,106 +158,6 @@ pub(crate) async fn exit_character_editor(engine: &ChromeEngine, project_id: Opt
         }
     }
     let _ = ensure_flow_store(engine).await;
-}
-
-/// Lists available Flow character voices from the character editor voice picker.
-pub(crate) async fn list_voices(
-    engine: &ChromeEngine,
-    db: &FlowDb,
-    character: Option<&str>,
-) -> Result<Value> {
-    ensure_flow_store(engine).await?;
-    let initial_url = engine.current_url().await.unwrap_or_default();
-    let mut project_id = project_id_from_url(&initial_url);
-    let mut temp_char_id: Option<String> = None;
-
-    if !initial_url.contains("/character/") {
-        let snap = list_assets_with_project(engine).await?;
-        if project_id.is_none() {
-            project_id = snap.project_id.clone();
-        }
-        let pid = project_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Missing project ID for character route"))?;
-        let chars: Vec<FlowAsset> = snap
-            .assets
-            .into_iter()
-            .filter(|a| a.kind == "character")
-            .collect();
-        let target_cid = if let Some(q) = character.map(str::trim).filter(|s| !s.is_empty()) {
-            match_asset(&chars, q, false).map(|c| c.id.clone())
-        } else {
-            chars.first().map(|c| c.id.clone())
-        };
-
-        let cid = if let Some(existing_cid) = target_cid {
-            existing_cid
-        } else {
-            let created = engine
-                .call_flow_async(
-                    "characterOp",
-                    json!([{
-                        "action": "create",
-                        "name": "__tmp_voice_probe__",
-                    }]),
-                )
-                .await?;
-            if created.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                anyhow::bail!(
-                    "Failed to create temporary character for voice lookup: {}",
-                    created
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                );
-            }
-            let tmp_cid = created
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Temporary character creation returned no character ID")
-                })?;
-            temp_char_id = Some(tmp_cid.clone());
-            tmp_cid
-        };
-
-        open_character_editor(engine, &initial_url, pid, &cid).await?;
-    }
-
-    let full_list = list_all_voices(engine).await;
-    let voices_res = match full_list {
-        Some(voices) => Ok(json!({ "ok": true, "voices": voices })),
-        None => {
-            engine
-                .call_flow_async("characterVoiceOp", json!([{ "action": "list_voices" }]))
-                .await
-        }
-    };
-
-    exit_character_editor(engine, project_id.as_deref()).await;
-    if let Some(tmp_id) = temp_char_id {
-        let _ = trash_asset(engine, db, &tmp_id).await;
-    }
-
-    let res = voices_res?;
-    if res.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        anyhow::bail!(
-            "Failed to list Flow character voices: {}",
-            res.get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-    }
-    let count = res
-        .get("voices")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    Ok(json!({
-        "count": count,
-        "voices": res.get("voices").cloned().unwrap_or_else(|| json!([])),
-    }))
 }
 
 /// Clicks `look_submit_point` when present and returns `(slot, prev_media_id, prev_src)`.
@@ -757,26 +648,12 @@ pub(crate) async fn create_or_update_character_job(
                         .filter(|s| s.starts_with("http") || s.starts_with("data:"))
                         .map(str::to_string);
                     if media_id.is_some() || src.is_some() {
-                        let temp_asset = FlowAsset {
-                            id: media_id.clone().unwrap_or_else(|| char_id.clone()),
-                            name: persisted_name.clone(),
-                            kind: "image".to_string(),
-                            prompt: None,
-                            url: src,
-                            collection_id: None,
-                            collection_name: None,
-                            width: None,
-                            height: None,
-                            duration: None,
-                            primary_media_id: media_id,
-                            personality_notes: None,
-                            voice: None,
-                            trim_start_seconds: None,
-                            trim_end_seconds: None,
-                            media_status: None,
-                            media_error: None,
-                            created_at: None,
-                        };
+                        let temp_asset = FlowAsset::character_look(
+                            &char_id,
+                            persisted_name.clone(),
+                            src,
+                            media_id,
+                        );
                         if let Ok(rec) = download_resolved_asset(
                             engine,
                             db,

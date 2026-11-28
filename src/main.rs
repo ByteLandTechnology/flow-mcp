@@ -5,6 +5,7 @@
 
 mod agent;
 mod agent_settings;
+mod asset_matching;
 mod assets;
 mod auth;
 mod cdp;
@@ -17,6 +18,7 @@ mod config;
 mod cookies;
 mod db;
 mod download;
+mod download_urls;
 mod engine;
 mod generation;
 mod http;
