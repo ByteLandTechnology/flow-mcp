@@ -11,6 +11,7 @@ import {
   isEditContext,
   isExcludedComposerNode,
   readEditBlockReason,
+  readEditSubmitDisabledReason,
 } from "./edit_composer";
 import { runtimeState } from "./state";
 import type { NgLView } from "./types";
@@ -189,7 +190,9 @@ export async function submitGeneration(
   const exactAfter = findStartButton();
   if (exactAfter && isVisible(exactAfter) && !isVisibleEnabled(exactAfter)) {
     let reason =
-      (onEditPage ? readEditBlockReason() || "" : "") ||
+      (onEditPage
+        ? readEditBlockReason() || readEditSubmitDisabledReason() || ""
+        : "") ||
       runtimeState.promptState?.Ff?.N7a?.() ||
       runtimeState.promptState?.lf?.jYa?.() ||
       "";

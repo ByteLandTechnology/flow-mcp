@@ -15,7 +15,7 @@ use tokio::time::Duration;
 
 use crate::assets::{FlowAsset, list_assets_with_project, match_asset};
 use crate::db::FlowDb;
-use crate::download::eval_resolve_media_url;
+use crate::download::{download_resolved_asset, eval_resolve_media_url};
 use crate::engine::ChromeEngine;
 use crate::generation::{
     AssetWaitSpec, apply_generation_controls, collect_created_assets, format_submit_progress,
@@ -287,20 +287,48 @@ pub(crate) async fn run_edit(
         let _ = ensure_flow_store(engine).await;
     }
 
+    let mut attached_frames: Option<Vec<String>> = None;
     if !opened_in_ui {
-        anyhow::bail!(
-            "Could not open the Flow editor for {} asset '{}'",
-            edit_mode,
-            label
-        );
+        if edit_mode == "video" {
+            anyhow::bail!("Could not open the Flow editor for video asset '{}'", label);
+        }
+        if target.url.is_some() || target.primary_media_id.is_some() {
+            let _ = ensure_project_workspace_root(engine).await;
+            let _ = ensure_flow_store(engine).await;
+            let local_path =
+                if let Some(cached) = db.find_existing_file_for_asset(&target.id).await? {
+                    cached.file_path
+                } else {
+                    let downloaded = download_resolved_asset(
+                        engine,
+                        db,
+                        &target,
+                        snap.project_id.clone(),
+                        snap.project_title.clone(),
+                    )
+                    .await?;
+                    downloaded.file_path
+                };
+            attached_frames = Some(vec![local_path]);
+        } else {
+            anyhow::bail!("Could not open the Flow editor for image asset '{}'", label);
+        }
     }
 
+    let current_url = engine.current_url().await.unwrap_or_default();
+    let in_edit_route =
+        opened_in_ui && (current_url.contains("/edit/") || current_url.contains("/scene/"));
     on_progress(format!("submitting edit for {}", label));
     let scene = SceneParams {
         prompt: prompt.to_string(),
-        mode: Some(edit_mode.to_string()),
+        mode: if in_edit_route {
+            None
+        } else {
+            Some(edit_mode.to_string())
+        },
+        frames: attached_frames,
         count: Some(1),
-        edit: Some(true),
+        edit: Some(opened_in_ui),
         ..Default::default()
     };
     let mut net_rx = engine.subscribe_network().await?;

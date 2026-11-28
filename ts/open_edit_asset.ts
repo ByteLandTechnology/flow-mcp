@@ -20,6 +20,7 @@ import {
 import {
   EDIT_PROMPT_BOX_SELECTOR,
   EDIT_SCOPE_SELECTOR,
+  findEditVideoPromptBox,
   isExcludedComposerNode,
   readEditBlockReason,
   selectSceneTimelineClip,
@@ -166,12 +167,30 @@ export async function openEditAsset(
         }
         await delay(100);
       }
-      await selectSceneTimelineClip(targetClipId);
+      const clipSelected = await selectSceneTimelineClip(
+        targetClipId,
+        primaryMediaId,
+      );
+      if (!clipSelected) {
+        clearStore();
+        return {
+          opened: false,
+          blocked: true,
+          error: "scene_clip_not_selected",
+          alert: `Could not select clip '${targetClipId}' in scene '${targetSceneId}'`,
+          detail: `Could not select clip '${targetClipId}' in scene '${targetSceneId}'`,
+          method: "scene_delegation",
+          view: "scene_builder",
+          scene_id: targetSceneId,
+          clip_id: targetClipId,
+        };
+      }
       for (let i = 0; i < 20; i += 1) {
         if (findVisibleTextbox() || readEditBlockReason() !== null) break;
         await delay(100);
       }
       const alertText = readEditBlockReason();
+      const hasTextbox = Boolean(findVisibleTextbox());
       clearStore();
       if (alertText) {
         return {
@@ -187,13 +206,13 @@ export async function openEditAsset(
         };
       }
       return {
-        opened: true,
+        opened: hasTextbox,
         blocked: false,
         method: "scene_delegation",
         view: "scene_builder",
         scene_id: targetSceneId,
         clip_id: targetClipId,
-        has_textbox: Boolean(findVisibleTextbox()),
+        has_textbox: hasTextbox,
       };
     }
 
@@ -245,21 +264,46 @@ export async function openEditAsset(
 
   if (viewKind) {
     for (let i = 0; i < 25; i += 1) {
-      if (findVisibleTextbox() || readEditBlockReason() !== null) break;
+      if (
+        findVisibleTextbox() ||
+        readEditBlockReason() !== null ||
+        (viewKind === "scene_builder" &&
+          document.querySelector("flow-scene-timeline, flow-edit-video-prompt-box"))
+      ) {
+        break;
+      }
       await delay(100);
     }
     if (
       viewKind === "scene_builder" &&
-      !findVisibleTextbox() &&
-      readEditBlockReason() === null
+      readEditBlockReason() === null &&
+      (Boolean(
+        document.querySelector("flow-scene-timeline, flow-scene-builder .clip"),
+      ) ||
+        Boolean(findEditVideoPromptBox()) ||
+        !findVisibleTextbox())
     ) {
-      await selectSceneTimelineClip(idStr);
+      const clipSelected = await selectSceneTimelineClip(idStr, primaryMediaId);
+      if (!clipSelected) {
+        clearStore();
+        return {
+          opened: false,
+          blocked: true,
+          error: "scene_clip_not_selected",
+          alert: `Could not select clip '${idStr}' in scene builder`,
+          detail: `Could not select clip '${idStr}' in scene builder`,
+          method: "spa_router",
+          view: "scene_builder",
+          clip_id: idStr,
+        };
+      }
     }
     for (let i = 0; i < 15; i += 1) {
       if (findVisibleTextbox() || readEditBlockReason() !== null) break;
       await delay(100);
     }
     const alertText = readEditBlockReason();
+    const hasTextbox = Boolean(findVisibleTextbox());
     clearStore();
     if (alertText) {
       return {
@@ -274,11 +318,11 @@ export async function openEditAsset(
       };
     }
     return {
-      opened: true,
+      opened: hasTextbox,
       blocked: false,
       method: "spa_router",
       view: viewKind,
-      has_textbox: Boolean(findVisibleTextbox()),
+      has_textbox: hasTextbox,
     };
   }
 
@@ -355,8 +399,12 @@ export async function openEditAsset(
       });
       if (editBtn) {
         editBtn.click();
-        await delay(300);
+        for (let i = 0; i < 20; i += 1) {
+          if (findVisibleTextbox() || readEditBlockReason() !== null) break;
+          await delay(100);
+        }
         const alertText = readEditBlockReason();
+        const hasTextbox = Boolean(findVisibleTextbox());
         if (alertText) {
           return {
             opened: true,
@@ -367,7 +415,12 @@ export async function openEditAsset(
             method: "ui_edit",
           };
         }
-        return { opened: true, blocked: false, method: "ui_edit" };
+        return {
+          opened: hasTextbox,
+          blocked: false,
+          has_textbox: hasTextbox,
+          method: "ui_edit",
+        };
       }
     }
   }

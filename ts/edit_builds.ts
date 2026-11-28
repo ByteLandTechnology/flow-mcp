@@ -144,21 +144,31 @@ function callVerifiedPromptBuilder(
   }
 }
 
-/** Builds a serialized prompt payload through `_.QI` with `{ kf, Te, Oe }` fallback. */
-export function buildPromptPayload(content: string): PromptDocumentPayload {
-  const format = activeEditBuild();
-  if (format) {
-    const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
-    const built = callVerifiedPromptBuilder(
-      namespace,
-      format.promptBuilder,
-      format.promptSegmentsKey,
-      content,
-    );
-    if (built) return built;
+/** Returns true when `pathname` is an asset editor (`/edit/`) or scene builder (`/scene/`) route. */
+export function isEditRoute(pathname = location.pathname || ""): boolean {
+  return /\/(?:edit|scene)\//.test(pathname);
+}
+
+/** Builds a serialized prompt payload, using `_.QI` on edit routes and `{ Oe, Te, kf }` otherwise. */
+export function buildPromptPayload(
+  content: string,
+  editRoute = isEditRoute(),
+): PromptDocumentPayload {
+  if (editRoute) {
+    const format = activeEditBuild();
+    if (format) {
+      const namespace = readOwn(window, "default_AiSandboxAngularFrontend");
+      const built = callVerifiedPromptBuilder(
+        namespace,
+        format.promptBuilder,
+        format.promptSegmentsKey,
+        content,
+      );
+      if (built) return built;
+    }
   }
   const segments: PromptTextSegment[] = [{ type: "text", content }];
-  return { kf: segments, Te: segments, Oe: segments };
+  return { Oe: segments, Te: segments, kf: segments };
 }
 
 /** Validates edit controller and prompt builder descriptors for builds in `VERIFIED_EDIT_BUILDS`. */

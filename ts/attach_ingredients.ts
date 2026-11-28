@@ -627,6 +627,7 @@ export async function attachIngredients(cfg: GenerationConfig): Promise<unknown>
     seeds: composerSeeds,
     excludeSelector: EXCLUDED_COMPOSER_SELECTOR,
     strictSync: true,
+    edit: onEditPage,
     onCloseSettings: closeSettingsAndMenus,
   });
   if (tb instanceof HTMLTextAreaElement && !writeInfo.ok) {

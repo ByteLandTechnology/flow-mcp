@@ -468,6 +468,8 @@ export interface WritePromptOptions {
   trySettingsClick?: boolean;
   /** Selector restricting LView hover probing scope. */
   hoverScopeSelector?: string | null;
+  /** Whether prompt writing runs inside an asset edit or scene builder context. */
+  edit?: boolean;
   /** Async cleanup callback invoked after temporarily opening Settings. */
   onCloseSettings?: () => Promise<void>;
 }

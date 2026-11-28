@@ -3,11 +3,18 @@
 
 // Bind Angular image/video edit prompt controllers, select scene timeline clips, and read alerts.
 
-import { isLiveLView, readOwn, resolveLView } from "./angular";
+import {
+  isLiveLView,
+  readOwn,
+  resolveLView,
+  type NgContextCarrier,
+} from "./angular";
 import { delay, elText } from "./dom";
-import { activeEditBuild } from "./edit_builds";
+import { activeEditBuild, isEditRoute } from "./edit_builds";
 import { runtimeState } from "./state";
 import type { BasePromptBoxInstance, NgLView, PromptStateController } from "./types";
+
+export { isEditRoute };
 
 /** Containers that belong to the Agent composer and must never be targeted by manual or edit flows. */
 export const AGENT_COMPOSER_SELECTOR =
@@ -68,11 +75,6 @@ export interface EditVideoPromptBoxInstance {
   wf?: () => boolean;
   /** Computed submit disabled reason signal. */
   UO?: () => string | undefined;
-}
-
-/** Returns true when `pathname` is an asset editor (`/edit/`) or scene builder (`/scene/`) route. */
-export function isEditRoute(pathname = location.pathname || ""): boolean {
-  return /\/(?:edit|scene)\//.test(pathname);
 }
 
 /** Resolves whether edit mode is active from an explicit flag or the current browser route. */
@@ -239,25 +241,31 @@ function cleanAlertElementText(el: Element): string {
     .trim();
 }
 
-/** Returns true when `el` is rendered and visible outside excluded panels. */
-function isVisibleAlertElement(el: Element): boolean {
+/** Returns true when `el` is rendered and visible outside excluded panels and warning chips. */
+function isVisibleOverlayElement(el: Element): boolean {
   if (!(el instanceof HTMLElement) || !el.isConnected) return false;
   if (isExcludedComposerNode(el)) return false;
-  if (el.closest('[hidden], [aria-hidden="true"]')) return false;
+  if (
+    el.closest(
+      'flow-credit-warning-button, flow-high-demand-warning-button, [hidden], [aria-hidden="true"]',
+    )
+  ) {
+    return false;
+  }
   const style = window.getComputedStyle(el);
   if (style.display === "none" || style.visibility === "hidden") return false;
   return el.getClientRects().length > 0 || el.textContent?.trim() !== "";
 }
 
-/** Reads any active `.too-long-overlay` `[role="alert"]` or `l6` controller block reason. */
+/** Reads any active `.too-long-overlay` or `l6` asset-blocking signal without matching prompt notices. */
 export function readEditBlockReason(): string | null {
-  const alertEls = Array.from(
+  const overlayEls = Array.from(
     document.querySelectorAll(
-      '.too-long-overlay, flow-edit-video-prompt-box [role="alert"], flow-edit-image-prompt-box [role="alert"], flow-scene-builder .too-long-overlay',
+      "flow-edit-video-prompt-box .too-long-overlay, flow-edit-image-prompt-box .too-long-overlay, flow-scene-builder .too-long-overlay, flow-editor-page .too-long-overlay",
     ),
   );
-  for (const el of alertEls) {
-    if (!isVisibleAlertElement(el)) continue;
+  for (const el of overlayEls) {
+    if (!isVisibleOverlayElement(el)) continue;
     const msg = cleanAlertElementText(el);
     if (msg) return msg;
   }
@@ -273,9 +281,7 @@ export function readEditBlockReason(): string | null {
     (Boolean(callSignal(videoBox, format?.selectedClip ?? "Rn")) &&
       Boolean(callSignal(videoBox, format?.regionBlockedInput ?? "eJa")));
   if (regionBlocked) {
-    const msg =
-      callSignal(videoBox, format?.regionBlockedMessage ?? "iPa") ??
-      callSignal(videoBox, format?.submitDisabledReason ?? "UO");
+    const msg = callSignal(videoBox, format?.regionBlockedMessage ?? "iPa");
     return typeof msg === "string" && msg.trim()
       ? msg.trim()
       : "Editing uploaded videos is not available in your region right now.";
@@ -302,19 +308,80 @@ export function readEditBlockReason(): string | null {
       : "Video clip is shorter than the minimum editable duration.";
   }
 
-  const disabledReason = callSignal(videoBox, format?.submitDisabledReason ?? "UO");
-  if (typeof disabledReason === "string" && disabledReason.trim()) {
-    return disabledReason.trim();
-  }
   return null;
 }
 
-/** Selects `clipWorkflowId` on `<flow-scene-timeline>` and waits for clip state to settle. */
+/** Reads `submitDisabledReason` (`UO`) after prompt entry when Start generation stays disabled. */
+export function readEditSubmitDisabledReason(): string | null {
+  const videoBox = findEditVideoPromptBox();
+  if (!videoBox) return null;
+  const format = activeEditBuild();
+  if (Boolean(callSignal(videoBox, format?.clipLoading ?? "H_"))) return null;
+  const disabledReason = callSignal(videoBox, format?.submitDisabledReason ?? "UO");
+  return typeof disabledReason === "string" && disabledReason.trim()
+    ? disabledReason.trim()
+    : null;
+}
+
+/** Extracts candidate workflow, clip, and primary media identifiers from a clip object or string. */
+function extractClipCandidateIds(item: unknown): string[] {
+  if (typeof item === "string") {
+    const s = item.trim();
+    return s ? [s] : [];
+  }
+  if (!item || typeof item !== "object" || item instanceof Node) return [];
+  const ids: string[] = [];
+  for (const key of ["workflowId", "clipId", "id", "primaryMediaId", "mediaId"]) {
+    const val = readOwn(item, key);
+    if (typeof val === "string" || typeof val === "number") {
+      const s = String(val).trim();
+      if (s && !ids.includes(s)) ids.push(s);
+    }
+  }
+  return ids;
+}
+
+/** Returns true when a DOM `.clip` element carries an identifier in `targetIds`. */
+function domClipMatchesTargets(
+  el: HTMLElement,
+  targetIds: ReadonlySet<string>,
+): boolean {
+  for (const attr of ["data-clip-id", "data-workflow-id", "id"]) {
+    const val = (el.getAttribute(attr) || "").trim();
+    if (val && targetIds.has(val)) return true;
+  }
+  const ng = (el as NgContextCarrier).__ngContext__;
+  if (Array.isArray(ng)) {
+    for (const slot of ng) {
+      if (extractClipCandidateIds(slot).some((id) => targetIds.has(id))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Returns true when a timeline `.clip` element shows an active selected state in the DOM. */
+function isDomClipSelected(el: HTMLElement): boolean {
+  const markedSelected =
+    el.classList.contains("selected") ||
+    el.getAttribute("aria-selected") === "true";
+  const masked =
+    el.classList.contains("unselected-mask") ||
+    Boolean(el.querySelector(".unselected-mask"));
+  return markedSelected && !masked;
+}
+
+/** Selects `clipWorkflowId` on `<flow-scene-timeline>` and verifies that selection matches. */
 export async function selectSceneTimelineClip(
   clipWorkflowId: string,
+  altMediaId?: string | null,
 ): Promise<boolean> {
-  const targetId = String(clipWorkflowId || "").trim();
-  if (!targetId) return false;
+  const primaryTarget = String(clipWorkflowId || "").trim();
+  const targetIds = new Set(
+    [primaryTarget, String(altMediaId || "").trim()].filter(Boolean),
+  );
+  if (targetIds.size === 0) return false;
   const format = activeEditBuild();
   const clipsKey = format?.timelineClips ?? "zh";
   const serviceKey = format?.timelineService ?? "Ef";
@@ -335,77 +402,110 @@ export async function selectSceneTimelineClip(
         readOwn(cand, serviceKey) != null,
     );
 
-  let selected = false;
+  const matchesTargets = (item: unknown): boolean =>
+    extractClipCandidateIds(item).some((id) => targetIds.has(id));
+  const mismatchesTargets = (item: unknown): boolean => {
+    const ids = extractClipCandidateIds(item);
+    return ids.length > 0 && !ids.some((id) => targetIds.has(id));
+  };
+
+  const verifySelected = (
+    ctrl: TimelineController | null,
+    matchedDomEl: HTMLElement | null,
+  ): boolean => {
+    const videoBox = findEditVideoPromptBox();
+    const activeClip = videoBox
+      ? callSignal(videoBox, format?.selectedClip ?? "Rn")
+      : undefined;
+    if (mismatchesTargets(activeClip)) return false;
+
+    const svc = ctrl ? readOwn(ctrl, serviceKey) : undefined;
+    const curSelected = svc ? callSignal(svc, readSigKey) : undefined;
+    const curSelectedId =
+      typeof curSelected === "string" || typeof curSelected === "number"
+        ? String(curSelected).trim()
+        : "";
+    if (curSelectedId && !targetIds.has(curSelectedId)) return false;
+
+    if (activeClip != null && matchesTargets(activeClip)) return true;
+    if (curSelectedId && targetIds.has(curSelectedId)) return true;
+    if (matchedDomEl && isDomClipSelected(matchedDomEl)) return true;
+    return false;
+  };
+
+  let verified = false;
+  let lastCtrl: TimelineController | null = null;
+  let lastMatchedDom: HTMLElement | null = null;
+
   for (let attempt = 0; attempt < 25; attempt += 1) {
     const timelines = Array.from(
       document.querySelectorAll("flow-scene-timeline"),
     ).filter((el) => !isExcludedComposerNode(el));
     const ctrl = findControllerInViews(timelines, isTimeline);
+    lastCtrl = ctrl;
     const clipsRaw = ctrl ? callSignal(ctrl, clipsKey) : undefined;
     const clips = Array.isArray(clipsRaw) ? clipsRaw : [];
-    const clipIdx = clips.findIndex(
-      (item) =>
-        String(readOwn(item, "workflowId") || readOwn(item, "id") || "") ===
-        targetId,
-    );
+    const clipIdx = clips.findIndex(matchesTargets);
 
     const domClips = Array.from(
       document.querySelectorAll(
         "flow-scene-timeline .clip, flow-scene-builder .clip",
       ),
-    ).filter((el): el is HTMLElement => el instanceof HTMLElement && !isExcludedComposerNode(el));
+    ).filter(
+      (el): el is HTMLElement =>
+        el instanceof HTMLElement && !isExcludedComposerNode(el),
+    );
+    const matchedDom =
+      clipIdx >= 0 && domClips[clipIdx]
+        ? domClips[clipIdx]
+        : (domClips.find((el) => domClipMatchesTargets(el, targetIds)) ?? null);
+    lastMatchedDom = matchedDom;
 
-    if (clipIdx >= 0 && domClips[clipIdx]) {
-      const targetEl = domClips[clipIdx];
-      const clickTarget =
-        targetEl.querySelector<HTMLElement>("div") || targetEl;
-      clickTarget.click();
-      selected = true;
+    if (verifySelected(ctrl, matchedDom)) {
+      verified = true;
+      break;
     }
 
-    if (ctrl) {
+    if (matchedDom) {
+      const clickTarget =
+        matchedDom.querySelector<HTMLElement>("div") || matchedDom;
+      clickTarget.click();
+    }
+
+    if (ctrl && clipIdx >= 0) {
+      const matchedIds = extractClipCandidateIds(clips[clipIdx]);
+      const emitId = matchedIds[0] || primaryTarget;
       const svc = readOwn(ctrl, serviceKey);
-      const curSelected = callSignal(svc, readSigKey);
-      if (curSelected === targetId) {
-        selected = true;
-      } else if (clipIdx >= 0 || clips.length === 0) {
-        const sig = readOwn(svc, setSigKey) as { set?: (id: string) => void } | undefined;
-        if (typeof sig?.set === "function") {
-          try {
-            sig.set(targetId);
-            selected = true;
-          } catch {
-            // Fall through to DOM click fallback.
-          }
+      const sig = readOwn(svc, setSigKey) as
+        | { set?: (id: string) => void }
+        | undefined;
+      if (typeof sig?.set === "function") {
+        try {
+          sig.set(emitId);
+        } catch {
+          // Ignore write failures on read-only signals.
         }
-        const emitter = readOwn(ctrl, outKey) as { emit?: (id: string) => void } | undefined;
-        if (typeof emitter?.emit === "function") {
-          try {
-            emitter.emit(targetId);
-            selected = true;
-          } catch {
-            // Ignore emitter errors on partially initialized views.
-          }
+      }
+      const emitter = readOwn(ctrl, outKey) as
+        | { emit?: (id: string) => void }
+        | undefined;
+      if (typeof emitter?.emit === "function") {
+        try {
+          emitter.emit(emitId);
+        } catch {
+          // Ignore emitter errors on partially initialized views.
         }
       }
     }
 
-    if (!selected && domClips.length === 1) {
-      const clickTarget =
-        domClips[0].querySelector<HTMLElement>("div") || domClips[0];
-      clickTarget.click();
-      selected = true;
-    }
-
-    const videoBox = findEditVideoPromptBox();
-    const activeClip = videoBox
-      ? callSignal(videoBox, format?.selectedClip ?? "Rn")
-      : undefined;
-    if (selected && (activeClip != null || readEditBlockReason() !== null)) {
+    await delay(100);
+    if (verifySelected(ctrl, matchedDom)) {
+      verified = true;
       break;
     }
-    await delay(100);
   }
+
+  if (!verified) return false;
 
   for (let waitIdx = 0; waitIdx < 25; waitIdx += 1) {
     const videoBox = findEditVideoPromptBox();
@@ -415,5 +515,5 @@ export async function selectSceneTimelineClip(
     if (!loading) break;
     await delay(100);
   }
-  return selected;
+  return verifySelected(lastCtrl, lastMatchedDom);
 }

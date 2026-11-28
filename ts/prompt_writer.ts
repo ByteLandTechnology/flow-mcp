@@ -6,6 +6,7 @@
 import { readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, hoverProbe, isVisibleEnabled, setNativeValue } from "./dom";
 import { buildPromptPayload } from "./edit_builds";
+import { isEditContext } from "./edit_composer";
 import { runtimeState } from "./state";
 import type {
   NgLView,
@@ -447,6 +448,7 @@ export async function writePromptBox(
       : typeof promptState?.lf?.isValid === "function"
         ? promptState.lf.isValid() === true
         : false;
+  const inEdit = isEditContext(opts.edit);
   const applyPromptStateText = (content: string): boolean => {
     const applyFn =
       typeof promptState?.Gp === "function"
@@ -455,10 +457,11 @@ export async function writePromptBox(
           ? promptState.Wn
           : null;
     if (!promptState || !applyFn) return false;
-    applyFn.call(promptState, buildPromptPayload(content));
+    applyFn.call(promptState, buildPromptPayload(content, inEdit));
     return true;
   };
   const promptStateMatches = (): boolean => {
+    if (!inEdit) return true;
     if (typeof promptState?.prompt?.content !== "function") return true;
     try {
       const raw = promptState.prompt.content();

@@ -427,6 +427,16 @@ function operationStatus(result: FrontendCompatibility<unknown>): {
   return { ok: result.ok, failed_checks: result.ok ? [] : result.failed_checks };
 }
 
+/** Reports edit controller compatibility for `build` without failing general store probes. */
+function editOperationStatus(build: string | null): {
+  ok: boolean;
+  failed_checks: StoreProbeCheck[];
+} {
+  const editChecks = editBuildChecks(build);
+  const failed = editChecks.filter(({ ok }) => !ok);
+  return { ok: failed.length === 0, failed_checks: failed };
+}
+
 /** Reports the general store checks and compatibility of each managed operation. */
 export function probeStore(): StoreProbeResult {
   const build = readBuildLabel();
@@ -436,7 +446,6 @@ export function probeStore(): StoreProbeResult {
   const views = runtimeState.ngLViewMap;
   const checks = [
     verified,
-    ...editBuildChecks(build),
     {
       name: "lview_registry",
       ok: views instanceof Map,
@@ -445,10 +454,7 @@ export function probeStore(): StoreProbeResult {
     ...trashChecks,
   ];
   const pageChecks = projectPageOperationChecks(build);
-  const operations: Record<
-    keyof FrontendFormats,
-    { ok: boolean; failed_checks: StoreProbeCheck[] }
-  > = {
+  const operations: StoreProbeResult["operations"] = {
     agent_chat: operationStatus(agentChatCompatibility(pageChecks.agent_chat)),
     agent_attachments: operationStatus(agentAttachmentCompatibility(pageChecks.agent_attachments)),
     agent_settings: operationStatus(agentSettingsCompatibility(pageChecks.agent_settings)),
@@ -456,6 +462,7 @@ export function probeStore(): StoreProbeResult {
     collection_write: operationStatus(collectionWriteCompatibility()),
     character_bio: operationStatus(characterBioCompatibility()),
     asset_trash_store: operationStatus(assetTrashCompatibility()),
+    asset_edit: editOperationStatus(build),
   };
   const formats = frontendBuild(build)?.operations;
   const operationsOk = FRONTEND_OPERATIONS.every((name) => !formats?.[name] || operations[name].ok);
