@@ -529,6 +529,7 @@ const NOVEMBER_20_AGENT: AgentChatFormat = {
   },
   wire: {
     methods: { stop: "uv", deleteSession: "eM", renameSession: "Z2", clearSession: "eM", permissions: "La", answer: "nB" },
+    sessionSignals: ["oa", "ka"],
     send: { Oe: "Te", Gn: "Wn", hi: "wi", Aq: "Wq" },
     hydrate: { BF: "hG", hka: "Rla", xe: "Ce" },
     resume: { BF: "hG", TM: "BN" },

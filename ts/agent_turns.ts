@@ -512,19 +512,23 @@ export function loadStoredTurns(
   turns: StoredTurn[],
 ): void {
   const { flow, transport } = context;
-  const local = transport.ka.ha().get(sessionId);
-  const localCount = local?.Vh.length ?? 0;
-  const hasLocalFailure = Boolean(
-    local?.Vh.some(
-      (turn, index) =>
-        turn.errorMessage !== undefined &&
-        (index >= turns.length || turns[index]?.getState() !== 3),
-    ),
-  );
-  if (turns.length !== localCount || hasLocalFailure) {
+  const localTurns = transport.ka.ha().get(sessionId)?.Vh ?? [];
+  const hasStaleLocalFailure = localTurns.some((turn, index) => {
+    if (turn.errorMessage === undefined || turn.errorMessage === flow.errors.IC) {
+      return false;
+    }
+    return index >= turns.length || turns[index]?.getState() !== 3;
+  });
+  if (turns.length > localTurns.length || hasStaleLocalFailure) {
+    const trailing = localTurns
+      .slice(turns.length)
+      .filter(
+        (turn) =>
+          turn.errorMessage === undefined || turn.errorMessage === flow.errors.IC,
+      );
     flow.hydrate(transport.ka, {
       sessionId,
-      BF: turns.map(flow.decode),
+      BF: [...turns.map(flow.decode), ...trailing],
       hka: false,
       xe: null,
     });

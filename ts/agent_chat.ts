@@ -58,8 +58,6 @@ interface Binding {
   questions: QuestionResponder;
   /** Reads live project tiles on the bound page. */
   tiles: () => AttachmentTile[];
-  /** Resets active session signals when they hold `sessionId`. */
-  resetActiveSession: (sessionId: string) => void;
   /** IDs that Flow has yet to add to the session list. */
   drafts: Set<string>;
 }
@@ -153,54 +151,6 @@ export function agentPrototype(): object | null {
   return typeof type === "function" ? type.prototype : null;
 }
 
-/** Resets writable signals on the native services when they hold `sessionId`. */
-function clearActiveSessionSignals(
-  targets: Record<string, unknown>[],
-  sessionId: string,
-): void {
-  const store = targets[0];
-  const active = targets.find((target) => typeof target.qg === "function");
-  if (active && (active.qg as () => unknown)() === sessionId) {
-    const primary = store?.oa;
-    if (
-      primary &&
-      (typeof primary === "function" || typeof primary === "object") &&
-      typeof (primary as { set?: unknown }).set === "function"
-    ) {
-      (primary as { set: (value: undefined) => void }).set(undefined);
-    }
-  }
-  const allocated = typeof store?.la === "function" ? store.la() : undefined;
-  if (allocated === sessionId) {
-    const pending = store?.ka;
-    if (
-      pending &&
-      (typeof pending === "function" || typeof pending === "object") &&
-      typeof (pending as { set?: unknown }).set === "function"
-    ) {
-      (pending as { set: (value: undefined) => void }).set(undefined);
-    }
-  }
-  for (const target of targets) {
-    for (const value of Object.values(target)) {
-      if (
-        typeof value === "function" &&
-        typeof (value as { set?: unknown }).set === "function"
-      ) {
-        try {
-          if (value() === sessionId) {
-            (value as unknown as { set: (next: undefined) => void }).set(
-              undefined,
-            );
-          }
-        } catch {
-          // Ignore unrelated functions on the service.
-        }
-      }
-    }
-  }
-}
-
 /** Finds a live project page and takes its project-scoped service handles. */
 export function bindAgent(
   instances: Record<string, unknown>[],
@@ -263,15 +213,6 @@ export function bindAgent(
         permissions,
         flow,
         tiles: () => readAgentProjectTiles(page),
-        resetActiveSession: (sessionId: string) =>
-          clearActiveSessionSignals(
-            [
-              nativeTransport.ka as unknown as Record<string, unknown>,
-              nativeTransport as unknown as Record<string, unknown>,
-              composer as unknown as Record<string, unknown>,
-            ],
-            sessionId,
-          ),
         canSend: () => composer.wb?.() === true,
         drafts: binding?.page === page ? binding.drafts : new Set(),
       };
@@ -320,7 +261,6 @@ async function removeCachedQueries(
 async function purgeSession(bound: Binding, sessionId: string): Promise<void> {
   bound.drafts.delete(sessionId);
   bound.transport.ka.yL(sessionId);
-  bound.resetActiveSession(sessionId);
   const client = resolveQueryClient(bound.injector, bound.page);
   await removeCachedQueries(
     client,
@@ -337,8 +277,9 @@ async function purgeSession(bound: Binding, sessionId: string): Promise<void> {
 /** Clears local drafts, turn signals, active session state, and query caches for one session. */
 export async function agentPurge(projectId: string, sessionId: string) {
   const bound = liveBinding(projectId);
-  if (!bound) return failure("agent_project_changed");
-  await purgeSession(bound, sessionId);
+  if (bound) {
+    await purgeSession(bound, sessionId);
+  }
   return { ok: true as const, session_id: sessionId };
 }
 
@@ -547,32 +488,42 @@ function isStreamAttached(entry: unknown): boolean {
   return true;
 }
 
-/** Returns true when the turn records an answer for the question card. */
-function isQuestionAccepted(bound: Binding, sessionId: string, actionId: string): boolean {
+/** Returns true when the turn records the caller response on the target action card. */
+function isActionAccepted(
+  bound: Binding,
+  sessionId: string,
+  kind: "permission" | "question",
+  actionId: string,
+): boolean {
   const session = bound.transport.ka.ha().get(sessionId);
   const turn = session?.xe ?? session?.Vh.at(-1);
   const blocks = turn?.Tf?.Oh;
   if (!blocks) return false;
-  return blocks.some(
-    (block) =>
-      block.type === "question" &&
-      block.card.id === actionId &&
-      block.card.Qj !== undefined,
+  return blocks.some((block) =>
+    kind === "question"
+      ? block.type === "question" &&
+        block.card.id === actionId &&
+        block.card.Qj !== undefined
+      : block.type === "permission" &&
+        block.card.id === actionId &&
+        block.card.Vz !== undefined,
   );
 }
 
-/** Returns true when the turn records a decision for the permission card. */
-function isPermissionAccepted(bound: Binding, sessionId: string, actionId: string): boolean {
-  const session = bound.transport.ka.ha().get(sessionId);
-  const turn = session?.xe ?? session?.Vh.at(-1);
-  const blocks = turn?.Tf?.Oh;
-  if (!blocks) return false;
-  return blocks.some(
-    (block) =>
-      block.type === "permission" &&
-      block.card.id === actionId &&
-      block.card.Vz !== undefined,
-  );
+/** Returns true when an attached stream stays on the same open turn without recording the action. */
+function isActionStillUnaccepted(
+  bound: Binding,
+  sessionId: string,
+  entry: unknown,
+  attached: boolean,
+  kind: "permission" | "question",
+  actionId: string,
+): boolean {
+  if (!attached) return false;
+  const after = bound.transport.ha.get(sessionId);
+  if (after !== entry || !isStreamAttached(after)) return false;
+  if (!bound.transport.ka.ha().get(sessionId)?.xe) return false;
+  return !isActionAccepted(bound, sessionId, kind, actionId);
 }
 
 /** Applies a decision to one action from the requested turn. */
@@ -611,11 +562,15 @@ async function respond(
       Ig: action.action_id,
       action: decision.code,
     });
-    const after = bound.transport.ha.get(id);
     if (
-      attached &&
-      (!isPermissionAccepted(bound, id, action.action_id) ||
-        (after !== undefined && !isStreamAttached(after)))
+      isActionStillUnaccepted(
+        bound,
+        id,
+        entry,
+        attached,
+        "permission",
+        action.action_id,
+      )
     ) {
       return failure("agent_action_not_pending");
     }
@@ -631,12 +586,15 @@ async function respond(
       Qj: answers,
       hi: AGENT_SURFACE,
     });
-    const after = bound.transport.ha.get(id);
     if (
-      attached &&
-      (!isQuestionAccepted(bound, id, action.action_id) ||
-        (after !== undefined &&
-          (!isStreamAttached(after) || readOwn(after, "na") !== undefined)))
+      isActionStillUnaccepted(
+        bound,
+        id,
+        entry,
+        attached,
+        "question",
+        action.action_id,
+      )
     ) {
       return failure("agent_action_not_pending");
     }
@@ -676,7 +634,7 @@ async function respond(
 /** Sends recorded question answers again on open streams after a reconnect resets turn state. */
 export function agentReplay(projectId: string, entries: AgentReplayEntry[]) {
   const bound = liveBinding(projectId);
-  if (!bound) return { ok: false as const, replayed: 0 };
+  if (!bound) return failure("agent_project_changed");
   let replayed = 0;
   for (const entry of entries) {
     const stream = bound.transport.ha.get(entry.session_id);
@@ -700,11 +658,15 @@ export function agentReplay(projectId: string, entries: AgentReplayEntry[]) {
       Qj: formatted,
       hi: AGENT_SURFACE,
     });
-    const after = bound.transport.ha.get(entry.session_id);
     if (
-      isQuestionAccepted(bound, entry.session_id, action.action_id) &&
-      (after === undefined ||
-        (isStreamAttached(after) && readOwn(after, "na") === undefined))
+      !isActionStillUnaccepted(
+        bound,
+        entry.session_id,
+        stream,
+        true,
+        "question",
+        action.action_id,
+      )
     ) {
       replayed++;
     }
@@ -731,11 +693,16 @@ async function sendUserMessage(
   if (request.action === "create_session") {
     const created = await send(bound, draftSession(id), [], input);
     if (!created.ok) {
-      await purgeSession(bound, id);
+      if (
+        created.error !== "outcome_unknown" &&
+        created.error !== "agent_submission_not_observed"
+      ) {
+        await purgeSession(bound, id);
+      }
       return created;
     }
-    if (created.turn.status === "failed") {
-      const saved = (await savedSessions(bound).catch(() => [])).find(
+    if (created.turn.status === "failed" && !bound.transport.ha.has(id)) {
+      const saved = (await savedSessions(bound)).find(
         (item) => item.session_id === id,
       );
       if (saved) return { ...created, ...saved };
