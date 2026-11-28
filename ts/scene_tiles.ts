@@ -7,11 +7,11 @@ import { readOwn } from "./angular";
 import { sceneTileFormat } from "./frontend_builds";
 import type { FlowMediaPayload, FlowTile, SceneClipItem } from "./types";
 
-/** Returns the clip list and history of a scene in the active build. */
+/** Returns the clip list and history of a scene in the active or bound store build. */
 export function sceneContents(tile: FlowTile) {
   const format = sceneTileFormat();
-  const clips = readOwn(tile, format.clips) ?? readOwn(tile, "Tc") ?? tile.Oc;
-  const history = readOwn(tile, format.history) ?? readOwn(tile, "tg") ?? tile.Yf;
+  const clips = (format && readOwn(tile, format.clips)) ?? tile.Oc;
+  const history = (format && readOwn(tile, format.history)) ?? tile.Yf;
   const entries: Iterable<[string, FlowMediaPayload[]]> = history instanceof Map
     ? history.entries()
     : history && typeof history === "object" ? Object.entries(history) : [];

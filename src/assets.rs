@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use tokio::time::{Duration, Instant};
 
-use crate::collections::{FlowCollection, find_collection};
+use crate::collections::{find_collection, snapshot_collections};
 use crate::db::FlowDb;
 use crate::download::eval_resolve_media_url;
 use crate::engine::ChromeEngine;
@@ -241,9 +241,18 @@ pub(crate) async fn list_assets_with_project(
     Ok(snapshot)
 }
 
+/// Extracts the asset list from a project store snapshot.
+fn snapshot_assets(snap: &mut Value) -> Result<Vec<FlowAsset>> {
+    Ok(serde_json::from_value(
+        snap.get_mut("assets")
+            .map(Value::take)
+            .unwrap_or_else(|| json!([])),
+    )?)
+}
+
 /// Reads project metadata and assets without requesting media URLs.
 async fn read_project_assets(engine: &ChromeEngine) -> Result<ProjectAssetsSnapshot> {
-    let snap = read_snapshot(engine).await?;
+    let mut snap = read_snapshot(engine).await?;
     let project_id = snap
         .get("projectId")
         .and_then(|v| v.as_str())
@@ -256,11 +265,7 @@ async fn read_project_assets(engine: &ChromeEngine) -> Result<ProjectAssetsSnaps
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let assets = serde_json::from_value(
-        snap.get("assets")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    )?;
+    let assets = snapshot_assets(&mut snap)?;
     Ok(ProjectAssetsSnapshot {
         project_id,
         project_title,
@@ -431,34 +436,19 @@ async fn confirm_renamed_asset(engine: &ChromeEngine, id: &str, name: &str) -> b
     false
 }
 
-/// Renames collections through the menu or collection store and other tiles through the page or store.
+/// Renames collections through the collection store and other tiles through the page or store.
 pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>) -> Result<Value> {
     ensure_flow_store(engine).await?;
     let mut snap = read_snapshot(engine).await?;
-    let collection_list: Vec<FlowCollection> = serde_json::from_value(
-        snap.get_mut("collections")
-            .map(Value::take)
-            .unwrap_or_else(|| json!([])),
-    )?;
-    let collection_ids: HashSet<String> = collection_list.into_iter().map(|c| c.id).collect();
+    let collection_ids: HashSet<String> = snapshot_collections(&mut snap)?
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
     let total = items.len();
     let mut renamed = Vec::new();
     let mut failed = Vec::new();
 
     'items: for (idx, entry) in items.into_iter().enumerate() {
-        // Use the rename control of the page first. The page then builds its own mutation.
-        if tile_state(engine, &entry.id).await.is_present()
-            && matches!(
-                rename_through_menu(engine, &entry.id, &entry.name).await,
-                Ok(true)
-            )
-        {
-            renamed.push(json!({ "id": entry.id, "name": entry.name, "method": "menu:rename" }));
-            if idx + 1 < total {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            continue 'items;
-        }
         if collection_ids.contains(&entry.id) {
             match ProjectStoreSession::open(engine).await {
                 Ok(collections) => match collections.rename(&entry.id, &entry.name).await {
@@ -469,6 +459,19 @@ pub(crate) async fn rename_assets(engine: &ChromeEngine, items: Vec<RenameEntry>
                 },
                 Err(err) => failed.push(rename_error(&entry, &err)),
             }
+            if idx + 1 < total {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            continue 'items;
+        }
+        // Use the rename control of the page first. The page then builds its own mutation.
+        if tile_state(engine, &entry.id).await.is_present()
+            && matches!(
+                rename_through_menu(engine, &entry.id, &entry.name).await,
+                Ok(true)
+            )
+        {
+            renamed.push(json!({ "id": entry.id, "name": entry.name, "method": "menu:rename" }));
             if idx + 1 < total {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
@@ -560,21 +563,13 @@ pub(crate) async fn trash_asset(
     let query = match_str.trim();
     ensure_flow_store(engine).await?;
     let mut snap = read_snapshot(engine).await?;
-    let summaries: Vec<FlowCollection> = serde_json::from_value(
-        snap.get_mut("collections")
-            .map(Value::take)
-            .unwrap_or_else(|| json!([])),
-    )?;
+    let summaries = snapshot_collections(&mut snap)?;
     if summaries.iter().any(|c| c.id == query) {
         let collections = ProjectStoreSession::open(engine).await?;
         return collections.delete(query).await;
     }
 
-    let raw_assets: Vec<FlowAsset> = serde_json::from_value(
-        snap.get_mut("assets")
-            .map(Value::take)
-            .unwrap_or_else(|| json!([])),
-    )?;
+    let raw_assets = snapshot_assets(&mut snap)?;
     let Some(asset) = match_asset(&raw_assets, query, true).cloned() else {
         let collection = find_collection(&summaries, query, true)?
             .with_context(|| format!("No asset or collection matches '{query}' for flow_trash"))?;

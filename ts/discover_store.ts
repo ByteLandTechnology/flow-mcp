@@ -3,12 +3,14 @@
 
 // Capture Angular Ivy views from the DOM as a fallback for verified store binding.
 
-import { isNgLViewMap, resolveLView, withLViewMapCapture } from "./angular";
+import { isNgLViewMap, readOwn, resolveLView, withLViewMapCapture } from "./angular";
 import { delay, hoverProbe } from "./dom";
+import { activeProjectStoreFormat, readBuildLabel } from "./frontend_builds";
 import {
   clearProjectStore,
   currentProjectStore,
   findProjectStoreInView,
+  hasNoCascadedStoreClasses,
   installProjectStore,
   isCurrent,
   projectInRoute,
@@ -125,6 +127,15 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
     clearProjectStore();
     return { bound: false, newlyDiscovered: false, error: "not_in_project" };
   }
+  if (hasNoCascadedStoreClasses()) {
+    clearProjectStore();
+    return {
+      bound: false,
+      newlyDiscovered: false,
+      error: "unsupported_front_end",
+      build: readBuildLabel(),
+    };
+  }
 
   const existing = currentProjectStore(projectId);
   if (existing) {
@@ -181,6 +192,27 @@ export async function discoverStore(): Promise<DiscoverStoreResult> {
       installProjectStore(found);
       return { bound: true, newlyDiscovered: true };
     }
+  }
+  if (
+    !activeProjectStoreFormat() &&
+    Boolean(readOwn(window, "default_AiSandboxAngularFrontend")) &&
+    !document.querySelector("flow-loading-page") &&
+    (allMaps.size > 0 ||
+      Boolean(
+        document.querySelector(
+          "flow-project-shell, flow-project-page, flow-character-edit-page, flow-scene-builder, flow-editor-page",
+        ),
+      ) ||
+      Array.from(document.querySelectorAll("*"))
+        .slice(0, 120)
+        .some((el) => "__ngContext__" in el))
+  ) {
+    return {
+      bound: false,
+      newlyDiscovered: false,
+      error: "unsupported_front_end",
+      build: readBuildLabel(),
+    };
   }
   return { bound: false, newlyDiscovered: false };
 }

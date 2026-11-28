@@ -3,6 +3,7 @@
 
 // Module-scoped browser runtime state replacing loose window globals.
 
+import type { ProjectStoreFormat } from "./frontend_builds";
 import type {
   CachedMediaInfo,
   FlowStoreHandle,
@@ -20,6 +21,8 @@ export interface RuntimeState {
   routePath: string | null;
   /** Normalized store mutation and snapshot handle. */
   store: FlowStoreHandle | null;
+  /** Verified layout of the currently bound project store. */
+  storeFormat: ProjectStoreFormat | null;
   /** Cached resolved media URLs keyed by primary media identifier. */
   mediaInfoCache: Map<string, CachedMediaInfo>;
   /** Most recently captured prompt validation and submission state controller. */
@@ -32,6 +35,7 @@ export const runtimeState: RuntimeState = {
   projectId: null,
   routePath: null,
   store: null,
+  storeFormat: null,
   mediaInfoCache: new Map<string, CachedMediaInfo>(),
   promptState: null,
 };
@@ -41,4 +45,5 @@ export function clearStore(): void {
   runtimeState.projectId = null;
   runtimeState.routePath = null;
   runtimeState.store = null;
+  runtimeState.storeFormat = null;
 }

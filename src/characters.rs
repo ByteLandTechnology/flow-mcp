@@ -12,7 +12,8 @@ use tokio::time::{Duration, Instant};
 
 use crate::assets::{FlowAsset, list_assets_with_project, match_asset, trash_asset};
 use crate::character_bio::{
-    edit_character_bio, open_verified_bio_store, set_character_bio, update_character_form_fields,
+    confirm_character_bio_saved, edit_character_bio, open_verified_bio_store, set_character_bio,
+    update_character_form_fields,
 };
 use crate::db::FlowDb;
 use crate::download::download_resolved_asset;
@@ -427,6 +428,7 @@ pub(crate) async fn create_or_update_character_job(
         None
     };
     let editor_opened;
+    let mut form_bio_to_confirm: Option<String> = None;
     let mut net_rx = if look_prompt.is_some() || has_refs {
         Some(engine.subscribe_network().await?)
     } else {
@@ -541,6 +543,9 @@ pub(crate) async fn create_or_update_character_job(
             } else {
                 effective_bio.as_deref()
             };
+        if let Some(bio) = form_bio {
+            form_bio_to_confirm = Some(bio.to_owned());
+        }
         editor_opened = true;
         update_character_form_fields(
             engine,
@@ -758,6 +763,9 @@ pub(crate) async fn create_or_update_character_job(
 
     if editor_opened {
         exit_character_editor(engine, project_id.as_deref()).await;
+    }
+    if let Some(ref bio) = form_bio_to_confirm {
+        confirm_character_bio_saved(engine, &char_id, bio).await?;
     }
 
     if let Some(err) = upload_err.or(look_err) {

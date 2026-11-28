@@ -4,6 +4,7 @@
 // Locate project tiles in the page, read their state from the bound store, and dispatch page view and text control actions.
 
 import {
+  isAngularSignal,
   readOwn,
   resolveLView,
   withLViewMapCapture,
@@ -87,7 +88,10 @@ function objectMatchesTile(cand: unknown, id: string, target: FlowTile): boolean
   return candId !== undefined && candId !== null && String(candId) === id;
 }
 
-/** Returns true when one `LView` slot or component input signal binds `id`. */
+/** Verified property and Angular input signal names that hold a grid tile record. */
+const TILE_SLOT_KEYS = ["tile", "Ia", "Oa"] as const;
+
+/** Returns true when one `LView` slot or allow-listed Angular input signal binds `id`. */
 function slotMatchesTile(slot: unknown, id: string, target: FlowTile): boolean {
   if (objectMatchesTile(slot, id, target)) return true;
   if (
@@ -101,16 +105,16 @@ function slotMatchesTile(slot: unknown, id: string, target: FlowTile): boolean {
   ) {
     return false;
   }
-  for (const key of Object.getOwnPropertyNames(slot)) {
+  for (const key of TILE_SLOT_KEYS) {
     const desc = Object.getOwnPropertyDescriptor(slot, key);
     if (!desc || !("value" in desc)) continue;
     const val: unknown = desc.value;
     if (objectMatchesTile(val, id, target)) return true;
-    if (typeof val === "function" && val.length === 0) {
+    if (typeof val === "function" && val.length === 0 && isAngularSignal(val)) {
       try {
         if (objectMatchesTile(val.call(slot), id, target)) return true;
       } catch {
-        // Ignore unset Angular required input signals or stateful methods.
+        // Ignore unset Angular required input signals.
       }
     }
   }
@@ -262,19 +266,99 @@ async function locateTile(id: string): Promise<Record<string, unknown>> {
   return located;
 }
 
-/** Finds the confirm button of an open trash dialog and returns its viewport point. */
-function confirmTrashDialog(): Record<string, unknown> {
+/** Returns true when `dialog` binds `target` in its Angular `LView` or dialog data slot. */
+function dialogBindsTile(dialog: HTMLElement, id: string, target: FlowTile): boolean {
+  if (containerMatchesTile(dialog, id, target)) return true;
+  const hosts = [
+    dialog,
+    ...Array.from(dialog.querySelectorAll("*")).filter(
+      (el) => el.tagName.includes("-") || "__ngContext__" in el,
+    ),
+  ].slice(0, 24);
+  for (const host of hosts) {
+    const lv = resolveLView(host);
+    if (!Array.isArray(lv)) continue;
+    for (const slot of lv) {
+      const data = readOwn(slot, "data");
+      if (
+        objectMatchesTile(data, id, target) ||
+        objectMatchesTile(readOwn(data, "tile"), id, target)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Returns true when `dialog` describes moving single tile `target` to trash and not another tile. */
+function dialogMatchesTrashTarget(
+  dialog: HTMLElement,
+  id: string,
+  target: FlowTile,
+  tileMap: Map<string, FlowTile>,
+): boolean {
+  const dialogText = elText(dialog);
+  if (!/\bmove\b[\s\S]*\bto trash\b/i.test(dialogText)) return false;
+  const tileType = String(target.type || "IMAGE").toUpperCase();
+  if (tileType !== "COLLECTION" && /\bcollection\b/i.test(dialogText)) return false;
+  if (/\b(?:chat|project|app|tool)\b/i.test(dialogText)) return false;
+  if (dialogBindsTile(dialog, id, target)) return true;
+  let seenOther = 0;
+  for (const [otherId, otherTile] of tileMap.entries()) {
+    if (++seenOther > 200) break;
+    if (otherId === id || !otherTile || isTrashedTile(otherTile)) continue;
+    if (dialogBindsTile(dialog, otherId, otherTile)) return false;
+  }
+  const lowerText = dialogText.toLowerCase();
+  const displayName = String(target.displayName || "").trim();
+  if (displayName && lowerText.includes(displayName.toLowerCase())) {
+    return true;
+  }
+  seenOther = 0;
+  for (const [otherId, otherTile] of tileMap.entries()) {
+    if (++seenOther > 200) break;
+    if (otherId === id || !otherTile || isTrashedTile(otherTile)) continue;
+    const otherName = String(otherTile.displayName || "").trim();
+    if (
+      otherName.length >= 2 &&
+      otherName.toLowerCase() !== displayName.toLowerCase() &&
+      lowerText.includes(otherName.toLowerCase())
+    ) {
+      return false;
+    }
+  }
+  const kindWord =
+    tileType === "SCENE"
+      ? "(?:scene|item|asset)"
+      : tileType === "CHARACTER"
+        ? "(?:character|item|asset)"
+        : tileType === "VIDEO"
+          ? "(?:video|clip|media|item|asset)"
+          : "(?:image|media|item|asset)";
+  return new RegExp(`\\bmove\\s+(?:this\\s+)?${kindWord}\\s+to\\s+trash\\b`, "i").test(dialogText);
+}
+
+/** Finds the confirm button of an open trash dialog for tile `id` and returns its viewport point. */
+function confirmTrashDialog(id: string): Record<string, unknown> {
+  const tileMap = runtimeState.store?.getTileMap?.();
+  if (!(tileMap instanceof Map)) return { ok: false, error: "store_not_bound" };
+  const target = tileMap.get(id);
+  if (!target) return { ok: false, error: "tile_not_found" };
   const dialogs = Array.from(
     document.querySelectorAll<HTMLElement>(
       '[role="dialog"], [role="alertdialog"], mat-dialog-container',
     ),
-  ).filter((el) => el.getClientRects().length > 0);
-  const pattern =
-    /^(?:(?:delete|delete_forever|warning)\s+)?(?:move(?: all contents)? to trash|delete)$/i;
+  )
+    .filter((el) => el.getClientRects().length > 0)
+    .reverse();
+  const buttonPattern =
+    /^(?:(?:delete|delete_forever|warning)\s+)?move(?:\s+(?:this\s+)?(?:item|asset|media|image|video|clip|scene|character))?\s+to\s+trash$/i;
   for (const dialog of dialogs) {
+    if (!dialogMatchesTrashTarget(dialog, id, target, tileMap)) continue;
     for (const btn of Array.from(dialog.querySelectorAll("button"))) {
       if (!isVisibleEnabled(btn)) continue;
-      if (pattern.test(elText(btn))) {
+      if (buttonPattern.test(elText(btn))) {
         return { ok: true, point: centerOf(btn) };
       }
     }
@@ -308,7 +392,7 @@ export async function tileDomOp(req: TileDomOpRequest): Promise<unknown> {
   if (action === "open_view") return openView(id);
   if (action === "text_select") return selectText();
   if (action === "text_value") return readText();
-  if (action === "confirm_dialog") return confirmTrashDialog();
+  if (action === "confirm_dialog") return confirmTrashDialog(id);
   if (action === "dismiss") {
     await dismissOverlay();
     return { ok: true };

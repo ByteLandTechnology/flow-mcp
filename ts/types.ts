@@ -514,6 +514,8 @@ export interface DiscoverStoreResult {
   newlyDiscovered: boolean;
   /** Optional compatibility or discovery error code. */
   error?: string;
+  /** Active front-end build label when compatibility fails. */
+  build?: string | null;
 }
 
 /** Asset entry normalized for `readStoreSnapshot`. */
@@ -568,7 +570,7 @@ export interface SnapshotCollectionItem {
 
 /** Result returned by `readStoreSnapshot`. */
 export type StoreSnapshotResult =
-  | { ok: false; error: string }
+  | { ok: false; error: string; build?: string | null }
   | {
       ok: true;
       projectId: string | null;

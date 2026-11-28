@@ -356,9 +356,9 @@ export async function projectsOp(req: ProjectsOpRequest): Promise<unknown> {
             ) {
               await withLViewMapCapture(() => hoverProbe([host]));
             }
-            const lv = resolveLView(host);
-            if (Array.isArray(lv)) {
-              const titleFormat = projectTitleFormat();
+            const titleFormat = projectTitleFormat();
+            const lv = titleFormat ? resolveLView(host) : null;
+            if (titleFormat && Array.isArray(lv)) {
               for (const slot of lv) {
                 const emitter = readOwn(slot, titleFormat.saveEmitter) as
                   | { emit?: (v: string) => void }

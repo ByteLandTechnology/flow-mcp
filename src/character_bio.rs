@@ -14,16 +14,7 @@ use crate::db::FlowDb;
 use crate::engine::ChromeEngine;
 use crate::project::{ensure_flow_store, ensure_project_workspace_root, project_id_from_url};
 use crate::project_route::character_id_from_url;
-use crate::project_store::ProjectStoreSession;
-
-/// Returns true when `err` indicates that direct character bio store mutations are unverified.
-fn is_unsupported_bio_store(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}");
-    !msg.contains("outcome_unknown")
-        && (msg.contains("unsupported_front_end")
-            || msg.contains("collection_store_not_bound")
-            || msg.contains("ambiguous_collection_store"))
-}
+use crate::project_store::{ProjectStoreSession, is_store_write_unavailable};
 
 /// Opens a verified project store session for character bio writes, or returns `Ok(None)` on unverified builds.
 pub(crate) async fn open_verified_bio_store<'a>(
@@ -32,7 +23,7 @@ pub(crate) async fn open_verified_bio_store<'a>(
 ) -> Result<Option<ProjectStoreSession<'a>>> {
     let store = match ProjectStoreSession::open(engine).await {
         Ok(store) => store,
-        Err(err) if is_unsupported_bio_store(&err) => return Ok(None),
+        Err(err) if is_store_write_unavailable(&err) => return Ok(None),
         Err(err) => return Err(err),
     };
     anyhow::ensure!(
@@ -44,7 +35,7 @@ pub(crate) async fn open_verified_bio_store<'a>(
         .await
     {
         Ok(_) => Ok(Some(store)),
-        Err(err) if is_unsupported_bio_store(&err) => Ok(None),
+        Err(err) if is_store_write_unavailable(&err) => Ok(None),
         Err(err) => Err(err),
     }
 }
@@ -97,11 +88,14 @@ pub(crate) async fn update_character_form_fields(
             .await?;
     }
     for _ in 0..25 {
-        if res.get("error").and_then(Value::as_str) != Some("store_loading") {
+        let err = res.get("error").and_then(Value::as_str);
+        if !matches!(err, Some("store_loading" | "store_not_bound")) {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let _ = ensure_flow_store(engine).await;
+        if err == Some("store_loading") {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        ensure_flow_store(engine).await?;
         res = engine
             .call_flow_async("characterOp", json!([payload.clone()]))
             .await?;
@@ -123,6 +117,23 @@ pub(crate) async fn update_character_form_fields(
                 .unwrap_or("unknown")
         );
     }
+    Ok(())
+}
+
+/// Checks the project snapshot to confirm that `bio` saved on character `char_id`.
+pub(crate) async fn confirm_character_bio_saved(
+    engine: &ChromeEngine,
+    char_id: &str,
+    bio: &str,
+) -> Result<()> {
+    let refreshed = list_assets_with_project(engine).await?;
+    let confirmed = refreshed.assets.iter().any(|asset| {
+        asset.id == char_id && asset.personality_notes.as_deref().map(str::trim) == Some(bio.trim())
+    });
+    anyhow::ensure!(
+        confirmed,
+        "Flow did not persist personality notes for character '{char_id}'"
+    );
     Ok(())
 }
 
@@ -155,11 +166,12 @@ async fn edit_character_bio_in_form(
         update_character_form_fields(engine, Some(&pid), &target.id, None, Some(bio)).await;
     exit_character_editor(engine, Some(&pid)).await;
     update_res?;
+    confirm_character_bio_saved(engine, &target.id, bio).await?;
     db.upsert_character(
         target.id.clone(),
         Some(pid),
         target.name.clone(),
-        Some(bio.to_owned()),
+        Some(bio.trim().to_owned()),
         None,
         None,
     )
@@ -191,11 +203,11 @@ pub(crate) async fn edit_character_bio(
                     set_character_bio(&store, &target.id, bio).await?;
                     Some((target, store.project_id().to_owned()))
                 }
-                Err(err) if is_unsupported_bio_store(&err) => None,
+                Err(err) if is_store_write_unavailable(&err) => None,
                 Err(err) => return Err(err),
             }
         }
-        Err(err) if is_unsupported_bio_store(&err) => None,
+        Err(err) if is_store_write_unavailable(&err) => None,
         Err(err) => return Err(err),
     };
     if let Some((target, project_id)) = direct_target {

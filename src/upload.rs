@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use crate::engine::{ChromeEngine, validate_local_files};
-use crate::project_store::ProjectStoreSession;
+use crate::project_store::{ProjectStoreSession, is_store_write_unavailable};
 
 /// Menu button that adds ingredients to the prompt box.
 pub(crate) const PROMPT_INGREDIENTS_MENU: &str = "Add ingredients to the prompt box";
@@ -53,16 +53,6 @@ fn has_video_file(files: &[String]) -> bool {
     })
 }
 
-/// Returns true when a direct upload error occurred before any upload RPC was sent.
-fn should_fallback_to_menu_upload(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}");
-    !msg.contains("outcome_unknown")
-        && (msg.contains("unsupported_front_end")
-            || msg.contains("collection_store_not_bound")
-            || msg.contains("ambiguous_collection_store")
-            || msg.contains("project_upload_page_not_ready"))
-}
-
 /// Uploads files to the pinned project and falls back to the workspace upload menu on unverified builds.
 pub(crate) async fn upload_project_files(engine: &ChromeEngine, files: &[String]) -> Result<Value> {
     crate::project::ensure_project_workspace_root(engine).await?;
@@ -84,11 +74,11 @@ pub(crate) async fn upload_project_files(engine: &ChromeEngine, files: &[String]
                 .await
             {
                 Ok(res) => return Ok(res),
-                Err(err) if !should_fallback_to_menu_upload(&err) => return Err(err),
+                Err(err) if !is_store_write_unavailable(&err) => return Err(err),
                 Err(_) => {}
             }
         }
-        Err(err) if !should_fallback_to_menu_upload(&err) => return Err(err),
+        Err(err) if !is_store_write_unavailable(&err) => return Err(err),
         Err(_) => {}
     }
     upload_project_files_through_menu(engine, files).await

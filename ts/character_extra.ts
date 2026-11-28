@@ -16,7 +16,6 @@ import {
 import {
   frontendBuild,
   readBuildLabel,
-  voiceConfirmationFormat,
   type VoiceConfirmationFormat,
 } from "./frontend_builds";
 import type { CharacterExtraOpRequest } from "./types";
@@ -322,12 +321,11 @@ async function applyVoice(
   const custom = Boolean(sample || performance);
   if (custom && sample.length > 120)
     return { ok: false, error: "voice_sample_over_120_characters" };
-  const format = voiceConfirmationFormat();
-  const strictConfirm = Boolean(frontendBuild(readBuildLabel())?.voiceConfirmation);
+  const format = frontendBuild(readBuildLabel())?.voiceConfirmation;
   let pane = format ? await withLViewMapCapture(openDialog) : await openDialog();
   if (!pane) return { ok: false, error: "voice_dialog_not_available" };
   const confirm = format && bindVoiceConfirmation(format);
-  if (strictConfirm && !confirm) {
+  if (format && !confirm) {
     await dismissOverlay();
     return { ok: false, error: "voice_confirmation_unavailable" };
   }

@@ -176,6 +176,15 @@ fn move_ids(ids: Option<Vec<String>>, action: &str) -> Result<Vec<String>> {
     })
 }
 
+/// Extracts the collection summaries from a project store snapshot.
+pub(crate) fn snapshot_collections(snap: &mut Value) -> Result<Vec<FlowCollection>> {
+    Ok(serde_json::from_value(
+        snap.get_mut("collections")
+            .map(Value::take)
+            .unwrap_or_else(|| json!([])),
+    )?)
+}
+
 /// Dispatches the six actions of `flow_collections`.
 pub(crate) async fn handle_collections(
     engine: &ChromeEngine,
@@ -183,11 +192,7 @@ pub(crate) async fn handle_collections(
 ) -> Result<Value> {
     if req.action == "list" {
         let mut snap = crate::project::read_snapshot(engine).await?;
-        let collections: Vec<FlowCollection> = serde_json::from_value(
-            snap.get_mut("collections")
-                .map(Value::take)
-                .unwrap_or_else(|| json!([])),
-        )?;
+        let collections = snapshot_collections(&mut snap)?;
         return Ok(json!({ "collections": collections }));
     }
     let session = ProjectStoreSession::open(engine).await?;

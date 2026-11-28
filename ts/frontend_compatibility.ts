@@ -4,7 +4,19 @@
 // Check the build and runtime requirements of internal Flow operations.
 
 import { readOwn } from "./angular";
-import { AGENT_ATTACHMENT_EXPORTS, AGENT_EXPORTS, AGENT_SETTINGS_EXPORTS, FRONTEND_OPERATIONS, frontendBuild, MEDIA_UPLOAD_EXPORTS, readBuildLabel, withMutationAliases } from "./frontend_builds";
+import { characterPersonalityNotes } from "./character_bio";
+import {
+  AGENT_ATTACHMENT_EXPORTS,
+  AGENT_EXPORTS,
+  AGENT_SETTINGS_EXPORTS,
+  FRONTEND_OPERATIONS,
+  frontendBuild,
+  MEDIA_UPLOAD_EXPORTS,
+  readBuildLabel,
+  sceneTileFormat,
+  snapshotFormat,
+  withMutationAliases,
+} from "./frontend_builds";
 export { withMutationAliases };
 import type {
   AgentAttachmentFormat,
@@ -18,7 +30,7 @@ import type {
 } from "./frontend_builds";
 import { findProjectPage } from "./project_upload";
 import { projectWriteChecks } from "./project_store";
-import { legacyTile, pickTileUrl } from "./dom";
+import { isTrashedTile, legacyTile, pickTileUrl } from "./dom";
 import { clearStore, runtimeState } from "./state";
 import type { FlowTile, StoreProbeCheck, StoreProbeResult } from "./types";
 
@@ -394,6 +406,74 @@ function tileLayout(tiles: Iterable<FlowTile>): StoreProbeCheck {
     detail: readable + unreadable === 0 ? "no media tiles to inspect" :
       `readable=${readable} unreadable=${unreadable}`,
   };
+}
+
+/** Known uppercase tile types when `snapshotFormat()?.tileTypes` is absent. */
+const KNOWN_TILE_TYPES = new Set([
+  "COLLECTION",
+  "IMAGE",
+  "VIDEO",
+  "SCENE",
+  "CHARACTER",
+  "TEXT_TILE",
+  "CUSTOM",
+  "FAILED_ASSET",
+  "AUDIO",
+  "MUSIC",
+  "VOICE",
+]);
+
+/** Returns true when every inspected tile in an unverified store has readable fields. */
+export function hasReadableCascadedTiles(tiles: Map<string, FlowTile>): boolean {
+  if (!tileLayout(tiles.values()).ok) return false;
+  const snapFmt = snapshotFormat();
+  const sceneFmt = sceneTileFormat();
+  let seen = 0;
+  for (const raw of tiles.values()) {
+    if (++seen > 200) break;
+    const kind = String(raw?.type ?? "").toUpperCase();
+    if (!kind) return false;
+    if (snapFmt) {
+      const { tileTypes } = snapFmt;
+      const recognized =
+        kind === tileTypes.collection ||
+        tileTypes.assets.includes(kind) ||
+        tileTypes.ignored.includes(kind) ||
+        KNOWN_TILE_TYPES.has(kind);
+      if (!recognized) return false;
+    } else if (!KNOWN_TILE_TYPES.has(kind)) {
+      return false;
+    }
+    if (isTrashedTile(raw) || raw.isPending === true) continue;
+    if (kind === "IMAGE" || kind === "VIDEO") {
+      const mediaKeys = snapFmt ? [snapFmt.media.container, "Fb"] : ["Fb", "Eb"];
+      const hasContainer = mediaKeys.some((key) => {
+        const value = readOwn(raw, key);
+        return Boolean(value && typeof value === "object");
+      });
+      if (!hasContainer) return false;
+    }
+    if (kind === "CHARACTER") {
+      if (typeof raw.displayName !== "string") return false;
+      if (
+        characterPersonalityNotes(raw) === null &&
+        typeof raw.personalityNotes !== "string"
+      ) {
+        return false;
+      }
+    }
+    if (kind === "COLLECTION" && typeof raw.displayName !== "string") {
+      return false;
+    }
+    if (kind === "SCENE") {
+      if (typeof raw.displayName !== "string") return false;
+      const hasClips = sceneFmt
+        ? Array.isArray(readOwn(raw, sceneFmt.clips)) || Array.isArray(raw.Oc)
+        : Array.isArray(raw.Oc);
+      if (!hasClips) return false;
+    }
+  }
+  return true;
 }
 
 /** Checks the bound store and tile layout used by asset trash. */

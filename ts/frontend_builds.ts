@@ -8,6 +8,7 @@ import type { AgentExport } from "./agent_protocol";
 import type { AgentWireFormat } from "./agent_wire";
 import type { AgentSettingsExport } from "./agent_settings_protocol";
 import type { MediaUploadExport } from "./project_upload";
+import { runtimeState } from "./state";
 
 /** Field names for the collection write requests of one build. */
 export interface CollectionWriteFormat {
@@ -831,33 +832,6 @@ const LEGACY_CHARACTER_CREATE: CharacterCreateFormat = {
 /** Editable project title format of earlier builds. */
 const LEGACY_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "tJa", stateSignal: "state" };
 
-/** Character preview format of build `20261120.00_p0` used as the default fallback. */
-const NOVEMBER_20_CHARACTER_PREVIEW: CharacterPreviewFormat = {
-  lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma",
-  source: "Gza", busy: "mB", footerBusy: "Zh", pickerAssets: "xZ", pickerSelect: "Qda",
-};
-
-/** Character voice form format of build `20261120.00_p0` used as the default fallback. */
-const NOVEMBER_20_CHARACTER_VOICE: CharacterVoiceFormat = {
-  lifecycle: "Ba", destroyed: "Va", voiceMap: "o_", selectedVoice: "A3",
-  selectedRecord: "Pua", changeEmitter: "Pea", busy: "yb", emptyMap: true,
-};
-
-/** Character creation format of build `20261120.00_p0` used as the default fallback. */
-const NOVEMBER_20_CHARACTER_CREATE: CharacterCreateFormat = {
-  lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM"],
-  collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
-};
-
-/** Editable project title format of build `20261120.00_p0` used as the default fallback. */
-const NOVEMBER_20_PROJECT_TITLE: ProjectTitleFormat = { saveEmitter: "HSa", stateSignal: "state" };
-
-/** Voice confirmation format of build `20261120.00_p0` used as the default fallback. */
-const NOVEMBER_20_VOICE_CONFIRMATION: VoiceConfirmationFormat = {
-  editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
-  previewSaved: "MK", pickerSelection: "Qn",
-};
-
 /** Request formats by exact build label. Include only verified operations. */
 const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261117.10_p0", {
@@ -902,11 +876,23 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   ["boq_labs-ai-sandbox-frontend_20261120.00_p0", {
     projectStore: NOVEMBER_20_STORE,
     snapshot: NOVEMBER_20_SNAPSHOT,
-    voiceConfirmation: NOVEMBER_20_VOICE_CONFIRMATION,
-    characterPreview: NOVEMBER_20_CHARACTER_PREVIEW,
-    characterVoice: NOVEMBER_20_CHARACTER_VOICE,
-    characterCreate: NOVEMBER_20_CHARACTER_CREATE,
-    projectTitle: NOVEMBER_20_PROJECT_TITLE,
+    voiceConfirmation: {
+      editor: "qu", entityQuery: "ma", savedVoice: "Xjb", selectedVoice: "A3",
+      previewSaved: "MK", pickerSelection: "Qn",
+    },
+    characterPreview: {
+      lifecycle: "Ba", upload: "NV", marker: "hh", portrait: "ka", body: "ma",
+      source: "Gza", busy: "mB", footerBusy: "Zh", pickerAssets: "xZ", pickerSelect: "Qda",
+    },
+    characterVoice: {
+      lifecycle: "Ba", destroyed: "Va", voiceMap: "o_", selectedVoice: "A3",
+      selectedRecord: "Pua", changeEmitter: "Pea", busy: "yb", emptyMap: true,
+    },
+    characterCreate: {
+      lifecycle: "Ba", destroyed: "Va", entityKinds: ["pM"],
+      collections: ["tb", "ub"], completions: ["De", "ve"], created: ["NH"],
+    },
+    projectTitle: { saveEmitter: "HSa", stateSignal: "state" },
     operations: {
       collection_write: {
         tileId: "Xc", tileChange: "mf", moveTarget: "mk", moveTiles: "yb", deleteCollections: "mu",
@@ -924,9 +910,12 @@ const VERIFIED_BUILDS: ReadonlyMap<string, FrontendBuild> = new Map([
   }],
 ]);
 
+/** Verified builds ordered from newest to oldest for read-only store discovery. */
+const CASCADED_BUILDS: readonly FrontendBuild[] = Array.from(VERIFIED_BUILDS.values()).reverse();
+
 /** Verified project store formats ordered from newest to oldest for read-only discovery. */
 const CASCADED_PROJECT_STORES: readonly ProjectStoreFormat[] = Array.from(
-  new Set(Array.from(VERIFIED_BUILDS.values(), (b) => b.projectStore).reverse()),
+  new Set(CASCADED_BUILDS.map((b) => b.projectStore)),
 );
 
 /** Returns the exact label published by the active page. */
@@ -940,6 +929,17 @@ export function frontendBuild(label: string | null): FrontendBuild | undefined {
   return label === null ? undefined : VERIFIED_BUILDS.get(label);
 }
 
+/** Returns the verified build that owns `format`, or undefined. */
+function frontendBuildForStore(format: ProjectStoreFormat | null | undefined): FrontendBuild | undefined {
+  if (!format) return undefined;
+  return CASCADED_BUILDS.find((build) => build.projectStore === format);
+}
+
+/** Returns the active verified build, or the build paired with the bound read-only store. */
+function boundOrActiveBuild(): FrontendBuild | undefined {
+  return frontendBuild(readBuildLabel()) ?? frontendBuildForStore(runtimeState.storeFormat);
+}
+
 /** Returns the verified project store layout of the active build, or undefined. */
 export function activeProjectStoreFormat(): ProjectStoreFormat | undefined {
   return frontendBuild(readBuildLabel())?.projectStore;
@@ -951,24 +951,22 @@ export function projectStoreFormats(): readonly ProjectStoreFormat[] {
   return verified ? [verified] : CASCADED_PROJECT_STORES;
 }
 
-/** Returns candidate Angular `LContext` view property names, defaulting to `20261120.00_p0` first. */
+/** Returns candidate Angular `LContext` view property names for the active or cascaded store. */
 export function lContextViewFields(): readonly string[] {
-  const verified = activeProjectStoreFormat();
-  if (verified) return [verified.lContextView];
-  return Array.from(
-    new Set([NOVEMBER_20_STORE.lContextView, ...CASCADED_PROJECT_STORES.map((s) => s.lContextView)]),
-  );
+  const paired = boundOrActiveBuild()?.projectStore;
+  if (paired) return [paired.lContextView];
+  return Array.from(new Set(CASCADED_PROJECT_STORES.map((s) => s.lContextView)));
 }
 
-/** Returns the scene clip and history field names, defaulting to `20261120.00_p0`. */
-export function sceneTileFormat(): NonNullable<ProjectStoreFormat["scene"]> {
-  return activeProjectStoreFormat()?.scene ?? { clips: "Uc", history: "Cg" };
+/** Returns the scene clip and history field names paired with the active or bound store. */
+export function sceneTileFormat(): SceneTileFormat | undefined {
+  return boundOrActiveBuild()?.projectStore.scene;
 }
 
 /** Adds the native fields used by the verified project store mutator. */
 export function withMutationAliases(payload: Record<string, unknown>): Record<string, unknown> {
   const build = frontendBuild(readBuildLabel());
-  const format = build ? build.projectStore.mutations : NOVEMBER_20_STORE.mutations;
+  const format = build?.projectStore.mutations;
   if (payload.type === "single_tile" && payload.Ve && typeof payload.Ve === "object") {
     const change = payload.Ve as Record<string, unknown>;
     if (format) {
@@ -999,38 +997,27 @@ export function withMutationAliases(payload: Record<string, unknown>): Record<st
   return payload;
 }
 
-/** Returns the character preview field mapping for the active build. */
-export function characterPreviewFormat(): CharacterPreviewFormat {
-  const build = frontendBuild(readBuildLabel());
-  return build ? (build.characterPreview ?? LEGACY_CHARACTER_PREVIEW) : NOVEMBER_20_CHARACTER_PREVIEW;
+/** Returns the verified character preview field mapping for the active build. */
+export function characterPreviewFormat(): CharacterPreviewFormat | undefined {
+  return frontendBuild(readBuildLabel())?.characterPreview;
 }
 
-/** Returns the character voice form mapping for the active build. */
-export function characterVoiceFormat(): CharacterVoiceFormat {
-  const build = frontendBuild(readBuildLabel());
-  return build ? (build.characterVoice ?? LEGACY_CHARACTER_VOICE) : NOVEMBER_20_CHARACTER_VOICE;
+/** Returns the verified character voice form mapping for the active build. */
+export function characterVoiceFormat(): CharacterVoiceFormat | undefined {
+  return frontendBuild(readBuildLabel())?.characterVoice;
 }
 
-/** Returns the character creation and store lifecycle mapping for the active build. */
-export function characterCreateFormat(): CharacterCreateFormat {
-  const build = frontendBuild(readBuildLabel());
-  return build ? (build.characterCreate ?? LEGACY_CHARACTER_CREATE) : NOVEMBER_20_CHARACTER_CREATE;
+/** Returns the verified character creation mapping for the active build. */
+export function characterCreateFormat(): CharacterCreateFormat | undefined {
+  return frontendBuild(readBuildLabel())?.characterCreate;
 }
 
-/** Returns the editable project title mapping for the active build. */
-export function projectTitleFormat(): ProjectTitleFormat {
-  const build = frontendBuild(readBuildLabel());
-  return build ? (build.projectTitle ?? LEGACY_PROJECT_TITLE) : NOVEMBER_20_PROJECT_TITLE;
+/** Returns the verified editable project title mapping for the active build. */
+export function projectTitleFormat(): ProjectTitleFormat | undefined {
+  return frontendBuild(readBuildLabel())?.projectTitle;
 }
 
-/** Returns the voice confirmation mapping for the active build, defaulting to `20261120.00_p0` on unknown builds. */
-export function voiceConfirmationFormat(): VoiceConfirmationFormat | undefined {
-  const build = frontendBuild(readBuildLabel());
-  return build ? build.voiceConfirmation : NOVEMBER_20_VOICE_CONFIRMATION;
-}
-
-/** Returns the snapshot field descriptors for the active build, defaulting to `20261120.00_p0` on unknown builds. */
+/** Returns the snapshot field descriptors paired with the active or bound store. */
 export function snapshotFormat(): SnapshotFormat | undefined {
-  const build = frontendBuild(readBuildLabel());
-  return build ? build.snapshot : NOVEMBER_20_SNAPSHOT;
+  return boundOrActiveBuild()?.snapshot;
 }

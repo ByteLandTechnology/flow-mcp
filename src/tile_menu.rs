@@ -214,13 +214,11 @@ async fn trash_in_view(engine: &ChromeEngine, id: &str) -> Result<bool> {
     if wait_trashed(engine, id, 6).await {
         return Ok(true);
     }
-    let confirm = page_op(engine, json!({ "action": "confirm_dialog" })).await?;
+    let confirm = tile_dom_op(engine, "confirm_dialog", id).await?;
     if is_ok(&confirm)
         && let Some(point) = confirm.get("point")
-        && engine.click_point(point).await?
-        && wait_trashed(engine, id, 36).await
     {
-        return Ok(true);
+        let _ = engine.click_point(point).await?;
     }
     if wait_trashed(engine, id, 34).await {
         return Ok(true);

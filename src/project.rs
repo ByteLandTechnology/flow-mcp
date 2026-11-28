@@ -380,6 +380,12 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         if status["ok"].as_bool() == Some(true) {
             return Ok(());
         }
+        if status_err == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
         if status_err == Some("store_loading") {
             tokio::time::sleep(Duration::from_millis(250)).await;
             continue;
@@ -389,6 +395,12 @@ pub(crate) async fn ensure_flow_store(engine: &ChromeEngine) -> Result<()> {
         let discovery =
             store_loading_result(engine.call_flow_async("discoverStore", json!([])).await)?;
         let discovery_err = discovery.get("error").and_then(Value::as_str);
+        if discovery_err == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
         input_pending |= discovery_err == Some(ANGULAR_REQUIRED_INPUT_ERROR);
         if discovery["bound"].as_bool() == Some(true) {
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -450,13 +462,20 @@ async fn build_suffix(engine: &ChromeEngine) -> String {
 pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
     if engine.has_page().await
         && let Ok(snap) = engine.call_flow_js("readStoreSnapshot", json!([])).await
-        && snap.get("ok").and_then(|v| v.as_bool()) == Some(true)
     {
-        return Ok(snap);
+        if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(snap);
+        }
+        if snap.get("error").and_then(Value::as_str) == Some("unsupported_front_end") {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
     }
+    ensure_flow_store(engine).await?;
     let mut last_err = "store_not_bound".to_string();
-    for _ in 0..25 {
-        ensure_flow_store(engine).await?;
+    for attempt in 0..25 {
         let snap = store_loading_result(engine.call_flow_js("readStoreSnapshot", json!([])).await)?;
         if snap.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             return Ok(snap);
@@ -466,6 +485,21 @@ pub(crate) async fn read_snapshot(engine: &ChromeEngine) -> Result<Value> {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
+        if last_err == "unsupported_front_end" {
+            anyhow::bail!(
+                "Google Flow front end build is not supported (unsupported_front_end).{}",
+                build_suffix(engine).await
+            );
+        }
+        if attempt < 2
+            && matches!(
+                last_err.as_str(),
+                "store_not_bound" | "route_changed" | "project_mismatch"
+            )
+        {
+            ensure_flow_store(engine).await?;
+            continue;
+        }
         let delay_ms = if matches!(
             last_err.as_str(),
             "store_loading" | ANGULAR_REQUIRED_INPUT_ERROR

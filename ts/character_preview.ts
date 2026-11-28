@@ -68,6 +68,7 @@ function callPanel(panel: object, name: string): unknown {
 /** Finds the preview panel in a live Angular view and binds its methods. */
 export function getCharacterPreviewInstance(): CharacterPreview | null {
   const format = characterPreviewFormat();
+  if (!format) return null;
   const roots = document.querySelectorAll(
     "flow-character-preview-panel, flow-character-image-preview",
   );

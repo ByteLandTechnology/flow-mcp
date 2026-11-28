@@ -223,8 +223,9 @@ export async function characterMediaOp(
     let footerBusy = false;
     const footerEl = document.querySelector("flow-edit-character-footer");
     const footerLv = footerEl ? resolveLView(footerEl) : null;
-    if (Array.isArray(footerLv)) {
-      const { footerBusy: footerBusyKey } = characterPreviewFormat();
+    const previewFmt = characterPreviewFormat();
+    if (previewFmt && Array.isArray(footerLv)) {
+      const { footerBusy: footerBusyKey } = previewFmt;
       for (const cand of footerLv) {
         try {
           const busyFn = readOwn(cand, footerBusyKey);
@@ -468,8 +469,9 @@ export async function characterMediaOp(
           overlayRoot.querySelector("flow-add-menu-popover-content") ||
           document.querySelector("flow-add-menu-popover-content");
         const popLv = popEl ? resolveLView(popEl) : null;
-        if (Array.isArray(popLv)) {
-          const { pickerAssets, pickerSelect } = characterPreviewFormat();
+        const previewFmt = characterPreviewFormat();
+        if (previewFmt && Array.isArray(popLv)) {
+          const { pickerAssets, pickerSelect } = previewFmt;
           for (const cand of popLv) {
             const listFn = readOwn(cand, pickerAssets);
             const pickFn = readOwn(cand, pickerSelect);

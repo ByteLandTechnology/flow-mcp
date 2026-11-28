@@ -33,6 +33,11 @@ export function readOwn(obj: unknown, key: string): unknown {
   }
 }
 
+/** Returns true when `fn` carries an Angular signal symbol. */
+export function isAngularSignal(fn: Function): boolean {
+  return Object.getOwnPropertySymbols(fn).length > 0;
+}
+
 /** Returns `lv` if `lv` is a live Angular LView whose host node remains connected. */
 export function isLiveLView(lv: unknown): lv is NgLView {
   return Array.isArray(lv) && (!(lv[0] instanceof Node) || lv[0].isConnected);
@@ -83,12 +88,17 @@ export function resolveLView(elOrCtx: unknown): NgLView | null {
       ? runtimeState.ngLViewMap.get(raw) || null
       : null;
   }
-  if (raw && typeof raw === "object") {
+  if (raw && typeof raw === "object" && !(raw instanceof Node)) {
     const lView = readOwn(raw, "lView");
-    if (Array.isArray(lView)) return lView;
+    if (isLiveLView(lView)) return lView;
     for (const contextField of lContextViewFields()) {
       const candidateView = readOwn(raw, contextField);
-      if (Array.isArray(candidateView)) return candidateView;
+      if (isLiveLView(candidateView)) return candidateView;
+    }
+    const lViewId = readOwn(raw, "lViewId");
+    if (typeof lViewId === "number" && runtimeState.ngLViewMap instanceof Map) {
+      const mapped = runtimeState.ngLViewMap.get(lViewId);
+      return isLiveLView(mapped) ? mapped : null;
     }
     return null;
   }
@@ -440,8 +450,7 @@ export async function createScene(
   workflowIds: string[],
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
   const before = new Set(sceneIds(getMap()));
-  const build = frontendBuild(readBuildLabel());
-  const resultField = (build ? build.projectStore.mutations?.sceneCreated : undefined) ?? "t6a";
+  const resultField = frontendBuild(readBuildLabel())?.projectStore.mutations?.sceneCreated ?? "VWa";
   let confirmedId: string | undefined;
   let failure: string | undefined;
   const completion = {
@@ -460,7 +469,7 @@ export async function createScene(
     De: completion,
     ve: completion,
   })).then((response) => {
-    completion.resolve(readOwn(response, resultField) ?? readOwn(response, "VWa"));
+    completion.resolve(readOwn(response, resultField));
   }, completion.reject);
 
   while (performance.now() < deadline) {
