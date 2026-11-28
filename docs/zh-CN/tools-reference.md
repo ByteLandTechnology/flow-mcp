@@ -387,11 +387,12 @@ flow-mcp [OPTIONS] <COMMAND>
 
 ### `flow_download`
 
-将匹配的项目媒体资产（图像、视频、`1080p` 或 `4K` 超分变体、自定义音色、角色外观或绑定音色、或场景）下载至 `<home>/downloads` 并索引到 `flow-mcp.db`。未裁剪的单片段场景直接下载，多片段或已裁剪场景在已验证的前端构建上通过 Flow 场景导出服务导出（未验证构建返回 `unsupported_front_end`）。最多等待 `45` 秒（超时返回 `pending: true`），并返回 `{"file", "resource_uri", "record"}`。如果客户端支持 MCP `2025-06-18` 或更高版本，还会返回 `resource_link`。
+将匹配的项目媒体资产（图像、视频、自定义音色、角色外观或绑定音色、场景或场景片段）下载至 `<home>/downloads` 并索引到 `flow-mcp.db`。视频下载默认保留资产本身的主版本；可将 `quality` 设为 `"360p"`、`"720p"`、`"1080p"`、`"4k"` 或 `"best"` 以选择已验证的视频清晰度变体。传入 `<sceneId>` 下载整个场景（未裁剪的单片段场景直接下载，多片段或已裁剪场景在已验证的前端构建上通过 Flow 场景导出服务导出，未验证构建返回 `unsupported_front_end`）；传入 `<sceneId>:<wfId>` 下载场景内的单个片段工作流。最多等待 `45` 秒（超时返回 `pending: true`），并返回 `{"file", "resource_uri", "record"}`。如果客户端支持 MCP `2025-06-18` 或更高版本，还会返回 `resource_link`。
 
 | 参数 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `match` | `string` | 是 | 匹配项目资产的精确资产 ID、媒体或变体 ID、精确名称或忽略大小写子串。 |
+| `match` | `string` | 是 | 匹配项目资产的精确资产 ID、`<sceneId>:<wfId>` 场景片段 ID、媒体或变体 ID、精确名称或忽略大小写子串。 |
+| `quality` | `string` | 否 | 视频清晰度选择：`"original"`（默认）、`"360p"`、`"720p"`、`"1080p"`、`"4k"` 或 `"best"`。 |
 
 ### `flow_downloads`
 

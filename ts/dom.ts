@@ -4,7 +4,6 @@
 // Shared DOM, event, input, and FIFE URL helpers for Flow browser modules.
 
 import { snapshotFormat } from "./frontend_builds";
-import { selectBestVideoVariant } from "./media_variants";
 import type { CharacterLookEntry, FifeEnv, FlowMediaPayload, FlowTile } from "./types";
 
 /** Reads an own data property from `o` without invoking prototype getters. */
@@ -316,66 +315,10 @@ export function characterLooksOf(
   return null;
 }
 
-/** Reads a 1-based field from a dense or sparse serialized JSPB array. */
-function serializedProtoField(message: unknown, field: number): unknown {
-  if (!Array.isArray(message) || field < 1) return undefined;
-  const tail: unknown = message[message.length - 1];
-  if (tail && typeof tail === "object" && !Array.isArray(tail)) {
-    const mapped = readMediaField(tail, String(field));
-    if (mapped !== undefined) return mapped;
-  }
-  return message[field - 1];
-}
-
-/** Extracts the assigned custom or preset voice ID from a character tile when present. */
-function characterAssignedVoiceId(t: FlowTile): string | null {
-  const format = snapshotFormat()?.character;
-  const entity = readMediaField(t, format?.entity ?? "Rc");
-  const serialize = readMediaField(entity, "toJSON");
-  if (typeof serialize === "function") {
-    try {
-      const root: unknown = serialize.call(entity);
-      const info = serializedProtoField(
-        serializedProtoField(root, format?.entityInfoField ?? 4),
-        format?.characterInfoField ?? 3,
-      );
-      const refs = serializedProtoField(info, format?.audioReferencesField ?? 2);
-      if (Array.isArray(refs) && refs.length > 0) {
-        const first: unknown = refs[0];
-        const custom = serializedProtoField(first, format?.customVoiceField ?? 1);
-        if (typeof custom === "string" && custom.trim()) {
-          return custom.trim().replace(/^media\//i, "");
-        }
-        const preset = serializedProtoField(first, format?.presetVoiceField ?? 2);
-        if (typeof preset === "string" && preset.trim()) {
-          return preset.trim();
-        }
-      }
-    } catch {
-      // Fall through to plain tile voice fields.
-    }
-  }
-  for (const cand of [t.voiceId, t.Vo, t.voice]) {
-    if (typeof cand === "string" && cand.trim()) {
-      return cand.trim().replace(/^media\//i, "");
-    }
-    if (cand && typeof cand === "object" && !Array.isArray(cand)) {
-      const nested =
-        readMediaField(cand, "mediaId") ??
-        readMediaField(cand, "voiceId") ??
-        readMediaField(cand, "id");
-      if (typeof nested === "string" && nested.trim()) {
-        return nested.trim().replace(/^media\//i, "");
-      }
-    }
-  }
-  return null;
-}
-
-/** Extracts the preferred look image URL and primary media ID (or voice ID on look-less characters) from character tile `t`. */
+/** Extracts the preferred look image URL and primary media ID from character tile `t`. */
 export function characterLookMedia(
   t: FlowTile | null | undefined,
-): { url: string | null; primaryMediaId: string | null; isVoice?: boolean } {
+): { url: string | null; primaryMediaId: string | null } {
   if (!t || typeof t !== "object") return { url: null, primaryMediaId: null };
   const charFmt = snapshotFormat()?.character;
   const previewRaw = (charFmt ? readMediaField(t, charFmt.previewMediaId) : undefined) ?? t.Kd;
@@ -416,17 +359,9 @@ export function characterLookMedia(
       }
     }
   }
-  const lookUrl = preferredId ? preferredUrl : fallbackUrl;
-  const lookPrimaryId = preferredId || firstPrimaryId;
-  if (!lookUrl && !lookPrimaryId && String(t.type ?? "").toUpperCase() === "CHARACTER") {
-    const voiceId = characterAssignedVoiceId(t);
-    if (voiceId) {
-      return { url: null, primaryMediaId: voiceId, isVoice: true };
-    }
-  }
   return {
-    url: lookUrl,
-    primaryMediaId: lookPrimaryId,
+    url: preferredId ? preferredUrl : fallbackUrl,
+    primaryMediaId: preferredId || firstPrimaryId,
   };
 }
 
@@ -694,11 +629,9 @@ export function pickTileUrl(tile: FlowTile | null | undefined): string | null {
   const kind = String(t.type ?? "").toUpperCase() === "VIDEO" ? "video" : "image";
   const nonExpired = (cand: string | null): string | null =>
     cand && !isExpiredSignedUrl(cand) ? cand : null;
-  const variantChoice = kind === "video" ? selectBestVideoVariant(t) : null;
   const videoUrl =
     kind === "video"
-      ? variantChoice?.url ||
-        nonExpired(readMediaUrl(t.Fb, true)) ||
+      ? nonExpired(readMediaUrl(t.Fb, true)) ||
         nonExpired(readMediaUrl(t, true)) ||
         nonExpired(readMediaUrl(t.fb, true))
       : null;

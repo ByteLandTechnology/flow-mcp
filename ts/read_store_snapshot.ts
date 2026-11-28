@@ -5,14 +5,19 @@
 
 import { readOwn } from "./angular";
 import { characterPersonalityNotes, characterVoice } from "./character_bio";
+import {
+  appendCustomVoiceAssets,
+  resolveLooklessCharacterVoice,
+} from "./custom_voices";
 import { activeProjectStoreFormat, snapshotFormat } from "./frontend_builds";
 import {
   cleanVariantMediaId,
+  collectReadyVideoVariants,
   collectTileMediaIds,
-  selectBestVideoVariant,
+  selectPrimaryVideoMedia,
 } from "./media_variants";
 import { currentProjectStore, projectInRoute } from "./project_store";
-import { isSceneClipTrimmed, sceneContents } from "./scene_tiles";
+import { inspectSceneTileSnapshot, sceneContents } from "./scene_tiles";
 import {
   asHttpOrDataUrl,
   characterLookMedia,
@@ -248,9 +253,10 @@ export function readStoreTiles(
   const cols = new Map<string, string>();
   const counts = new Map<string, number>();
   const byId = new Map<string, Omit<SnapshotAssetItem, "collection_name">>();
-  const sceneTiles: Array<[FlowTile, ReturnType<typeof sceneContents>]> = [];
+  const sceneTiles: FlowTile[] = [];
   const rawList: Omit<SnapshotAssetItem, "collection_name">[] = [];
   const env = getFifeEnv();
+  const normalizeVideo = (u: string): string => normalizeFlowMediaUrl(u, "video", env);
   const collectionType = snapshotFormat()?.tileTypes.collection ?? "COLLECTION";
   const nonExpiredUrl = (raw: unknown): string | null => {
     const direct = asHttpOrDataUrl(raw);
@@ -324,115 +330,39 @@ export function readStoreTiles(
             : ttype === "CHARACTER"
               ? "character"
               : "image";
-    let scenePrimaryMediaId: string | null = null;
-    let sceneRequiresExport = false;
-    let sceneSingleUrl: string | null = null;
-    let sceneWidth: number | null = null;
-    let sceneHeight: number | null = null;
-    let sceneDuration: number | null = null;
-    if (baseKind === "scene") {
-      const parsedScene = sceneContents(t);
-      sceneTiles.push([t, parsedScene]);
-      const { clips, history } = parsedScene;
-      if (clips.length === 1) {
-        const c0 = clips[0];
-        const wfId = c0?.workflowId ? String(c0.workflowId) : null;
-        const hist = wfId ? history.get(wfId) : undefined;
-        const clipMid = cleanVariantMediaId(c0?.primaryMediaId);
-        const rawClipMedia = Array.isArray(hist)
-          ? hist.find((x) => x && cleanVariantMediaId(x.id) === clipMid) || hist[0] || null
-          : null;
-        const m0 = legacyMedia(rawClipMedia);
-        if (isSceneClipTrimmed(c0, m0)) {
-          sceneRequiresExport = true;
-        } else {
-          const wfTile = wfId ? tileMap.get(wfId) : undefined;
-          const wfVariant = wfTile ? selectBestVideoVariant(wfTile) : null;
-          scenePrimaryMediaId =
-            clipMid ??
-            cleanVariantMediaId(m0?.id) ??
-            wfVariant?.primaryMediaId ??
-            null;
-          const m0Status = String(m0?.Zc ?? c0?.Zc ?? "").toLowerCase();
-          const m0NotReady =
-            m0Status === "pending" ||
-            m0Status === "scheduled" ||
-            m0Status === "failed" ||
-            m0Status === "canceled" ||
-            Boolean(m0?.nf || c0?.nf);
-          if (!m0NotReady) {
-            sceneSingleUrl =
-              nonExpiredUrl(readMediaUrl(m0, true)) ||
-              nonExpiredUrl(readMediaUrl(c0, true)) ||
-              nonExpiredUrl(readMediaUrl(m0)) ||
-              nonExpiredUrl(readMediaUrl(c0)) ||
-              (wfVariant && wfVariant.primaryMediaId === scenePrimaryMediaId
-                ? wfVariant.url
-                : null);
-          }
-          sceneWidth =
-            typeof m0?.width === "number"
-              ? m0.width
-              : typeof m0?.tc?.width === "number"
-                ? m0.tc.width
-                : wfVariant?.width ?? null;
-          sceneHeight =
-            typeof m0?.height === "number"
-              ? m0.height
-              : typeof m0?.tc?.height === "number"
-                ? m0.tc.height
-                : wfVariant?.height ?? null;
-          sceneDuration =
-            typeof c0?.nc === "number"
-              ? c0.nc
-              : typeof c0?.rc === "number"
-                ? c0.rc
-                : typeof m0?.Lf === "number"
-                  ? m0.Lf
-                  : wfVariant?.duration ?? null;
-        }
-      } else if (clips.length > 1) {
-        sceneRequiresExport = true;
-      }
-    }
+    const sceneInfo =
+      baseKind === "scene"
+        ? (sceneTiles.push(t), inspectSceneTileSnapshot(t, tileMap, normalizeVideo))
+        : null;
 
-    const charMedia =
+    const charLook =
       baseKind === "character"
         ? characterLookMedia(t)
         : { url: null, primaryMediaId: null };
-    const rawCharVoiceRef = charMedia.isVoice ? charMedia.primaryMediaId : null;
-    const cleanCharVoiceRef = rawCharVoiceRef
-      ? rawCharVoiceRef.replace(/^(?:media|workflows)\//i, "")
-      : null;
-    const matchedCharVoice = cleanCharVoiceRef
-      ? customVoices.find(
-          (v) =>
-            v.id === rawCharVoiceRef ||
-            v.id === cleanCharVoiceRef ||
-            v.mediaId === cleanCharVoiceRef ||
-            (v.workflowId !== null &&
-              (v.workflowId === rawCharVoiceRef ||
-                v.workflowId.replace(/^workflows\//i, "") === cleanCharVoiceRef)),
-        )
-      : undefined;
-    const charFallbackUrl =
-      nonExpiredUrl(charMedia.url) ?? nonExpiredUrl(matchedCharVoice?.url);
-    const charLookPrimaryMediaId = matchedCharVoice
-      ? matchedCharVoice.mediaId
-      : charMedia.primaryMediaId;
+    const charResolved =
+      baseKind === "character"
+        ? resolveLooklessCharacterVoice(
+            t,
+            charLook.url,
+            charLook.primaryMediaId,
+            customVoices,
+          )
+        : { url: null, primaryMediaId: null, isVoice: false, pcmAudio: false };
 
-    const videoVariant = baseKind === "video" ? selectBestVideoVariant(t) : null;
+    const primaryVideo = baseKind === "video" ? selectPrimaryVideoMedia(t) : null;
+    const videoVariants =
+      baseKind === "video"
+        ? collectReadyVideoVariants(t, normalizeVideo)
+        : sceneInfo?.variants ?? [];
     const videoMediaUrl =
       baseKind === "video"
-        ? videoVariant?.fromUpscale
-          ? videoVariant.url
-          : videoVariant?.url ||
-            nonExpiredUrl(readMediaUrl(t.Fb, true)) ||
-            nonExpiredUrl(readMediaUrl(t, true)) ||
-            nonExpiredUrl(readMediaUrl(t.fb, true))
+        ? primaryVideo?.url ||
+          nonExpiredUrl(readMediaUrl(t.Fb, true)) ||
+          nonExpiredUrl(readMediaUrl(t, true)) ||
+          nonExpiredUrl(readMediaUrl(t.fb, true))
         : null;
 
-    const activeMedia = videoVariant?.fromUpscale ? videoVariant.media : (t.Fb ?? t.fb ?? t);
+    const activeMedia = baseKind === "video" ? (primaryVideo?.media ?? t.Fb ?? t.fb ?? t) : (t.Fb ?? t.fb ?? t);
     const mediaStatus = String(
       activeMedia?.Zc ?? t.Fb?.Zc ?? t.fb?.Zc ?? t.Zc ?? "",
     ).toLowerCase();
@@ -448,10 +378,10 @@ export function readStoreTiles(
 
     const primaryMediaId =
       baseKind === "scene"
-        ? scenePrimaryMediaId
+        ? (sceneInfo?.primaryMediaId ?? null)
         : baseKind === "video"
-          ? videoVariant?.primaryMediaId ?? null
-          : charLookPrimaryMediaId ||
+          ? (primaryVideo?.primaryMediaId ?? null)
+          : charResolved.primaryMediaId ||
             cleanVariantMediaId(t.primaryMediaId) ||
             cleanVariantMediaId(t.Fb?.id) ||
             cleanVariantMediaId(t.Fb?.mediaId) ||
@@ -470,24 +400,22 @@ export function readStoreTiles(
 
     const tileMediaUrl =
       baseKind === "scene"
-        ? sceneSingleUrl
-        : baseKind === "video" && videoVariant?.fromUpscale
-          ? videoMediaUrl
-          : baseKind === "character" && charLookPrimaryMediaId
-            ? charFallbackUrl
-            : videoMediaUrl ||
-              nonExpiredUrl(readMediaUrl(t.Fb)) ||
-              nonExpiredUrl(readMediaUrl(t)) ||
-              nonExpiredUrl(readMediaUrl(t.fb)) ||
-              charFallbackUrl ||
-              null;
+        ? (sceneInfo?.singleUrl ?? null)
+        : baseKind === "character" && charResolved.primaryMediaId
+          ? charResolved.url
+          : videoMediaUrl ||
+            nonExpiredUrl(readMediaUrl(t.Fb)) ||
+            nonExpiredUrl(readMediaUrl(t)) ||
+            nonExpiredUrl(readMediaUrl(t.fb)) ||
+            charResolved.url ||
+            null;
     const rawMediaUrl = isSignedUrlStr(tileMediaUrl)
       ? tileMediaUrl
       : isSignedUrlStr(cachedMediaUrl)
         ? cachedMediaUrl
         : tileMediaUrl || cachedMediaUrl || null;
     const mediaUrl =
-      mediaNotReady || (baseKind === "scene" && sceneRequiresExport)
+      mediaNotReady || (baseKind === "scene" && Boolean(sceneInfo?.requiresSceneExport))
         ? null
         : rawMediaUrl;
 
@@ -519,7 +447,7 @@ export function readStoreTiles(
       primaryMediaId ? String(primaryMediaId) : null,
     );
     const underlyingMediaKind =
-      charMedia.isVoice === true ? "audio" : (cachedEntry?.media_kind ?? null);
+      charResolved.isVoice ? "audio" : (cachedEntry?.media_kind ?? null);
 
     const topEntry: Omit<SnapshotAssetItem, "collection_name"> = {
       id: tid,
@@ -543,9 +471,9 @@ export function readStoreTiles(
       media_error: mediaError,
       width:
         baseKind === "video"
-          ? (videoVariant?.width ?? null)
+          ? (primaryVideo?.width ?? null)
           : baseKind === "scene"
-            ? sceneWidth
+            ? (sceneInfo?.width ?? null)
             : typeof t.width === "number"
               ? t.width
               : typeof t.Fb?.width === "number"
@@ -557,9 +485,9 @@ export function readStoreTiles(
                     : null,
       height:
         baseKind === "video"
-          ? (videoVariant?.height ?? null)
+          ? (primaryVideo?.height ?? null)
           : baseKind === "scene"
-            ? sceneHeight
+            ? (sceneInfo?.height ?? null)
             : typeof t.height === "number"
               ? t.height
               : typeof t.Fb?.height === "number"
@@ -571,9 +499,9 @@ export function readStoreTiles(
                     : null,
       duration:
         baseKind === "video"
-          ? (videoVariant?.duration ?? null)
+          ? (primaryVideo?.duration ?? null)
           : baseKind === "scene"
-            ? sceneDuration
+            ? (sceneInfo?.duration ?? null)
             : typeof t.durationSeconds === "number"
               ? t.durationSeconds
               : typeof t.duration === "number"
@@ -596,17 +524,23 @@ export function readStoreTiles(
               ? String(t.createTime)
               : null,
       media_ids: tileMediaIds,
-      ...(baseKind === "scene" ? { requires_scene_export: sceneRequiresExport } : {}),
-      ...(cachedEntry?.pcm_audio || Boolean(matchedCharVoice) ? { pcm_audio: true } : {}),
+      ...(videoVariants.length > 0 ? { variants: videoVariants } : {}),
+      ...(sceneInfo
+        ? {
+            requires_scene_export: sceneInfo.requiresSceneExport,
+            ...(sceneInfo.sceneClips.length > 0 ? { scene_clips: sceneInfo.sceneClips } : {}),
+          }
+        : {}),
+      ...(cachedEntry?.pcm_audio || charResolved.pcmAudio ? { pcm_audio: true } : {}),
       ...(underlyingMediaKind ? { media_kind: underlyingMediaKind } : {}),
     };
     rawList.push(topEntry);
     byId.set(tid, topEntry);
   }
 
-  for (const [st, parsedScene] of sceneTiles) {
+  for (const st of sceneTiles) {
     const sceneCid = collectionIdOf(st, isCollectionId);
-    const { clips, history } = parsedScene;
+    const { clips, history } = sceneContents(st);
     const candidates: Array<
       [string, SceneClipItem | null, FlowMediaPayload | null]
     > = [];
@@ -761,44 +695,7 @@ export function readStoreTiles(
     }
   }
 
-  for (const voice of customVoices) {
-    if (!voice.id || byId.has(voice.id)) continue;
-    if (voice.workflowId && byId.has(voice.workflowId)) continue;
-    const cachedVoice = runtimeState.mediaInfoCache.get(voice.mediaId);
-    const directVoiceUrl = nonExpiredUrl(voice.url);
-    const cachedVoiceUrl = nonExpiredUrl(cachedVoice?.url);
-    const rawVoiceUrl = isSignedUrlStr(directVoiceUrl)
-      ? directVoiceUrl
-      : isSignedUrlStr(cachedVoiceUrl)
-        ? cachedVoiceUrl
-        : directVoiceUrl || cachedVoiceUrl || null;
-    const voiceMediaIds = voice.mediaId ? [voice.mediaId] : [];
-    const voiceEntry: Omit<SnapshotAssetItem, "collection_name"> = {
-      id: voice.id,
-      name: voice.name,
-      kind: "audio",
-      prompt: voice.prompt,
-      url: rawVoiceUrl ? normalizeFlowMediaUrl(rawVoiceUrl, "audio", env) : null,
-      collection_id: null,
-      primary_media_id: voice.mediaId,
-      personality_notes: null,
-      voice: voice.name,
-      trim_start_seconds: null,
-      trim_end_seconds: null,
-      media_status: "success",
-      media_error: null,
-      width: null,
-      height: null,
-      duration: null,
-      created_at: voice.createdAt,
-      media_ids: voiceMediaIds,
-      workflow_id: voice.workflowId,
-      pcm_audio: true,
-      media_kind: "audio",
-    };
-    rawList.push(voiceEntry);
-    byId.set(voice.id, voiceEntry);
-  }
+  appendCustomVoiceAssets(customVoices, byId, rawList, env);
 
   const assets: SnapshotAssetItem[] = rawList.map((a) => ({
     ...a,

@@ -316,6 +316,37 @@ pub(crate) fn validate_content_type_header(ct: Option<&str>, expected_kind: &str
     Ok(())
 }
 
+/// Returns `true` when `hdr` starts with an `ID3` tag or a valid 4-byte MPEG Layer II/III header.
+fn has_valid_mp3_header(hdr: &[u8]) -> bool {
+    if hdr.starts_with(b"ID3") {
+        return true;
+    }
+    if hdr.len() < 4 || hdr[0] != 0xFF || (hdr[1] & 0xE0) != 0xE0 {
+        return false;
+    }
+    let version_bits = (hdr[1] >> 3) & 0x03;
+    let layer_bits = (hdr[1] >> 1) & 0x03;
+    let bitrate_index = (hdr[2] >> 4) & 0x0F;
+    let sample_rate_index = (hdr[2] >> 2) & 0x03;
+    version_bits != 0x01
+        && matches!(layer_bits, 0x01 | 0x02)
+        && bitrate_index != 0
+        && bitrate_index != 0x0F
+        && sample_rate_index != 0x03
+}
+
+/// Returns `true` when `hdr` starts with a valid 7-byte ADTS AAC frame header.
+fn has_valid_adts_header(hdr: &[u8]) -> bool {
+    if hdr.len() < 7 || hdr[0] != 0xFF || (hdr[1] & 0xF6) != 0xF0 {
+        return false;
+    }
+    let sample_rate_index = (hdr[2] >> 2) & 0x0F;
+    let frame_len = ((usize::from(hdr[3] & 0x03)) << 11)
+        | (usize::from(hdr[4]) << 3)
+        | usize::from(hdr[5] >> 5);
+    sample_rate_index < 13 && frame_len >= 7
+}
+
 /// Checks leading file magic bytes to verify media type and infer generic MIME headers.
 pub(crate) async fn validate_downloaded_file(
     path: &Path,
@@ -334,11 +365,12 @@ pub(crate) async fn validate_downloaded_file(
     }
     let hdr = &buf[..total];
 
-    let start = hdr
+    let after_bom = hdr.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(hdr);
+    let start = after_bom
         .iter()
         .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(hdr.len());
-    let trimmed_lower: Vec<u8> = hdr[start..]
+        .unwrap_or(after_bom.len());
+    let trimmed_lower: Vec<u8> = after_bom[start..]
         .iter()
         .take(16)
         .map(|b| b.to_ascii_lowercase())
@@ -347,11 +379,14 @@ pub(crate) async fn validate_downloaded_file(
         || trimmed_lower.starts_with(b"<html")
         || trimmed_lower.starts_with(b"<?xml")
         || trimmed_lower.starts_with(b"<mpd")
+        || trimmed_lower.starts_with(b"<error")
         || trimmed_lower.starts_with(b"#extm3u")
         || trimmed_lower.starts_with(b")]}'")
+        || trimmed_lower.starts_with(b"{")
+        || trimmed_lower.starts_with(b"[")
     {
         anyhow::bail!(
-            "{} Media URL returned markup/playlist bytes instead of media",
+            "{} Media URL returned markup or JSON bytes instead of media",
             MEDIA_KIND_MISMATCH_TAG
         );
     }
@@ -370,13 +405,8 @@ pub(crate) async fn validate_downloaded_file(
     let is_ogg = hdr.starts_with(b"OggS");
     let is_aiff =
         hdr.len() >= 12 && &hdr[0..4] == b"FORM" && matches!(&hdr[8..12], b"AIFF" | b"AIFC");
-    let is_mp3 = !is_jpeg
-        && (hdr.starts_with(b"ID3")
-            || (hdr.len() >= 2
-                && hdr[0] == 0xFF
-                && (hdr[1] & 0xE0) == 0xE0
-                && (hdr[1] & 0x06) != 0));
-    let is_aac = !is_jpeg && hdr.len() >= 2 && hdr[0] == 0xFF && (hdr[1] & 0xF6) == 0xF0;
+    let is_mp3 = !is_jpeg && has_valid_mp3_header(hdr);
+    let is_aac = !is_jpeg && has_valid_adts_header(hdr);
     let is_m4a = hdr.len() >= 12
         && &hdr[4..8] == b"ftyp"
         && matches!(&hdr[8..12], b"M4A " | b"M4B " | b"M4P ");

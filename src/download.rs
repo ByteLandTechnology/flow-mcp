@@ -8,7 +8,6 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::time::Duration;
 use url::Url;
@@ -16,6 +15,10 @@ use url::Url;
 use crate::assets::{FlowAsset, resolve_asset};
 use crate::config::downloads_dir;
 use crate::db::{DownloadRecord, FlowDb, NewDownloadRecord};
+use crate::download_urls::{
+    is_expired_signed_url, is_signed_direct_url, push_fife_candidates, push_unique_url,
+    query_resolved_media_urls,
+};
 use crate::engine::{ChromeEngine, DEFAULT_CHROME_UA};
 use crate::media_files::{
     MEDIA_KIND_MISMATCH_TAG, disambiguate_dest, natural_asset_filename, resolve_stored_path,
@@ -49,14 +52,18 @@ enum DownloadSource {
     },
 }
 
-/// Ordered URL candidates and media kind from `resolveVideoUrl`.
-struct ResolvedMediaUrls {
-    /// Candidate URLs with signed direct URLs before unsigned URLs.
-    urls: Vec<String>,
-    /// Media family from the `as29s` wire message when present.
-    media_kind: Option<String>,
-    /// True when `as29s` case `11` returned raw 24 kHz PCM audio.
-    pcm_audio: bool,
+/// Browser time limit (`90_000` ms) passed to `sceneExport` so polling ends before the 120 s CDP timeout.
+const SCENE_EXPORT_TIMEOUT_MS: u64 = 90_000;
+
+/// Requested video resolution mode for `flow_download`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestedQuality {
+    /// Keep the primary rendition recorded on the tile.
+    Original,
+    /// Require one specific verified resolution label.
+    Exact(&'static str),
+    /// Select the highest verified resolution available on the tile.
+    Best,
 }
 
 /// Returns the shared HTTP client for streaming media downloads.
@@ -170,290 +177,6 @@ async fn fetch_via_browser_to_temp(
     Ok((validated_ct, disp, size_bytes))
 }
 
-/// Returns `true` when `raw_url` carries signed GCS/Flow CDN hosts or V2/V4 query signatures.
-fn is_signed_direct_url(raw_url: &str) -> bool {
-    let Ok(parsed) = Url::parse(raw_url) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
-        return false;
-    };
-    host == "storage.googleapis.com"
-        || host.ends_with(".storage.googleapis.com")
-        || host == "flow-content.google"
-        || host.ends_with(".flow-content.google")
-        || host == "labs-flow.dev"
-        || host.ends_with(".labs-flow.dev")
-        || host == "video-downloads.googleusercontent.com"
-        || host.ends_with(".video-downloads.googleusercontent.com")
-        || parsed.query_pairs().any(|(k, _)| {
-            matches!(
-                k.to_ascii_lowercase().as_str(),
-                "signature"
-                    | "googleaccessid"
-                    | "x-goog-signature"
-                    | "x-goog-algorithm"
-                    | "x-goog-credential"
-                    | "x-goog-date"
-                    | "x-goog-expires"
-                    | "x-goog-signedheaders"
-            )
-        })
-}
-
-/// Converts a proleptic Gregorian UTC date into days since `1970-01-01`.
-fn civil_days_from_ymd(year: i64, month: u32, day: u32) -> i64 {
-    let y = year - i64::from(month <= 2);
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as u64;
-    let m = u64::from(month);
-    let d = u64::from(day);
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + (doe as i64) - 719_468
-}
-
-/// Parses a compact `YYYYMMDDTHHMMSSZ` timestamp into Unix epoch seconds.
-fn parse_goog_date_secs(raw: &str) -> Option<u64> {
-    let trimmed = raw.trim();
-    if trimmed.len() != 16 {
-        return None;
-    }
-    let bytes = trimmed.as_bytes();
-    if !matches!(bytes[8], b'T' | b't') || !matches!(bytes[15], b'Z' | b'z') {
-        return None;
-    }
-    let year: i64 = trimmed.get(0..4)?.parse().ok()?;
-    let month: u32 = trimmed.get(4..6)?.parse().ok()?;
-    let day: u32 = trimmed.get(6..8)?.parse().ok()?;
-    let hour: u64 = trimmed.get(9..11)?.parse().ok()?;
-    let minute: u64 = trimmed.get(11..13)?.parse().ok()?;
-    let second: u64 = trimmed.get(13..15)?.parse().ok()?;
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
-        return None;
-    }
-    let days = civil_days_from_ymd(year, month, day);
-    let day_secs = u64::try_from(days).ok()?.checked_mul(86_400)?;
-    day_secs
-        .checked_add(hour * 3_600)
-        .and_then(|v| v.checked_add(minute * 60))
-        .and_then(|v| v.checked_add(second))
-}
-
-/// Returns `true` when `raw_url` carries a V4 or V2 GCS signature whose validity window has elapsed.
-fn is_expired_signed_url(raw_url: &str) -> bool {
-    let Ok(parsed) = Url::parse(raw_url.trim()) else {
-        return false;
-    };
-    let Ok(now_dur) = SystemTime::now().duration_since(UNIX_EPOCH) else {
-        return false;
-    };
-    let now_secs = now_dur.as_secs();
-    let mut goog_date: Option<String> = None;
-    let mut goog_expires: Option<String> = None;
-    let mut v2_expires: Option<String> = None;
-    let mut has_v2_sig = false;
-    for (k, v) in parsed.query_pairs() {
-        match k.to_ascii_lowercase().as_str() {
-            "x-goog-date" => goog_date = Some(v.into_owned()),
-            "x-goog-expires" => goog_expires = Some(v.into_owned()),
-            "expires" => v2_expires = Some(v.into_owned()),
-            "signature" | "googleaccessid" => has_v2_sig = true,
-            _ => {}
-        }
-    }
-    if let (Some(date_str), Some(exp_str)) = (goog_date, goog_expires) {
-        let Some(issued_secs) = parse_goog_date_secs(&date_str) else {
-            return true;
-        };
-        let Ok(expires_secs) = exp_str.trim().parse::<u64>() else {
-            return true;
-        };
-        return now_secs >= issued_secs.saturating_add(expires_secs);
-    }
-    if has_v2_sig && let Some(v2_str) = v2_expires {
-        let Ok(exp_secs) = v2_str.trim().parse::<u64>() else {
-            return true;
-        };
-        return now_secs >= exp_secs;
-    }
-    false
-}
-
-/// Appends `raw` to `out` when it uses an allowed scheme and is not already present.
-fn push_unique_url(out: &mut Vec<String>, raw: &str) {
-    let trimmed = raw.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if !(lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("blob:")
-        || lower.starts_with("data:"))
-    {
-        return;
-    }
-    if !out.iter().any(|existing| existing == trimmed) {
-        out.push(trimmed.to_string());
-    }
-}
-
-/// Removes trailing `=...` FIFE resize/format suffixes from the final path segment.
-fn strip_fife_path_options(path: &str) -> String {
-    match path.rsplit_once('/') {
-        Some((dir, leaf)) => {
-            let clean_leaf = match leaf.rfind('=') {
-                Some(idx) => &leaf[..idx],
-                None => leaf,
-            };
-            format!("{}/{}", dir, clean_leaf)
-        }
-        None => match path.rfind('=') {
-            Some(idx) => path[..idx].to_string(),
-            None => path.to_string(),
-        },
-    }
-}
-
-/// Expands unsigned image or video FIFE URLs into prioritized original/download variants.
-fn push_fife_candidates(out: &mut Vec<String>, raw_url: &str, expected_kind: &str) {
-    if expected_kind == "audio" || is_signed_direct_url(raw_url) {
-        return;
-    }
-    let Ok(parsed) = Url::parse(raw_url) else {
-        return;
-    };
-    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
-        return;
-    };
-    if !(host == "flow.google.com"
-        || host.ends_with(".googleusercontent.com")
-        || host.ends_with(".fife.usercontent.google.com"))
-    {
-        return;
-    }
-    let is_video = expected_kind == "video";
-    let stripped_path = strip_fife_path_options(parsed.path());
-    let use_proxy_first = host == "flow.google.com" || stripped_path.starts_with("/asb/");
-
-    if !use_proxy_first {
-        let mut orig_parsed = parsed.clone();
-        let suffixes: &[&str] = if is_video {
-            &["=mm,22,15", "=dv", "=d"]
-        } else {
-            &["=d", "=s0"]
-        };
-        for suffix in suffixes {
-            orig_parsed.set_path(&format!("{}{}", stripped_path, suffix));
-            push_unique_url(out, orig_parsed.as_str());
-        }
-    }
-
-    let mut flow_parsed = parsed;
-    if flow_parsed.set_host(Some("flow.google.com")).is_ok() {
-        let suffixes: &[&str] = if is_video {
-            &["=mm,22,15", "=mm,18,15", "=dv", "=d"]
-        } else {
-            &["=d", "=s0"]
-        };
-        for suffix in suffixes {
-            flow_parsed.set_path(&format!("{}{}", stripped_path, suffix));
-            push_unique_url(out, flow_parsed.as_str());
-        }
-    }
-}
-
-/// Gets the media URLs from Chrome within the optional browser request budget.
-pub(crate) async fn eval_resolve_media_url(
-    engine: &ChromeEngine,
-    media_id: &str,
-    timeout_ms: Option<u64>,
-) -> Option<Value> {
-    eval_resolve_media_url_opts(engine, media_id, timeout_ms, false).await
-}
-
-/// Calls `resolveVideoUrl` in Chrome with optional timeout and cache bypass flags.
-async fn eval_resolve_media_url_opts(
-    engine: &ChromeEngine,
-    media_id: &str,
-    timeout_ms: Option<u64>,
-    bypass_cache: bool,
-) -> Option<Value> {
-    let val = engine
-        .call_flow_async(
-            "resolveVideoUrl",
-            json!([media_id, timeout_ms, bypass_cache]),
-        )
-        .await
-        .ok()?;
-    (val.get("ok").and_then(|v| v.as_bool()) == Some(true)).then_some(val)
-}
-
-/// Expands `eval_resolve_media_url` output and puts signed direct URLs before unsigned URLs.
-async fn query_resolved_media_urls(
-    engine: &ChromeEngine,
-    media_id: &str,
-    fallback_kind: &str,
-    bypass_cache: bool,
-) -> ResolvedMediaUrls {
-    let Some(val) = eval_resolve_media_url_opts(engine, media_id, None, bypass_cache).await else {
-        return ResolvedMediaUrls {
-            urls: Vec::new(),
-            media_kind: None,
-            pcm_audio: false,
-        };
-    };
-    let media_kind = val
-        .get("media_kind")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let pcm_audio = val
-        .get("pcm_audio")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let effective_kind = if media_kind.as_deref() == Some("audio") {
-        "audio"
-    } else {
-        fallback_kind
-    };
-
-    let mut signed = Vec::new();
-    let mut unsigned = Vec::new();
-    let mut record_cand = |raw: &str| {
-        if is_signed_direct_url(raw) {
-            push_unique_url(&mut signed, raw);
-        } else {
-            push_unique_url(&mut unsigned, raw);
-            push_fife_candidates(&mut unsigned, raw, effective_kind);
-        }
-    };
-
-    if let Some(dl_url) = val.get("download_url").and_then(|v| v.as_str()) {
-        record_cand(dl_url);
-    }
-    if let Some(url) = val.get("url").and_then(|v| v.as_str()) {
-        record_cand(url);
-    }
-    if let Some(cands) = val.get("candidates").and_then(|v| v.as_array()) {
-        for cand in cands.iter().filter_map(|v| v.as_str()) {
-            record_cand(cand);
-        }
-    }
-
-    let mut urls = signed;
-    for cand in unsigned {
-        push_unique_url(&mut urls, &cand);
-    }
-    ResolvedMediaUrls {
-        urls,
-        media_kind,
-        pcm_audio,
-    }
-}
-
 /// Selects the [`DownloadSource`] for `target` from its pre-populated URL and media ID.
 fn select_download_source(target: &FlowAsset, label: &str) -> Result<DownloadSource> {
     if target.kind == "scene" && target.requires_scene_export {
@@ -479,7 +202,7 @@ fn select_download_source(target: &FlowAsset, label: &str) -> Result<DownloadSou
         .or_else(|| {
             (!raw_usable && !matches!(target.kind.as_str(), "character" | "scene"))
                 .then(|| target.id.trim().to_string())
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty() && !s.contains(':'))
         });
     let usable_url = raw_url
         .filter(|u| !(is_signed_direct_url(u) && is_expired_signed_url(u) && media_id.is_some()));
@@ -623,7 +346,10 @@ async fn export_scene_via_browser(
     temp_path: &Path,
 ) -> Result<((Option<String>, Option<String>, u64), String)> {
     let val = engine
-        .call_flow_async("sceneExport", json!([scene_id]))
+        .call_flow_async(
+            "sceneExport",
+            json!([scene_id, Value::Null, SCENE_EXPORT_TIMEOUT_MS]),
+        )
         .await?;
     if val.get("ok").and_then(Value::as_bool) != Some(true) {
         let err = val
@@ -841,13 +567,156 @@ pub(crate) async fn download_resolved_asset(
     .await
 }
 
+/// Returns a numeric ordering rank for verified video quality labels.
+fn quality_rank(label: Option<&str>) -> u8 {
+    match label {
+        Some("4k") => 4,
+        Some("1080p") => 3,
+        Some("720p") => 2,
+        Some("360p") => 1,
+        _ => 0,
+    }
+}
+
+/// Parses an optional `quality` parameter string into a [`RequestedQuality`].
+fn parse_download_quality(raw: Option<&str>) -> Result<RequestedQuality> {
+    let Some(trimmed) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(RequestedQuality::Original);
+    };
+    match trimmed.to_ascii_lowercase().as_str() {
+        "original" | "default" | "primary" => Ok(RequestedQuality::Original),
+        "360p" => Ok(RequestedQuality::Exact("360p")),
+        "720p" => Ok(RequestedQuality::Exact("720p")),
+        "1080p" | "fhd" => Ok(RequestedQuality::Exact("1080p")),
+        "4k" | "2160p" | "uhd" => Ok(RequestedQuality::Exact("4k")),
+        "best" | "highest" | "max" => Ok(RequestedQuality::Best),
+        _ => anyhow::bail!(
+            "Unsupported download quality '{}': expected 'original', '360p', '720p', '1080p', '4k', or 'best'",
+            trimmed
+        ),
+    }
+}
+
+/// Applies the requested video quality selector to `target` before download URL lookup.
+fn apply_download_quality(target: &mut FlowAsset, quality: Option<&str>) -> Result<()> {
+    let mode = parse_download_quality(quality)?;
+    if mode == RequestedQuality::Original {
+        return Ok(());
+    }
+    let label = if target.name.is_empty() {
+        target.id.clone()
+    } else {
+        target.name.clone()
+    };
+    if !matches!(target.kind.as_str(), "video" | "scene") {
+        anyhow::bail!(
+            "Quality '{}' applies only to video assets (matched '{}' has kind '{}')",
+            quality.unwrap_or_default().trim(),
+            label,
+            target.kind
+        );
+    }
+    match mode {
+        RequestedQuality::Original => Ok(()),
+        RequestedQuality::Exact(wanted) => {
+            if target.kind == "scene" && target.requires_scene_export {
+                anyhow::bail!(
+                    "Scene '{}' uses multi-clip or trimmed scene export and does not expose '{}' variants; omit 'quality' or use '<scene_id>:<workflow_id>' to download one clip",
+                    label,
+                    wanted
+                );
+            }
+            let Some(chosen) = target
+                .variants
+                .iter()
+                .find(|v| v.quality.as_deref() == Some(wanted))
+                .cloned()
+            else {
+                let mut available: Vec<&str> = Vec::new();
+                for q in target.variants.iter().filter_map(|v| v.quality.as_deref()) {
+                    if !available.contains(&q) {
+                        available.push(q);
+                    }
+                }
+                let avail_desc = if available.is_empty() {
+                    "none verified".to_string()
+                } else {
+                    available.join(", ")
+                };
+                anyhow::bail!(
+                    "Asset '{}' has no '{}' video variant (available: {})",
+                    label,
+                    wanted,
+                    avail_desc
+                );
+            };
+            let changed = target.primary_media_id.as_deref() != Some(chosen.media_id.as_str());
+            target.primary_media_id = Some(chosen.media_id);
+            if let Some(url) = chosen.url {
+                target.url = Some(url);
+            } else if changed {
+                target.url = None;
+            }
+            if chosen.width.is_some() {
+                target.width = chosen.width;
+            }
+            if chosen.height.is_some() {
+                target.height = chosen.height;
+            }
+            if chosen.duration.is_some() {
+                target.duration = chosen.duration;
+            }
+            Ok(())
+        }
+        RequestedQuality::Best => {
+            if target.kind == "scene" && target.requires_scene_export {
+                return Ok(());
+            }
+            let chosen = target
+                .variants
+                .iter()
+                .filter(|v| {
+                    quality_rank(v.quality.as_deref()) > 0
+                        || (v.width.unwrap_or(0) > 0 && v.height.unwrap_or(0) > 0)
+                })
+                .max_by_key(|v| {
+                    let rank = quality_rank(v.quality.as_deref());
+                    let area = u64::from(v.width.unwrap_or(0)) * u64::from(v.height.unwrap_or(0));
+                    (rank, area)
+                })
+                .cloned();
+            if let Some(best) = chosen {
+                let changed = target.primary_media_id.as_deref() != Some(best.media_id.as_str());
+                target.primary_media_id = Some(best.media_id);
+                if let Some(url) = best.url {
+                    target.url = Some(url);
+                } else if changed {
+                    target.url = None;
+                }
+                if best.width.is_some() {
+                    target.width = best.width;
+                }
+                if best.height.is_some() {
+                    target.height = best.height;
+                }
+                if best.duration.is_some() {
+                    target.duration = best.duration;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Resolves the matched Flow asset, downloads it to `<home>/downloads`, and records it in SQLite.
 pub(crate) async fn download_asset(
     engine: &ChromeEngine,
     db: &FlowDb,
     match_str: &str,
+    quality: Option<&str>,
 ) -> Result<DownloadRecord> {
-    let (target, project_id, project_title) =
+    let (mut target, project_id, project_title) =
         resolve_asset(engine, match_str, false, "flow_download").await?;
+    apply_download_quality(&mut target, quality)?;
     download_resolved_asset(engine, db, &target, project_id, project_title).await
 }

@@ -26,9 +26,90 @@ function hasAsciiAt(bytes: Uint8Array, ascii: string, offset = 0): boolean {
   return true;
 }
 
+/** MPEG-1 Layer III bitrate table in kbps indexed by the 4-bit header index. */
+const MPEG1_L3_BITRATES = [
+  0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+];
+
+/** MPEG-1 Layer II bitrate table in kbps indexed by the 4-bit header index. */
+const MPEG1_L2_BITRATES = [
+  0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0,
+];
+
+/** MPEG-2 and MPEG-2.5 Layer II/III bitrate table in kbps indexed by the 4-bit header index. */
+const MPEG2_L23_BITRATES = [
+  0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+];
+
+/** Computes the exact byte length of an MPEG Layer II/III audio frame at `offset`, or 0 if invalid. */
+function parseMpegFrameLength(bytes: Uint8Array, offset: number): number {
+  if (offset + 4 > bytes.byteLength) return 0;
+  const b0 = bytes[offset];
+  const b1 = bytes[offset + 1];
+  const b2 = bytes[offset + 2];
+  if (b0 !== 0xff || (b1 & 0xe0) !== 0xe0) return 0;
+  const versionBits = (b1 >> 3) & 0x03;
+  const layerBits = (b1 >> 1) & 0x03;
+  if (versionBits === 1 || (layerBits !== 1 && layerBits !== 2)) return 0;
+  const bitrateIdx = (b2 >> 4) & 0x0f;
+  const srIdx = (b2 >> 2) & 0x03;
+  if (bitrateIdx === 0 || bitrateIdx === 15 || srIdx === 3) return 0;
+
+  const sampleRate =
+    versionBits === 3
+      ? [44100, 48000, 32000][srIdx]
+      : versionBits === 2
+        ? [22050, 24000, 16000][srIdx]
+        : [11025, 12000, 8000][srIdx];
+  const bitrateKbps =
+    versionBits === 3
+      ? layerBits === 1
+        ? MPEG1_L3_BITRATES[bitrateIdx]
+        : MPEG1_L2_BITRATES[bitrateIdx]
+      : MPEG2_L23_BITRATES[bitrateIdx];
+  if (!sampleRate || !bitrateKbps) return 0;
+  const padding = (b2 >> 1) & 0x01;
+  const coeff = layerBits === 1 && versionBits !== 3 ? 72000 : 144000;
+  return Math.floor((coeff * bitrateKbps) / sampleRate) + padding;
+}
+
+/** Returns true when `bytes` carry two consecutive MPEG Layer II/III or ADTS AAC audio frames. */
+function hasFramedMpegOrAdtsAudio(bytes: Uint8Array): boolean {
+  const mpegFrameLen = parseMpegFrameLength(bytes, 0);
+  if (
+    mpegFrameLen >= 24 &&
+    bytes.byteLength >= mpegFrameLen + 4 &&
+    parseMpegFrameLength(bytes, mpegFrameLen) >= 24 &&
+    (bytes[mpegFrameLen + 1] & 0x1e) === (bytes[1] & 0x1e) &&
+    (bytes[mpegFrameLen + 2] & 0x0c) === (bytes[2] & 0x0c)
+  ) {
+    return true;
+  }
+
+  if (bytes.byteLength >= 14 && bytes[0] === 0xff && (bytes[1] & 0xf6) === 0xf0) {
+    const srIdx = (bytes[2] >> 2) & 0x0f;
+    const adtsLen =
+      ((bytes[3] & 0x03) << 11) | (bytes[4] << 3) | ((bytes[5] >> 5) & 0x07);
+    if (
+      srIdx < 13 &&
+      adtsLen >= 7 &&
+      bytes.byteLength >= adtsLen + 7 &&
+      bytes[adtsLen] === 0xff &&
+      (bytes[adtsLen + 1] & 0xf6) === (bytes[1] & 0xf6) &&
+      (bytes[adtsLen + 2] & 0xfc) === (bytes[2] & 0xfc)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Returns true when `bytes` already begin with a known audio, image, or video container header. */
 function hasKnownMediaContainer(bytes: Uint8Array): boolean {
-  if (hasAsciiAt(bytes, "RIFF") && (hasAsciiAt(bytes, "WAVE", 8) || hasAsciiAt(bytes, "WEBP", 8) || hasAsciiAt(bytes, "AVI ", 8))) {
+  if (
+    hasAsciiAt(bytes, "RIFF") &&
+    (hasAsciiAt(bytes, "WAVE", 8) || hasAsciiAt(bytes, "WEBP", 8) || hasAsciiAt(bytes, "AVI ", 8))
+  ) {
     return true;
   }
   if (hasAsciiAt(bytes, "fLaC") || hasAsciiAt(bytes, "OggS") || hasAsciiAt(bytes, "ID3")) {
@@ -58,20 +139,26 @@ function hasKnownMediaContainer(bytes: Uint8Array): boolean {
   ) {
     return true;
   }
-  if (bytes.byteLength >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) {
-    return true;
-  }
-  return false;
+  return hasFramedMpegOrAdtsAudio(bytes);
 }
 
-/** Returns true when leading non-whitespace bytes match HTML, XML, playlist, or XSSI text. */
+/** Returns true when leading non-whitespace bytes match JSON, HTML, XML, playlist, or XSSI text. */
 function looksLikeMarkupPayload(bytes: Uint8Array): boolean {
-  let start = 0;
+  let start =
+    bytes.byteLength >= 3 &&
+    bytes[0] === 0xef &&
+    bytes[1] === 0xbb &&
+    bytes[2] === 0xbf
+      ? 3
+      : 0;
   while (
     start < bytes.byteLength &&
     (bytes[start] === 0x20 || bytes[start] === 0x09 || bytes[start] === 0x0a || bytes[start] === 0x0d)
   ) {
     start += 1;
+  }
+  if (start < bytes.byteLength && (bytes[start] === 0x7b || bytes[start] === 0x5b)) {
+    return true;
   }
   const head = Array.from(bytes.subarray(start, Math.min(bytes.byteLength, start + 16)))
     .map((b) => String.fromCharCode(b))
@@ -81,6 +168,7 @@ function looksLikeMarkupPayload(bytes: Uint8Array): boolean {
     head.startsWith("<!doctype") ||
     head.startsWith("<html") ||
     head.startsWith("<?xml") ||
+    head.startsWith("<error") ||
     head.startsWith("<mpd") ||
     head.startsWith("#extm3u") ||
     head.startsWith(")]}'")
@@ -215,15 +303,24 @@ export async function fetchMedia(
     if (rawBytes.length === 0) {
       throw new Error("Media URL returned empty body");
     }
+    if (looksLikeMarkupPayload(rawBytes)) {
+      throw new Error("Media URL returned markup or JSON payload instead of media");
+    }
 
     const explicitPcmMime = Boolean(
       ct && /^\s*audio\/(?:x-)?(?:pcm|l16|raw)\b/i.test(ct),
     );
+    const explicitContainerAudioMime = Boolean(
+      ct &&
+        /^\s*(?:audio\/(?:mpeg|mp3|aac|mp4|x-m4a|wav|x-wav|wave|vnd\.wave|ogg|opus|flac|x-flac|webm|aiff|x-aiff)|application\/ogg)\b/i.test(
+          ct,
+        ),
+    );
     const shouldFrameWav =
       kind === "audio" &&
       (framePcmWav || explicitPcmMime || isCachedPcmUrl(u)) &&
-      !hasKnownMediaContainer(rawBytes) &&
-      !looksLikeMarkupPayload(rawBytes);
+      !explicitContainerAudioMime &&
+      !hasKnownMediaContainer(rawBytes);
     const bytes = shouldFrameWav ? framePcm24kMonoWav(rawBytes) : rawBytes;
     const finalCt = shouldFrameWav ? "audio/wav" : ct;
 

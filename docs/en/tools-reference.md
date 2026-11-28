@@ -387,11 +387,12 @@ The tool checks the result of each write in a new read of the same project. The 
 
 ### `flow_download`
 
-Download a matching project media asset (image, video, upscaled `1080p` or `4K` variant, custom voice, character look or assigned voice, or scene) to `<home>/downloads` and index it in `flow-mcp.db`. The tool downloads untrimmed single-clip scenes directly. On verified front-end builds, the tool exports multi-clip or trimmed scenes through the scene export service of Flow (and returns `unsupported_front_end` on unverified builds). Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
+Download a matching project media asset (image, video, custom voice, character look or assigned voice, scene, or scene clip) to `<home>/downloads` and index it in `flow-mcp.db`. By default, video downloads keep the primary rendition of the asset. Set `quality` to `"360p"`, `"720p"`, `"1080p"`, `"4k"`, or `"best"` to select a verified video variant. Use `<sceneId>` to download a scene (directly for untrimmed single-clip scenes, or through the scene export service of Flow on verified front-end builds; unverified builds return `unsupported_front_end`). Use `<sceneId>:<wfId>` to download one clip workflow from a scene. Waits up to `45` seconds (`pending: true` on timeout) and returns `{"file", "resource_uri", "record"}`. If the client supports MCP `2025-06-18` or newer, it also returns a `resource_link`.
 
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `match` | `string` | Yes | Exact asset ID, media or variant ID, exact name, or case-insensitive substring matching a project asset. |
+| `match` | `string` | Yes | Exact asset ID, `<sceneId>:<wfId>` scene clip ID, media or variant ID, exact name, or case-insensitive substring matching a project asset. |
+| `quality` | `string` | No | Video quality selector: `"original"` (default), `"360p"`, `"720p"`, `"1080p"`, `"4k"`, or `"best"`. |
 
 ### `flow_downloads`
 

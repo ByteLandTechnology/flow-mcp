@@ -24,7 +24,7 @@ use tokio::time::Duration;
 use crate::agent::AgentParams;
 use crate::assets::{AssetsParams, DownloadParams, RenameParams, TrashParams};
 use crate::auth::LoginParams;
-use crate::characters::{CharacterEditParams, CharacterParams, VoicesParams};
+use crate::characters::{CharacterEditParams, CharacterParams};
 use crate::collections::CollectionsParams;
 use crate::db::{DOWNLOAD_ASSET_RESOURCE_PREFIX, DOWNLOAD_RESOURCE_PREFIX, DownloadsParams};
 use crate::generation::{EditParams, GenerateParams};
@@ -32,7 +32,7 @@ use crate::project::{NewProjectParams, ProjectsParams, StatusParams};
 use crate::queue::{JobIdParams, WaitParams};
 use crate::scenes::{ScenesParams, VideoParams};
 use crate::service::{self, FlowService, ResourceReadError};
-use crate::voices::VoicePreviewParams;
+use crate::voices::{VoicePreviewParams, VoicesParams};
 
 /// Inline wait limit (`45_000` ms) before slow tools return a pending task handle.
 const PATIENCE_MS: u64 = 45_000;
@@ -206,7 +206,7 @@ impl FlowMcpServer {
 
     /// Downloads a media asset from the active Google Flow project.
     #[tool(
-        description = "Download an image, video, audio, or character asset from the active Google Flow project."
+        description = "Download an image, video, audio, character, scene, or <sceneId>:<wfId> scene clip from the active Google Flow project, with optional video quality selection."
     )]
     async fn flow_download(
         &self,

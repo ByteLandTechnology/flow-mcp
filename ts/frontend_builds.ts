@@ -593,6 +593,18 @@ const NOVEMBER_20_ATTACHMENTS: AgentAttachmentFormat = {
   },
 };
 
+/** Verified numeric video resolution codes of one Flow build. */
+export interface VideoResolutionCodes {
+  /** Numeric code for `360p` video. */
+  p360: number;
+  /** Numeric code for `720p` video. */
+  p720: number;
+  /** Numeric code for `1080p` video. */
+  p1080: number;
+  /** Numeric code for `4K` (`2160p`) video. */
+  p4k: number;
+}
+
 /** Verified media payload fields used during snapshot reads. */
 export interface SnapshotMediaFormat {
   /** Primary media payload property on an image or video tile. */
@@ -609,6 +621,10 @@ export interface SnapshotMediaFormat {
   duration: string;
   /** Creation date property on a tile or media payload. */
   date: string;
+  /** Exported helper on the Angular frontend namespace that maps resolution codes to labels. */
+  resolutionLabelFn?: string;
+  /** Verified numeric resolution codes for video media payloads. */
+  resolutions?: VideoResolutionCodes;
 }
 
 /** Verified character tile and entity protobuf fields used during snapshot reads. */
@@ -677,6 +693,8 @@ const NOVEMBER_20_SNAPSHOT: SnapshotFormat = {
     dimensions: "Bc",
     duration: "Cf",
     date: "lc",
+    resolutionLabelFn: "GI",
+    resolutions: { p360: 4, p720: 1, p1080: 2, p4k: 3 },
   },
   character: {
     entity: "Rc",

@@ -542,6 +542,35 @@ export interface DiscoverStoreResult {
   error?: string;
 }
 
+/** Canonical video quality label for `flow_download`. */
+export type VideoQualityLabel = "360p" | "720p" | "1080p" | "4k";
+
+/** Ready video resolution variant recorded on a video or 1-clip scene tile. */
+export interface VideoVariantEntry {
+  /** Normalized primary media ID for `as29s` resolution. */
+  media_id: string;
+  /** Verified video quality label when known. */
+  quality: VideoQualityLabel | null;
+  /** Non-expired direct media URL when present on the tile. */
+  url: string | null;
+  /** Rendered width in pixels when known. */
+  width: number | null;
+  /** Rendered height in pixels when known. */
+  height: number | null;
+  /** Video duration in seconds when known. */
+  duration: number | null;
+}
+
+/** Active clip workflow mapping on a `SCENE` tile for `<sceneId>:<wfId>` selectors. */
+export interface SceneClipMediaEntry {
+  /** Clip workflow identifier inside the scene. */
+  workflow_id: string;
+  /** Clip primary media identifier when present. */
+  primary_media_id: string | null;
+  /** Non-expired direct clip URL when present on the scene. */
+  url: string | null;
+}
+
 /** Asset entry normalized for `readStoreSnapshot`. */
 export interface SnapshotAssetItem {
   /** Tile or clip workflow identifier. */
@@ -590,6 +619,10 @@ export interface SnapshotAssetItem {
   pcm_audio?: boolean;
   /** Underlying media family override when a tile downloads audio. */
   media_kind?: "video" | "image" | "audio" | null;
+  /** Ready video resolution variants available on a video or 1-clip scene tile. */
+  variants?: VideoVariantEntry[];
+  /** Active timeline clip mappings on a scene tile for `<sceneId>:<wfId>` selectors. */
+  scene_clips?: SceneClipMediaEntry[];
 }
 
 /** Collection summary returned inside `StoreSnapshotResult`. */
@@ -884,7 +917,11 @@ export interface FlowMcpRuntime {
     framePcmWav?: boolean,
   ) => Promise<FetchedMediaPayload>;
   /** Exports a multi-clip or trimmed scene via Angular `KD` RPCs and returns a `blob:` URL. */
-  sceneExport: (sceneId: string, pollDelayMs?: number) => Promise<SceneExportResult>;
+  sceneExport: (
+    sceneId: string,
+    pollDelayMs?: number,
+    timeoutMs?: number,
+  ) => Promise<SceneExportResult>;
   /** Resolves stream and download URLs for a primary media identifier via `as29s`. */
   resolveVideoUrl: (
     primaryMediaId: string,

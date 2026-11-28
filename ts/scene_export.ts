@@ -14,10 +14,16 @@ import { runtimeState } from "./state";
 import type { FlowMediaPayload, SceneClipItem, SceneExportResult } from "./types";
 
 /** Maximum number of `IxdSwd` status polls per scene export job. */
-const MAX_SCENE_EXPORT_POLLS = 40;
+const MAX_SCENE_EXPORT_POLLS = 25;
 
 /** Default poll interval in milliseconds matching Flow `vHb`. */
 const DEFAULT_POLL_DELAY_MS = 3000;
+
+/** Hard wall-clock budget in milliseconds, kept 30 seconds below the 120-second Rust CDP timeout. */
+const SCENE_EXPORT_BUDGET_MS = 90_000;
+
+/** Sentinel returned when an awaited step exceeds the scene export deadline. */
+const DEADLINE_EXCEEDED = Symbol("scene_export_deadline");
 
 /** Time in milliseconds to retain an unconsumed exported `blob:` URL. */
 const EXPORT_BLOB_TTL_MS = 120_000;
@@ -324,27 +330,62 @@ function buildClipMessage(
   return symbols.freezeMsg(withEnd);
 }
 
+/** Races `work` against `deadlineMs` (`performance.now()` clock) and clears its timer on settle. */
+async function raceDeadline<T>(
+  work: Promise<T>,
+  deadlineMs: number,
+): Promise<T | typeof DEADLINE_EXCEEDED> {
+  const remaining = deadlineMs - performance.now();
+  if (remaining <= 0) return DEADLINE_EXCEEDED;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof DEADLINE_EXCEEDED>((resolve) => {
+    timer = setTimeout(() => resolve(DEADLINE_EXCEEDED), remaining);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Exports a multi-clip or trimmed scene through `GjQLTd` and `IxdSwd` on `KD`. */
 export async function sceneExport(
   sceneId: string,
   pollDelayMs?: number,
+  timeoutMs?: number,
 ): Promise<SceneExportResult> {
-  const format = sceneExportFormat(readBuildLabel());
-  if (!format) {
-    return { ok: false, error: "unsupported_front_end" };
-  }
-  const symbols = await bindSceneExportSymbols(format);
-  if (!symbols) {
-    return { ok: false, error: "unsupported_front_end" };
-  }
-
   const trimmedId = String(sceneId || "").trim();
   if (!trimmedId) {
     return { ok: false, error: "missing_scene_id" };
   }
+  if (trimmedId.includes(":")) {
+    return { ok: false, error: "scene_clip_id_not_scene" };
+  }
+
+  const budgetMs =
+    typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.min(SCENE_EXPORT_BUDGET_MS, Math.max(1000, timeoutMs))
+      : SCENE_EXPORT_BUDGET_MS;
+  const deadlineMs = performance.now() + budgetMs;
+
+  const format = sceneExportFormat(readBuildLabel());
+  if (!format) {
+    return { ok: false, error: "unsupported_front_end" };
+  }
+  const symbolsRes = await raceDeadline(bindSceneExportSymbols(format), deadlineMs);
+  if (symbolsRes === DEADLINE_EXCEEDED) {
+    return { ok: false, error: "scene_export_timeout" };
+  }
+  const symbols = symbolsRes;
+  if (!symbols) {
+    return { ok: false, error: "unsupported_front_end" };
+  }
 
   if (!runtimeState.store || !runtimeState.store.isCurrent() || !runtimeState.store.isReady()) {
-    await discoverStore();
+    const boundRes = await raceDeadline(discoverStore(), deadlineMs);
+    if (boundRes === DEADLINE_EXCEEDED) {
+      return { ok: false, error: "scene_export_timeout" };
+    }
   }
   const tileMap = runtimeState.store?.getTileMap?.();
   if (!(tileMap instanceof Map)) {
@@ -383,7 +424,10 @@ export async function sceneExport(
 
   let dataClient = locateDataClient(format, symbols);
   if (!dataClient) {
-    await discoverStore();
+    const retryStore = await raceDeadline(discoverStore(), deadlineMs);
+    if (retryStore === DEADLINE_EXCEEDED) {
+      return { ok: false, error: "scene_export_timeout" };
+    }
     dataClient = locateDataClient(format, symbols);
   }
   if (!dataClient) {
@@ -422,7 +466,13 @@ export async function sceneExport(
       format.startClipsField,
       clipMessages,
     );
-    const startResp = await dataClient.fetch(startDescriptor.Eb(symbols.cloneMsg(startReq)));
+    const startResp = await raceDeadline(
+      dataClient.fetch(startDescriptor.Eb(symbols.cloneMsg(startReq))),
+      deadlineMs,
+    );
+    if (startResp === DEADLINE_EXCEEDED) {
+      return { ok: false, error: "scene_export_timeout" };
+    }
     const operationToken = symbols.getSubmessage(
       startResp,
       OpTokenCtor,
@@ -438,8 +488,15 @@ export async function sceneExport(
         : DEFAULT_POLL_DELAY_MS;
 
     for (let attempt = 0; attempt < MAX_SCENE_EXPORT_POLLS; attempt += 1) {
+      if (performance.now() >= deadlineMs) {
+        return { ok: false, error: "scene_export_timeout" };
+      }
       if (waitMs > 0) {
-        await delay(attempt === 0 ? Math.min(1000, waitMs) : waitMs);
+        const stepWait = attempt === 0 ? Math.min(1000, waitMs) : waitMs;
+        const waited = await raceDeadline(delay(stepWait), deadlineMs);
+        if (waited === DEADLINE_EXCEEDED || performance.now() >= deadlineMs) {
+          return { ok: false, error: "scene_export_timeout" };
+        }
       }
       const pollReq = symbols.setSubmessage(
         new symbols.PollRequest(),
@@ -447,7 +504,13 @@ export async function sceneExport(
         format.pollOperationField,
         operationToken,
       );
-      const pollResp = await dataClient.fetch(pollDescriptor.Eb(symbols.cloneMsg(pollReq)));
+      const pollResp = await raceDeadline(
+        dataClient.fetch(pollDescriptor.Eb(symbols.cloneMsg(pollReq))),
+        deadlineMs,
+      );
+      if (pollResp === DEADLINE_EXCEEDED) {
+        return { ok: false, error: "scene_export_timeout" };
+      }
       const statusFn = readOwn(pollResp, format.pollStatusMethod);
       const status =
         typeof statusFn === "function" ? statusFn.call(pollResp) : undefined;
